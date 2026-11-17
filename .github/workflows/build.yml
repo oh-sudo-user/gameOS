@@ -37,14 +37,14 @@ jobs:
             libncurses-dev libssl-dev swig
 
       - name: Cache Buildroot downloads
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: dl
           key: buildroot-dl-${{ hashFiles('buildroot/configs/gameos_rgds_plus_defconfig', 'scripts/fetch-vendor.sh') }}
           restore-keys: buildroot-dl-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.buildroot-ccache
           key: ccache-${{ github.sha }}
@@ -72,6 +72,23 @@ jobs:
             BR2_EXTERNAL="$GITHUB_WORKSPACE/buildroot" \
             BR2_DL_DIR="$GITHUB_WORKSPACE/dl" \
             -j"$(nproc)"
+
+      # Save caches EVEN WHEN THE BUILD FAILS: the implicit post-step of
+      # actions/cache is skipped on failure, which made runs 2-6 rebuild
+      # the whole LLVM toolchain from scratch every time (~1h42m each).
+      - name: Save Buildroot downloads (always)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: dl
+          key: buildroot-dl-${{ hashFiles('buildroot/configs/gameos_rgds_plus_defconfig', 'scripts/fetch-vendor.sh') }}-${{ github.run_id }}
+
+      - name: Save ccache (always)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.buildroot-ccache
+          key: ccache-${{ github.sha }}-${{ github.run_id }}
 
       - name: Show image info
         run: |
