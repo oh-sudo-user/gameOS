@@ -63,7 +63,11 @@ BR2_TARGET_UBOOT_NEEDS_ROCKCHIP_RKBIN=y
 BR2_TARGET_UBOOT_SPL=y
 BR2_TARGET_UBOOT_FORMAT_ITB=y
 
-# --- Rockchip firmware blobs (version pinned via external.mk override) ---
+# --- Rockchip firmware blobs (pinned via local.mk override) ---
+# The override file is read BEFORE package recipes are evaluated; an
+# override set in external.mk would be too late (run 5 downloaded the
+# wrong rkbin revision and failed on the missing v1.46 BL31 blob).
+BR2_PACKAGE_OVERRIDE_FILE="$(BR2_EXTERNAL_GAMEOS_PATH)/local.mk"
 BR2_PACKAGE_ROCKCHIP_RKBIN=y
 BR2_PACKAGE_ROCKCHIP_RKBIN_TPL_FILENAME="bin/rk35/rk3568_ddr_1560MHz_v1.26.bin"
 BR2_PACKAGE_ROCKCHIP_RKBIN_BL31_FILENAME="bin/rk35/rk3568_bl31_v1.46.elf"

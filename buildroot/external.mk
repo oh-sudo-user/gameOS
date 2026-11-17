@@ -2,12 +2,9 @@
 
 include $(sort $(wildcard $(BR2_EXTERNAL_GAMEOS_PATH)/package/*/*.mk))
 
-# ---------------------------------------------------------------------------
-# Rockchip firmware blobs: the exact rkbin revision ROCKNIX uses for RK3566
-# (DDR v1.26 + BL31 v1.46). OVERRIDE_SRCDIR points at the local vendor
-# directory created by scripts/fetch-vendor.sh, bypassing download/hash checks.
-# ---------------------------------------------------------------------------
-ROCKCHIP_RKBIN_OVERRIDE_SRCDIR = $(BR2_EXTERNAL_GAMEOS_PATH)/../vendor/rkbin
+# NOTE: the rockchip-rkbin OVERRIDE_SRCDIR lives in local.mk (referenced by
+# BR2_PACKAGE_OVERRIDE_FILE in the defconfig), NOT here: external.mk is
+# included after the package recipes are evaluated, too late for overrides.
 
 # ---------------------------------------------------------------------------
 # Apply the vendored kernel patch stack exactly like ROCKNIX does:
