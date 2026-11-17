@@ -1,0 +1,15 @@
+config BR2_PACKAGE_GAMEOS_RETROARCH
+	bool "gameos-retroarch (RetroArch with dual-screen DRM)"
+	select BR2_PACKAGE_LIBDRM
+	select BR2_PACKAGE_MESA3D
+	select BR2_PACKAGE_MESA3D_OPENGL_EGL
+	select BR2_PACKAGE_MESA3D_OPENGL_ES
+	select BR2_PACKAGE_ALSA_LIB
+	select BR2_PACKAGE_EUDEV
+	select BR2_PACKAGE_ZLIB
+	select BR2_PACKAGE_FREETYPE
+	help
+	  RetroArch v1.22.2 with the gameOS dual-screen KMS/DRM patch:
+	  one 1024x1536 framebuffer spanning both RG DS Plus panels via
+	  atomic modesetting, giving pixel-perfect 4x NDS dual-screen
+	  output with correct touch mapping on the bottom panel.

@@ -1,0 +1,8 @@
+#!/bin/sh
+# gameOS PPSSPP launcher — assets live in /usr/share/ppsspp,
+# user config/saves live under /userdata/system/ppsspp.
+export HOME=/userdata/system/ppsspp
+export SDL_VIDEODRIVER=kmsdrm
+mkdir -p "$HOME"
+cd /usr/share/ppsspp || exit 1
+exec /usr/bin/PPSSPPSDL "$@"

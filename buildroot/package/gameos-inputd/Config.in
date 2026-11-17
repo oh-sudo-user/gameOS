@@ -1,0 +1,6 @@
+config BR2_PACKAGE_GAMEOS_INPUTD
+	bool "gameos-inputd (merged gamepad daemon)"
+	help
+	  Merges the RG DS Plus split evdev devices (gpio-keys-control +
+	  adc-joystick) into a single virtual uinput gamepad, handles
+	  volume keys and lid-switch screen blanking.

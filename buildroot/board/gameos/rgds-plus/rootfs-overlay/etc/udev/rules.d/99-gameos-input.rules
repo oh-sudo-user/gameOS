@@ -1,0 +1,6 @@
+# gameOS: the RG DS Plus exposes buttons (gpio-keys-control) and analog stick
+# (adc-joystick) as TWO evdev devices. gameos-inputd merges them into one
+# virtual "gameOS Gamepad". Hide the raw devices from SDL/RetroArch so they
+# only ever see the merged pad (otherwise player 1 gets a buttons-only pad).
+SUBSYSTEM=="input", ATTRS{name}=="gpio-keys-control", ENV{ID_INPUT_JOYSTICK}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_KEY}="0"
+SUBSYSTEM=="input", ATTRS{name}=="adc-joystick", ENV{ID_INPUT_JOYSTICK}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_KEY}="0"

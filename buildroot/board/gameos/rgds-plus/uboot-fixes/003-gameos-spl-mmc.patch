@@ -1,0 +1,27 @@
+From: gameOS <gameos@localhost>
+Subject: [PATCH] gameOS: enable MMC support in SPL for SD-card boot
+
+The quartz64-a base defconfig only enables SPI loading in SPL. The
+RG DS Plus has no SPI flash and no eMMC: SPL must read U-Boot proper
+(u-boot.itb, raw sector 0x4000) from the microSD card itself.
+
+SPL_DM_MMC defaults to y, the dw-mmc/sdhci Rockchip drivers are already
+enabled for U-Boot proper (their Makefile entries are not phase-gated),
+and SPL_SYS_MMCSD_RAW_MODE + SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x4000
+default correctly for ARCH_ROCKCHIP. The only missing symbol is SPL_MMC,
+which gates common/spl/spl_mmc.c (the BOOT_DEVICE_MMC1 loader).
+
+Without it SPL reports "Unsupported Boot Device" and the board never
+leaves SPL -- exactly the black-screen failure mode gameOS must avoid.
+
+diff --git a/configs/quartz64-a-rk3566_defconfig b/configs/quartz64-a-rk3566_defconfig
+--- a/configs/quartz64-a-rk3566_defconfig
++++ b/configs/quartz64-a-rk3566_defconfig
+@@ -15,6 +15,7 @@
+ CONFIG_DEBUG_UART_BASE=0xFE660000
+ CONFIG_DEBUG_UART_CLOCK=24000000
+ CONFIG_ROCKCHIP_RK8XX_DISABLE_BOOT_ON_POWERON=y
++CONFIG_SPL_MMC=y
+ CONFIG_SPL_SPI_FLASH_SUPPORT=y
+ CONFIG_SPL_SPI=y
+ CONFIG_PCI=y

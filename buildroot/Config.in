@@ -1,0 +1,7 @@
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-inputd/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-ui/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-retroarch/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-core-melonds/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-core-mgba/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-core-pcsx/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-ppsspp/Config.in"

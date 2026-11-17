@@ -1,0 +1,10 @@
+config BR2_PACKAGE_GAMEOS_CORE_PCSX
+	bool "gameos-core-pcsx (PS1)"
+	select BR2_PACKAGE_ZLIB
+	select BR2_PACKAGE_LIBPNG
+	help
+	  PCSX-ReARMed libretro core for PlayStation 1 emulation,
+	  with the ARM64 dynamic recompiler for full-speed playback
+	  on the RG DS Plus.
+
+	  https://github.com/libretro/pcsx_rearmed

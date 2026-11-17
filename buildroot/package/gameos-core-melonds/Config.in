@@ -1,0 +1,11 @@
+config BR2_PACKAGE_GAMEOS_CORE_MELONDS
+	bool "gameos-core-melonds (NDS)"
+	depends on BR2_aarch64
+	help
+	  melonDS libretro core for Nintendo DS emulation.
+	  Built with the ARM64 JIT and OpenGL renderer; WiFi disabled
+	  (no libpcap dependency). Paired with the gameOS dual-screen
+	  RetroArch patch for pixel-perfect output on both RG DS Plus
+	  panels.
+
+	  https://github.com/libretro/melonDS

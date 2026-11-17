@@ -1,0 +1,12 @@
+config BR2_PACKAGE_GAMEOS_PPSSPP
+	bool "gameos-ppsspp (PSP)"
+	depends on BR2_PACKAGE_MESA3D
+	depends on BR2_PACKAGE_SDL2
+	select BR2_PACKAGE_LIBPNG
+	select BR2_PACKAGE_ZLIB
+	help
+	  Standalone PPSSPP (SDL2 + GLES2/EGL on KMS/DRM) for
+	  PlayStation Portable emulation. Runs at 2x rendering
+	  resolution on the RG DS Plus top panel.
+
+	  https://github.com/hrydgard/ppsspp

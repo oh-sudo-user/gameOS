@@ -1,0 +1,100 @@
+#!/bin/sh
+# gameOS system setup: data partition, performance governors, panel driver.
+# Runs after udev (S02udev) so /dev/mmcblk0 and input devices exist.
+
+DEV=/dev/mmcblk0
+LOG=/tmp/gameos-setup.log
+
+log() { echo "[gameos-setup] $*" >> "$LOG"; }
+
+log "start"
+
+# --- wait for the SD card block device -------------------------------------
+i=0
+while [ ! -b "$DEV" ] && [ $i -lt 100 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+if [ ! -b "$DEV" ]; then
+  log "ERROR: $DEV never appeared"
+  exit 0
+fi
+
+# --- first boot: create the GAMEOS-DATA exFAT partition filling the card ---
+if [ -f /etc/gameos-firstboot ]; then
+  if ! blkid ${DEV}p3 >/dev/null 2>&1; then
+    log "creating GAMEOS-DATA partition"
+    # p1 ends at 272MiB, p2 (1200MiB) ends at 1472MiB; start data at 1536MiB
+    parted -s "$DEV" mkpart GAMEOS-DATA exfat 1536MiB 100% >>"$LOG" 2>&1 || log "parted failed"
+    # give the kernel a moment to re-read the partition table
+    sleep 1
+    blockdev --rereadpt "$DEV" 2>/dev/null || true
+    if [ -b ${DEV}p3 ]; then
+      mkfs.exfat -n GAMEOS ${DEV}p3 >>"$LOG" 2>&1 || log "mkfs.exfat failed"
+    fi
+  fi
+  rm -f /etc/gameos-firstboot
+fi
+
+# --- mount userdata ---------------------------------------------------------
+mkdir -p /userdata
+if ! mountpoint -q /userdata; then
+  mount -t exfat -o utf8 ${DEV}p3 /userdata 2>>"$LOG" \
+    || mount -t exfat ${DEV}p3 /userdata 2>>"$LOG" \
+    || log "WARN: could not mount GAMEOS-DATA"
+fi
+
+# --- ROM / save / BIOS directory skeleton ----------------------------------
+for d in nds gba gbc ps1 psp; do
+  mkdir -p "/userdata/roms/$d"
+done
+mkdir -p /userdata/saves /userdata/bios /userdata/screenshots /userdata/system
+
+# --- PPSSPP: default config (fullscreen, GLES, 2x render resolution) --------
+PPDIR=/userdata/system/ppsspp/.config/ppsspp/PSP/SYSTEM
+mkdir -p "$PPDIR"
+if [ ! -f "$PPDIR/ppsspp.ini" ]; then
+  cat > "$PPDIR/ppsspp.ini" <<'EOF'
+[General]
+FirstRun = False
+[Graphics]
+FullScreen = True
+Backend = 0
+RenderingResolution = 2
+VSync = True
+ShowFPSCounter = False
+[Sound]
+Enable = True
+GlobalVolume = 8
+EOF
+  log "wrote default ppsspp.ini"
+fi
+
+# --- performance: CPU and GPU governors ------------------------------------
+for p in /sys/devices/system/cpu/cpufreq/policy*; do
+  [ -w "$p/scaling_governor" ] && echo performance > "$p/scaling_governor"
+done
+for g in /sys/class/devfreq/*gpu*; do
+  [ -w "$g/governor" ] && echo performance > "$g/governor"
+done
+
+# --- dual DSI panel driver --------------------------------------------------
+# panel-generic-dsi is built INTO the kernel (obj-y, see external.mk), so both
+# panels are probed before DRM binds; nothing to load here.
+
+# --- backlight: comfortable default (70%) -----------------------------------
+for b in /sys/class/backlight/*; do
+  if [ -w "$b/brightness" ]; then
+    max=$(cat "$b/max_brightness")
+    echo $((max * 70 / 100)) > "$b/brightness"
+  fi
+done
+
+# --- keep the console from blanking over the UI ------------------------------
+echo 0 > /sys/module/kernel/parameters/consoleblank 2>/dev/null || true
+
+# --- audio: sane default speaker volume -------------------------------------
+amixer -c 0 sset 'Master' 70% >/dev/null 2>&1 || true
+amixer -c 1 sset 'Master' 70% >/dev/null 2>&1 || true
+
+log "done"

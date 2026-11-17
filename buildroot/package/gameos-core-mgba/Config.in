@@ -1,0 +1,8 @@
+config BR2_PACKAGE_GAMEOS_CORE_MGBA
+	bool "gameos-core-mgba (GBA/GBC)"
+	help
+	  mGBA libretro core for Game Boy Advance and Game Boy Color
+	  emulation. High accuracy, low overhead — ideal for the
+	  RG DS Plus Cortex-A55.
+
+	  https://github.com/mgba-emu/mgba

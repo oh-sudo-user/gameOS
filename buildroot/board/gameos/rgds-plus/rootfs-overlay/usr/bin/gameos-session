@@ -1,0 +1,43 @@
+#!/bin/sh
+# gameOS session supervisor: keeps the UI alive, handles power requests.
+# UI exit codes: 90 = poweroff, 91 = reboot, anything else = restart.
+
+export SDL_VIDEODRIVER=kmsdrm
+export SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0
+export GAMEOS_ASSETS=/usr/share/gameos/assets
+export GAMEOS_FONTS=/usr/share/gameos/fonts
+export XDG_RUNTIME_DIR=/tmp/gameos-runtime
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+# input merger daemon (virtual gamepad from split evdev devices)
+/usr/bin/gameos-inputd &
+INPUTD_PID=$!
+
+fails=0
+while true; do
+  /usr/bin/gameos-ui
+  rc=$?
+  case $rc in
+    90)
+      kill "$INPUTD_PID" 2>/dev/null
+      sync
+      /sbin/poweroff -f
+      ;;
+    91)
+      kill "$INPUTD_PID" 2>/dev/null
+      sync
+      /sbin/reboot -f
+      ;;
+    0)
+      fails=0
+      sleep 0.2
+      ;;
+    *)
+      fails=$((fails + 1))
+      echo "[gameos-session] UI exited with $rc (fail #$fails)" >> /tmp/gameos-session.log
+      # back off on repeated crashes so the device stays usable via SSH/serial
+      if [ $fails -ge 5 ]; then sleep 5; else sleep 1; fi
+      ;;
+  esac
+done

@@ -1,0 +1,14 @@
+config BR2_PACKAGE_GAMEOS_UI
+	bool "gameos-ui (gameOS front-end)"
+	select BR2_PACKAGE_SDL2
+	select BR2_PACKAGE_SDL2_KMSDRM
+	select BR2_PACKAGE_SDL2_OPENGLES
+	select BR2_PACKAGE_SDL2_TTF
+	select BR2_PACKAGE_SDL2_IMAGE
+	help
+	  The gameOS front-end: a custom SDL2/KMSDRM launcher with a
+	  console carousel, per-system game lists, settings and power
+	  management. Chinese UI, dual-screen aware (ambient clock on
+	  the bottom panel).
+
+	  Part of gameOS for the Anbernic RG DS Plus.

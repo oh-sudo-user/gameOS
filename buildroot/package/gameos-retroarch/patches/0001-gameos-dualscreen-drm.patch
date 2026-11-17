@@ -1,0 +1,407 @@
+--- a/gfx/drivers_context/drm_ctx.c
++++ b/gfx/drivers_context/drm_ctx.c
+@@ -115,6 +115,322 @@
+ static drmModeModeInfo gfx_ctx_crt_switch_mode;
+ static bool switch_mode                   = false;
+ 
++/* ===========================================================================
++ * gameOS dual-screen support (Anbernic RG DS Plus, RK3568 VOP2)
++ *
++ * Enabled with GAMEOS_DUALSCREEN=1. Creates one 1024x1536 GBM framebuffer
++ * and scans it out across both DSI panels with a single atomic commit:
++ * top panel shows FB rows [0,768), bottom panel shows rows [768,1536).
++ * The melonDS libretro core in vertical layout (256x384) then scales 4x
++ * integer onto both physical screens, with touch on the bottom panel
++ * mapped to the bottom NDS screen (see udev_input.c gameOS patch).
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * =========================================================================== */
++#include <errno.h>
++
++static bool g_gameos_dual               = false;
++static drmModeModeInfo g_gameos_span_mode;
++static drmModeModeInfo g_gameos_mode_top;
++static drmModeModeInfo g_gameos_mode_bot;
++static uint32_t g_gameos_crtc_top       = 0;
++static uint32_t g_gameos_crtc_bot       = 0;
++static uint32_t g_gameos_plane_top      = 0;
++static uint32_t g_gameos_plane_bot      = 0;
++static uint32_t g_gameos_blob_top       = 0;
++static uint32_t g_gameos_blob_bot       = 0;
++static uint32_t g_gameos_top_h          = 0;
++static uint32_t g_gameos_span_w         = 0;
++
++typedef struct
++{
++   uint32_t fb_id, crtc_id;
++   uint32_t src_x, src_y, src_w, src_h;
++   uint32_t crtc_x, crtc_y, crtc_w, crtc_h;
++} gameos_plane_props_t;
++
++static gameos_plane_props_t g_gp_top, g_gp_bot;
++static uint32_t g_gc_mode_top, g_gc_active_top;
++static uint32_t g_gc_mode_bot, g_gc_active_bot;
++
++static uint32_t gameos_prop_id(int fd, uint32_t obj_id,
++      uint32_t obj_type, const char *name)
++{
++   uint32_t id = 0;
++   drmModeObjectProperties *props =
++      drmModeObjectGetProperties(fd, obj_id, obj_type);
++   if (!props)
++      return 0;
++   for (uint32_t i = 0; i < props->count_props; i++)
++   {
++      drmModePropertyRes *p = drmModeGetProperty(fd, props->props[i]);
++      if (p)
++      {
++         if (strcmp(p->name, name) == 0)
++            id = p->prop_id;
++         drmModeFreeProperty(p);
++         if (id)
++            break;
++      }
++   }
++   drmModeFreeObjectProperties(props);
++   return id;
++}
++
++static void gameos_cache_plane_props(int fd, uint32_t plane,
++      gameos_plane_props_t *pp)
++{
++   pp->fb_id   = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "FB_ID");
++   pp->crtc_id = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
++   pp->src_x   = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "SRC_X");
++   pp->src_y   = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "SRC_Y");
++   pp->src_w   = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "SRC_W");
++   pp->src_h   = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "SRC_H");
++   pp->crtc_x  = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "CRTC_X");
++   pp->crtc_y  = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
++   pp->crtc_w  = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "CRTC_W");
++   pp->crtc_h  = gameos_prop_id(fd, plane, DRM_MODE_OBJECT_PLANE, "CRTC_H");
++}
++
++static uint32_t gameos_primary_plane(int fd, uint32_t crtc_id)
++{
++   uint32_t found = 0;
++   drmModeRes *res = drmModeGetResources(fd);
++   if (!res)
++      return 0;
++   int crtc_idx = -1;
++   for (int i = 0; i < res->count_crtcs; i++)
++      if (res->crtcs[i] == crtc_id)
++      {
++         crtc_idx = i;
++         break;
++      }
++   if (crtc_idx < 0)
++   {
++      drmModeFreeResources(res);
++      return 0;
++   }
++
++   drmModePlaneRes *pres = drmModeGetPlaneResources(fd);
++   if (!pres)
++   {
++      drmModeFreeResources(res);
++      return 0;
++   }
++   for (uint32_t i = 0; i < pres->count_planes && !found; i++)
++   {
++      drmModePlane *pl = drmModeGetPlane(fd, pres->planes[i]);
++      if (!pl)
++         continue;
++      if (pl->possible_crtcs & (1u << crtc_idx))
++      {
++         uint32_t type_prop = gameos_prop_id(fd, pl->plane_id,
++               DRM_MODE_OBJECT_PLANE, "type");
++         if (type_prop)
++         {
++            drmModeObjectProperties *props = drmModeObjectGetProperties(
++                  fd, pl->plane_id, DRM_MODE_OBJECT_PLANE);
++            if (props)
++            {
++               for (uint32_t j = 0; j < props->count_props; j++)
++                  if (props->props[j] == type_prop &&
++                      props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY)
++                     found = pl->plane_id;
++               drmModeFreeObjectProperties(props);
++            }
++         }
++      }
++      drmModeFreePlane(pl);
++   }
++   drmModeFreePlaneResources(pres);
++   drmModeFreeResources(res);
++   return found;
++}
++
++static bool gameos_dual_init(int fd)
++{
++   drmModeRes *res = drmModeGetResources(fd);
++   if (!res)
++      return false;
++
++   drmModeConnector *bot = NULL;
++   for (int i = 0; i < res->count_connectors; i++)
++   {
++      drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
++      if (!c)
++         continue;
++      if (c->connector_id != g_connector_id &&
++          c->connection == DRM_MODE_CONNECTED && c->count_modes > 0)
++      {
++         bot = c;
++         break;
++      }
++      drmModeFreeConnector(c);
++   }
++   if (!bot)
++   {
++      drmModeFreeResources(res);
++      return false;
++   }
++
++   uint32_t crtc_bot = 0;
++   drmModeEncoder *enc = NULL;
++   if (bot->encoder_id)
++      enc = drmModeGetEncoder(fd, bot->encoder_id);
++   if (enc && enc->crtc_id && enc->crtc_id != g_crtc_id)
++      crtc_bot = enc->crtc_id;
++   if (!crtc_bot)
++   {
++      for (int e = 0; e < bot->count_encoders && !crtc_bot; e++)
++      {
++         drmModeEncoder *en = drmModeGetEncoder(fd, bot->encoders[e]);
++         if (!en)
++            continue;
++         for (int c = 0; c < res->count_crtcs; c++)
++            if ((en->possible_crtcs & (1u << c)) &&
++                res->crtcs[c] != g_crtc_id)
++            {
++               crtc_bot = res->crtcs[c];
++               break;
++            }
++         drmModeFreeEncoder(en);
++      }
++   }
++   if (enc)
++      drmModeFreeEncoder(enc);
++   if (!crtc_bot)
++      goto fail;
++
++   g_gameos_crtc_top = g_crtc_id;
++   g_gameos_crtc_bot = crtc_bot;
++   g_gameos_mode_top = g_drm_connector->modes[0];
++   g_gameos_mode_bot = bot->modes[0];
++   g_gameos_top_h    = g_gameos_mode_top.vdisplay;
++   g_gameos_span_w   = g_gameos_mode_top.hdisplay;
++
++   g_gameos_span_mode          = g_gameos_mode_top;
++   g_gameos_span_mode.vdisplay = g_gameos_mode_top.vdisplay +
++                                 g_gameos_mode_bot.vdisplay;
++   g_gameos_span_mode.vtotal   = g_gameos_mode_top.vtotal +
++                                 g_gameos_mode_bot.vtotal;
++   snprintf(g_gameos_span_mode.name, DRM_DISPLAY_MODE_LEN, "gameos-span");
++
++   g_gameos_plane_top = gameos_primary_plane(fd, g_gameos_crtc_top);
++   g_gameos_plane_bot = gameos_primary_plane(fd, g_gameos_crtc_bot);
++   if (!g_gameos_plane_top || !g_gameos_plane_bot)
++      goto fail;
++
++   gameos_cache_plane_props(fd, g_gameos_plane_top, &g_gp_top);
++   gameos_cache_plane_props(fd, g_gameos_plane_bot, &g_gp_bot);
++   g_gc_mode_top   = gameos_prop_id(fd, g_gameos_crtc_top,
++         DRM_MODE_OBJECT_CRTC, "MODE_ID");
++   g_gc_active_top = gameos_prop_id(fd, g_gameos_crtc_top,
++         DRM_MODE_OBJECT_CRTC, "ACTIVE");
++   g_gc_mode_bot   = gameos_prop_id(fd, g_gameos_crtc_bot,
++         DRM_MODE_OBJECT_CRTC, "MODE_ID");
++   g_gc_active_bot = gameos_prop_id(fd, g_gameos_crtc_bot,
++         DRM_MODE_OBJECT_CRTC, "ACTIVE");
++   if (!g_gc_mode_top || !g_gc_active_top ||
++       !g_gc_mode_bot || !g_gc_active_bot)
++      goto fail;
++
++   if (drmModeCreatePropertyBlob(fd, &g_gameos_mode_top,
++         sizeof(g_gameos_mode_top), &g_gameos_blob_top) < 0)
++      goto fail;
++   if (drmModeCreatePropertyBlob(fd, &g_gameos_mode_bot,
++         sizeof(g_gameos_mode_bot), &g_gameos_blob_bot) < 0)
++      goto fail;
++
++   RARCH_LOG("[KMS] gameOS dual-screen: %ux%u spanning two panels "
++         "(crtc %u/%u, plane %u/%u).\n",
++         g_gameos_span_w, g_gameos_span_mode.vdisplay,
++         g_gameos_crtc_top, g_gameos_crtc_bot,
++         g_gameos_plane_top, g_gameos_plane_bot);
++   drmModeFreeConnector(bot);
++   drmModeFreeResources(res);
++   return true;
++
++fail:
++   drmModeFreeConnector(bot);
++   drmModeFreeResources(res);
++   return false;
++}
++
++static bool gameos_dual_modeset(int fd, uint32_t fb_id)
++{
++   drmModeAtomicReq *req = drmModeAtomicAlloc();
++   if (!req)
++      return false;
++
++   drmModeAtomicAddProperty(req, g_gameos_crtc_top,
++         g_gc_mode_top, g_gameos_blob_top);
++   drmModeAtomicAddProperty(req, g_gameos_crtc_top, g_gc_active_top, 1);
++   drmModeAtomicAddProperty(req, g_gameos_crtc_bot,
++         g_gc_mode_bot, g_gameos_blob_bot);
++   drmModeAtomicAddProperty(req, g_gameos_crtc_bot, g_gc_active_bot, 1);
++
++   /* top panel: FB rows [0, top_h) */
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.fb_id, fb_id);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.crtc_id,
++         g_gameos_crtc_top);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.src_x, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.src_y, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.src_w,
++         g_gameos_span_w << 16);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.src_h,
++         g_gameos_top_h << 16);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.crtc_x, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.crtc_y, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.crtc_w,
++         g_gameos_span_w);
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.crtc_h,
++         g_gameos_top_h);
++
++   /* bottom panel: FB rows [top_h, top_h + bot_h) */
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.fb_id, fb_id);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.crtc_id,
++         g_gameos_crtc_bot);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.src_x, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.src_y,
++         g_gameos_top_h << 16);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.src_w,
++         g_gameos_span_w << 16);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.src_h,
++         g_gameos_mode_bot.vdisplay << 16);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.crtc_x, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.crtc_y, 0);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.crtc_w,
++         g_gameos_span_w);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.crtc_h,
++         g_gameos_mode_bot.vdisplay);
++
++   int ret = drmModeAtomicCommit(fd, req,
++         DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
++   drmModeAtomicFree(req);
++   if (ret < 0)
++      RARCH_ERR("[KMS] gameOS dual modeset failed: %s\n",
++            strerror(errno));
++   return ret == 0;
++}
++
++static bool gameos_dual_flip(int fd, uint32_t fb_id, bool *waiting)
++{
++   drmModeAtomicReq *req = drmModeAtomicAlloc();
++   if (!req)
++      return false;
++   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.fb_id, fb_id);
++   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.fb_id, fb_id);
++   int ret = drmModeAtomicCommit(fd, req,
++         DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK, waiting);
++   drmModeAtomicFree(req);
++   if (ret == 0)
++      *waiting = true;
++   else
++      RARCH_ERR("[KMS] gameOS dual flip failed: %s\n", strerror(errno));
++   return ret == 0;
++}
++/* === end gameOS dual-screen support === */
++
++
+ static float mode_vrefresh(drmModeModeInfo *mode)
+ {
+    return  mode->clock * 1000.00f / (mode->htotal * mode->vtotal);
+@@ -530,6 +846,10 @@
+    if (!fb)
+       fb             = (struct drm_fb*)drm_fb_get_from_bo(drm->next_bo);
+ 
++   if (g_gameos_dual)
++      return gameos_dual_flip(g_drm_fd, fb->fb_id,
++            &drm->waiting_for_flip);
++
+    if (switch_mode)
+    {
+       RARCH_DBG("[KMS] modeswitch detected, creating the new CRTC.\n");
+@@ -731,6 +1051,20 @@
+ 
+    drm_setup(fd);
+ 
++   /* gameOS: optionally span both RG DS Plus panels */
++   {
++      const char *dual = getenv("GAMEOS_DUALSCREEN");
++      g_gameos_dual = false;
++      if (dual && dual[0] == '1')
++      {
++         if (gameos_dual_init(fd))
++            g_gameos_dual = true;
++         else
++            RARCH_WARN("[KMS] gameOS dual-screen init failed, "
++                  "falling back to single panel.\n");
++      }
++   }
++
+    /* Choose the optimal video mode for get_video_size():
+      - video mode issued by switchres through the CRT module
+      - custom timings from configuration
+@@ -757,6 +1091,12 @@
+       drm->fb_height = g_drm_connector->modes[0].vdisplay;
+    }
+ 
++   if (g_gameos_dual)
++   {
++      drm->fb_width  = g_gameos_span_mode.hdisplay;
++      drm->fb_height = g_gameos_span_mode.vdisplay;
++   }
++
+    drmSetMaster(g_drm_fd);
+ 
+    drm->gbm_dev      = gbm_create_device(fd);
+@@ -816,7 +1156,8 @@
+    /* Find desired video mode, and use that.
+     * If not fullscreen, we get desired windowed size,
+     * which is not appropriate. */
+-   if (gfx_ctx_drm_get_mode_from_video_state(&gfx_ctx_crt_switch_mode))
++   if (!g_gameos_dual &&
++       gfx_ctx_drm_get_mode_from_video_state(&gfx_ctx_crt_switch_mode))
+    {
+       RARCH_DBG("[KMS] New mode detected: %dx%d.\n", gfx_ctx_crt_switch_mode.hdisplay, gfx_ctx_crt_switch_mode.vdisplay);
+       g_drm_mode     = &gfx_ctx_crt_switch_mode;
+@@ -826,7 +1167,11 @@
+       /* Let's exit, since modeswitching will happen while swapping buffers */
+       return true;
+    }
+-   if ((width == 0 && height == 0) || !fullscreen)
++   if (g_gameos_dual)
++   {
++      g_drm_mode = &g_gameos_span_mode;
++   }
++   else if ((width == 0 && height == 0) || !fullscreen)
+    {
+       RARCH_WARN("[KMS] Falling back to mode 0 (default).\n");
+       g_drm_mode     = &g_drm_connector->modes[0];
+@@ -907,7 +1252,12 @@
+    if (!(fb = (struct drm_fb*)gbm_bo_get_user_data(drm->bo)))
+       fb     = drm_fb_get_from_bo(drm->bo);
+ 
+-   if ((ret  = drmModeSetCrtc(g_drm_fd,
++   if (g_gameos_dual)
++   {
++      if (!gameos_dual_modeset(g_drm_fd, fb->fb_id))
++         goto error;
++   }
++   else if ((ret  = drmModeSetCrtc(g_drm_fd,
+          g_crtc_id, fb->fb_id, 0, 0, &g_connector_id, 1, g_drm_mode)) < 0)
+       goto error;
+ 

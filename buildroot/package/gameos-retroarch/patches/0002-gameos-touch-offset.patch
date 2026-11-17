@@ -1,0 +1,28 @@
+--- a/input/drivers/udev_input.c
++++ b/input/drivers/udev_input.c
+@@ -1855,6 +1855,25 @@
+    int32_t ma_pos_x   = (((((pointer_pos_x + src_touch->info_x_limits.min) * 0x7fff) / src_touch->info_x_limits.range) * target_vp->full_width) / 0x7fff);
+    int32_t ma_pos_y   = (((((pointer_pos_y + src_touch->info_y_limits.min) * 0x7fff) / src_touch->info_y_limits.range) * target_vp->full_height) / 0x7fff);
+ 
++   /* gameOS: on the RG DS Plus the touchscreen is the BOTTOM panel.
++    * With GAMEOS_DUALSCREEN the video surface spans both panels
++    * (1024x1536); rescale touch Y into the bottom panel region so the
++    * melonDS core receives coordinates on the lower NDS screen. */
++   {
++      static int go_offset  = -1;
++      static int go_panel_h = 0;
++      if (go_offset < 0)
++      {
++         const char *e = getenv("GAMEOS_TOUCH_Y_OFFSET");
++         go_offset  = e ? atoi(e) : 0;
++         e = getenv("GAMEOS_TOUCH_PANEL_H");
++         go_panel_h = e ? atoi(e) : 0;
++      }
++      if (go_offset > 0 && go_panel_h > 0 && target_vp->full_height > 0)
++         ma_pos_y = go_offset +
++            (ma_pos_y * go_panel_h) / (int32_t)target_vp->full_height;
++   }
++
+    /* Calculate relative offsets. */
+    *pointer_ma_rel_x += ma_pos_x - *pointer_ma_pos_x;
+    *pointer_ma_rel_y += ma_pos_y - *pointer_ma_pos_y;

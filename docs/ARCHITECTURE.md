@@ -1,0 +1,96 @@
+# gameOS 架构说明
+
+## 设计目标
+
+1. **能启动**（第一原则）：引导链每一环都选用在 RG DS Plus 上被验证过的组合。
+2. **性能**：无桌面环境、无显示服务器，SDL2/RetroArch 直写 DRM/KMS；
+   模拟器全部启用 ARM64 动态编译或 GPU 加速。
+3. **精致**：自研中文前端 + 全套原创图标/背景。
+
+## 硬件要点（RG DS Plus）
+
+- SoC：Rockchip RK3568（4× Cortex-A55 + Mali-G52），1GB RAM，**无 eMMC**。
+- 双 4.3 寸 1024×768 DSI 屏：dsi0→vp0（上屏）、dsi1→vp1（下屏）。
+- 下屏 GT911 触摸（1024×768）。
+- 输入设备在 Linux 下是**分裂的**：按键（gpio-keys-control）、
+  摇杆（adc-joystick）、音量键、霍尔盖开关各自独立 evdev 节点。
+- 音频：rk817 codec（耳机）+ aw88166 功放（扬声器）。
+
+## 引导链（避开 issue #183 的关键）
+
+```
+BootROM
+  → sector 64:    idbloader.img = mkimage -T rksd (rk3568_ddr_1560MHz_v1.26.bin + SPL)
+  → sector 16384: u-boot.itb    = U-Boot proper + ATF BL31 (rk3568_bl31_v1.46.elf)
+  → U-Boot v2026.01 (quartz64-a-rk3566 基础配置 + 两处 RG DS Plus 修正 + SPL MMC)
+  → extlinux.conf: KERNEL /Image  FDT /rk3568-anbernic-rg-ds-plus.dtb
+  → Linux 7.2.11 (主线内核 + ROCKNIX 补丁集 + 本设备 DTS)
+```
+
+BananaOS #183 的病根是引导配置与 DDR/板级代码不匹配导致 SPL 阶段黑屏。
+gameOS 的做法沿用 ROCKNIX 为 RG DS Plus 准备的 "Specific" 路径，并补齐其缺口：
+
+- 基础配置不含 Anbernic 板级探测代码（该代码在主线 ATF 下会崩溃重启）；
+- 补丁 1：RK8XX PMIC 改为电源键触发启动（掌机必需）；
+- 补丁 2：SPL 引导顺序 SD 卡优先（本机无 eMMC）；
+- 补丁 3（gameOS 自有）：`CONFIG_SPL_MMC=y`。quartz64 原配置的 SPL 只会从
+  SPI flash 读下一级，而本机无 SPI；缺了这一项 SPL 会报
+  "Unsupported Boot Device" 并永远停在黑屏。raw 模式偏移 0x4000 扇区
+  与 u-boot.itb 的写入位置一致（Kconfig 对 ARCH_ROCKCHIP 的默认值）；
+- DDR 初始化使用 RK3568 官方 v1.26 blob（不是 RK3566 的）；
+- 内核设备树由 extlinux **显式指定**，不依赖 U-Boot 的 ADC 机型探测。
+
+## 内核与双屏驱动
+
+- 内核源码：主线 v7.2.11（kernel.org，与 ROCKNIX 为 RK3566 发布的版本一致）。
+- 补丁：ROCKNIX default + RK3566 设备补丁集（固定 commit），
+  由 `kernel-patches/series` 锁定与 ROCKNIX 完全一致的应用顺序；
+  在 post-extract 钩子中以 ROCKNIX 同款 `patch -p1` 语义应用
+  （Buildroot 自带补丁步为零 fuzz，会拒绝其中 5 个需要 fuzz 的上游补丁）。
+- 设备树：`rk3568-anbernic-rg-ds.dtsi` / `.dts` / `-plus.dts`（ROCKNIX 维护），
+  在全部补丁应用之后覆盖进内核树（与 ROCKNIX post_patch 顺序相同）。
+- 面板驱动：`panel-generic-dsi`（compatible "rocknix,generic-dsi"）以 **obj-y
+  编入内核**（非模块），DRM 绑定前双屏时序即就绪，解析 DTS 的 panel_description。
+
+## 输入合并（gameos-inputd）
+
+把分裂的 evdev 设备合并为一个 uinput 虚拟手柄 **"gameOS Gamepad"**：
+18 个按键 + 归一化摇杆轴；udev 规则隐藏原始设备避免 SDL/RetroArch 误识别。
+附带：音量键直接驱动 ALSA；合盖只熄屏（**不休眠**——休眠在本机不可靠）。
+
+## 双屏 NDS（本项目核心补丁）
+
+RetroArch 的 KMS/DRM context 补丁（`GAMEOS_DUALSCREEN=1` 时启用）：
+
+- 创建 **一块 1024×1536 的 GBM framebuffer**；
+- 一次 atomic modesetting 提交把它同时扫出到两个 CRTC：
+  上屏 plane 取 FB 的 [0,768) 行，下屏 plane 取 [768,1536) 行；
+- melonDS 核心竖排布局 256×384 → **4 倍整数缩放**，一屏一个 NDS 画面；
+- 触摸补丁把下屏触摸坐标映射到 y∈[768,1536)，即 NDS 下屏。
+
+其它平台（GBA/GBC/PS1/PSP）单屏运行于上屏，下屏保持熄灭——
+与真机插 GBA 卡时的行为一致。
+
+## 用户空间
+
+```
+busybox init
+  ├─ rcS → S20gameos   (首 boot 扩容 exFAT 数据分区、性能 governor、
+  │                     背光/音量默认值；面板驱动已编入内核无需加载)
+  └─ respawn: gameos-session
+       ├─ gameos-inputd &
+       └─ gameos-ui     (自研 SDL2 前端；退出码 90=关机 91=重启)
+            └─ 启动游戏时 SDL_Quit 释放 DRM master → fork/exec
+               retroarch / ppsspp-run → 退出后重新接管双屏
+```
+
+- 图形栈：mesa3d Panfrost (Mali-G52) + EGL/GLES2，SDL2 KMSDRM，无 X11/Wayland。
+- 前端：C++17，上屏轮播/游戏列表/设置，下屏氛围时钟；中文 Noto Sans SC。
+- 模拟器：melonDS（JIT）、mGBA、PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x）。
+- 数据分区：exFAT（GAMEOS 盘符），Windows/macOS 可直接拷游戏。
+
+## 构建
+
+Buildroot 2026.08 external tree；所有上游组件固定 commit/版本
+（见 `scripts/fetch-vendor.sh` 与 defconfig）。GitHub Actions 云端构建，
+产物为整盘镜像 `gameOS-rgds-plus.img.gz`。

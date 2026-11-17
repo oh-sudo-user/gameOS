@@ -1,0 +1,23 @@
+# Build artifacts
+buildroot/output/
+buildroot/dl/
+vendor/
+*.img
+*.img.gz
+*.vfat
+*.ext4
+
+# Vendored upstream files (fetched by scripts/fetch-vendor.sh at pinned versions)
+buildroot/board/gameos/rgds-plus/kernel-patches/
+buildroot/board/gameos/rgds-plus/uboot-patches/
+buildroot/board/gameos/rgds-plus/linux.config
+buildroot/board/gameos/rgds-plus/dts/
+buildroot/board/gameos/rgds-plus/rootfs-overlay/usr/share/gameos/fonts/
+buildroot/board/gameos/rgds-plus/panel-generic-dsi.c
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,108 @@
+# gameOS for Anbernic RG DS Plus (Rockchip RK3568, dual 1024x768 DSI)
+#
+# Boot chain note (avoids BananaOS issue #183):
+#   U-Boot v2026.01 on the quartz64-a-rk3566 base (no Anbernic board
+#   detection code that crashes with mainline ATF) PLUS the two ROCKNIX
+#   RG DS Plus fixes (RK8XX boot-on-power-key, SD-card-first SPL boot
+#   order) PLUS gameOS' own SPL_MMC=y (quartz64 SPL is SPI-only and this
+#   device has no SPI flash). The kernel DTB is selected explicitly
+#   via extlinux.conf FDT, and DDR init uses the RK3568 v1.26 blob.
+
+# --- Architecture / toolchain ---
+BR2_aarch64=y
+BR2_cortex_a55=y
+BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+BR2_TOOLCHAIN_BUILDROOT_VENDOR="gameos"
+BR2_ENABLE_LOCALE=y
+BR2_USE_WCHAR=y
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12=y
+
+# --- System ---
+BR2_TARGET_GENERIC_HOSTNAME="gameos"
+BR2_TARGET_GENERIC_ISSUE="gameOS"
+BR2_TARGET_GENERIC_GETTY=n
+BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW=y
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/rootfs-overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-image.sh"
+
+# --- Kernel: mainline 7.2.11 (same version ROCKNIX ships for RK3566) ---
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://www.kernel.org/pub/linux/kernel/v7.x/linux-7.2.11.tar.xz"
+# Kernel patches are applied by GAMEOS_LINUX_APPLY_PATCHES (external.mk) in
+# the same order and with the same fuzz as ROCKNIX; Buildroot's own patch
+# step (-F0, zero fuzz) would reject five upstream patches that need fuzz.
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/linux.config"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/linux-fragment.config"
+BR2_LINUX_KERNEL_IMAGE=y
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="rockchip/rk3568-anbernic-rg-ds-plus rockchip/rk3568-anbernic-rg-ds"
+BR2_LINUX_KERNEL_INSTALL_TARGET=y
+
+# --- U-Boot: quartz64 base + RG DS Plus proven fixes (see header note) ---
+BR2_TARGET_UBOOT=y
+BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG=y
+BR2_TARGET_UBOOT_CUSTOM_TARBALL=y
+BR2_TARGET_UBOOT_CUSTOM_TARBALL_LOCATION="https://github.com/u-boot/u-boot/archive/refs/tags/v2026.01.tar.gz"
+BR2_TARGET_UBOOT_BOARD_DEFCONFIG="quartz64-a-rk3566"
+BR2_TARGET_UBOOT_PATCH="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/uboot-patches"
+BR2_TARGET_UBOOT_NEEDS_DTC=y
+BR2_TARGET_UBOOT_NEEDS_PYLIBFDT=y
+BR2_TARGET_UBOOT_NEEDS_PYELFTOOLS=y
+BR2_TARGET_UBOOT_NEEDS_OPENSSL=y
+BR2_TARGET_UBOOT_NEEDS_ROCKCHIP_RKBIN=y
+BR2_TARGET_UBOOT_SPL=y
+BR2_TARGET_UBOOT_FORMAT_ITB=y
+
+# --- Rockchip firmware blobs (version pinned via external.mk override) ---
+BR2_PACKAGE_ROCKCHIP_RKBIN=y
+BR2_PACKAGE_ROCKCHIP_RKBIN_TPL_FILENAME="bin/rk35/rk3568_ddr_1560MHz_v1.26.bin"
+BR2_PACKAGE_ROCKCHIP_RKBIN_BL31_FILENAME="bin/rk35/rk3568_bl31_v1.46.elf"
+
+# --- Graphics: Mali-G52 via Panfrost, SDL2 straight on KMS/DRM ---
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_PANFROST=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y
+BR2_PACKAGE_LIBDRM=y
+BR2_PACKAGE_SDL2=y
+BR2_PACKAGE_SDL2_KMSDRM=y
+BR2_PACKAGE_SDL2_OPENGLES=y
+BR2_PACKAGE_SDL2_TTF=y
+BR2_PACKAGE_SDL2_IMAGE=y
+
+# --- Audio ---
+BR2_PACKAGE_ALSA_LIB=y
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_AMIXER=y
+
+# --- Input / system utilities ---
+BR2_PACKAGE_EUDEV=y
+BR2_PACKAGE_PARTED=y
+BR2_PACKAGE_EXFATPROGS=y
+BR2_PACKAGE_EVTEST=y
+BR2_PACKAGE_LINUX_FIRMWARE=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX=y
+
+# --- gameOS components ---
+BR2_PACKAGE_GAMEOS_INPUTD=y
+BR2_PACKAGE_GAMEOS_UI=y
+BR2_PACKAGE_GAMEOS_RETROARCH=y
+BR2_PACKAGE_GAMEOS_CORE_MELONDS=y
+BR2_PACKAGE_GAMEOS_CORE_MGBA=y
+BR2_PACKAGE_GAMEOS_CORE_PCSX=y
+BR2_PACKAGE_GAMEOS_PPSSPP=y
+
+# --- Root filesystem ---
+BR2_TARGET_ROOTFS_EXT2=y
+BR2_TARGET_ROOTFS_EXT2_4=y
+BR2_TARGET_ROOTFS_EXT2_SIZE="1200M"
+BR2_TARGET_ROOTFS_EXT2_LABEL="GAMEOS-ROOT"
+
+# --- Host tools for image assembly ---
+BR2_PACKAGE_HOST_GENIMAGE=y
+BR2_PACKAGE_HOST_UBOOT_TOOLS=y
+BR2_PACKAGE_HOST_DOSFSTOOLS=y
+BR2_PACKAGE_HOST_MTOOLS=y

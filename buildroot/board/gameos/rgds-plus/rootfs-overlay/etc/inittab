@@ -1,0 +1,5 @@
+# gameOS inittab — appliance-style boot, no login console.
+::sysinit:/etc/init.d/rcS
+::respawn:/usr/bin/gameos-session
+::ctrlaltdel:/sbin/reboot
+::shutdown:/etc/init.d/rcK
