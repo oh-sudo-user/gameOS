@@ -60,6 +60,12 @@ BR2_TARGET_UBOOT_NEEDS_PYLIBFDT=y
 BR2_TARGET_UBOOT_NEEDS_PYELFTOOLS=y
 BR2_TARGET_UBOOT_NEEDS_OPENSSL=y
 BR2_TARGET_UBOOT_NEEDS_ROCKCHIP_RKBIN=y
+# RK3568 with SPL selects CONFIG_BINMAN: u-boot.itb / idbloader.img /
+# u-boot-rockchip.bin are produced by binman during 'make all', NOT as
+# standalone make targets. USE_BINMAN tells Buildroot to stop requesting
+# 'u-boot.itb' explicitly (run 6: "No rule to make target 'u-boot.itb'")
+# and to pass BINMAN_INDIRS so binman finds the rkbin blobs.
+BR2_TARGET_UBOOT_USE_BINMAN=y
 BR2_TARGET_UBOOT_SPL=y
 BR2_TARGET_UBOOT_FORMAT_ITB=y
 
