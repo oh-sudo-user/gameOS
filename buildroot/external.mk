@@ -42,5 +42,8 @@ define GAMEOS_LINUX_INSTALL_DTS
 	      $(@D)/drivers/gpu/drm/panel/
 	grep -q 'panel-generic-dsi.o' $(@D)/drivers/gpu/drm/panel/Makefile || \
 	      echo 'obj-y += panel-generic-dsi.o' >> $(@D)/drivers/gpu/drm/panel/Makefile
+	grep -q 'rk3568-anbernic-rg-ds-plus.dtb' $(@D)/arch/arm64/boot/dts/rockchip/Makefile || \
+	      printf 'dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-anbernic-rg-ds-plus.dtb\n' \
+	      >> $(@D)/arch/arm64/boot/dts/rockchip/Makefile
 endef
 LINUX_POST_PATCH_HOOKS += GAMEOS_LINUX_INSTALL_DTS

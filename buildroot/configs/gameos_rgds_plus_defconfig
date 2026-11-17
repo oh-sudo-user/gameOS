@@ -45,6 +45,9 @@ BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/linux.config"
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/linux-fragment.config"
 BR2_LINUX_KERNEL_IMAGE=y
+# DTS_SUPPORT gates INTREE_DTS_NAME: without it olddefconfig silently
+# drops the DTS list, no DTBs are installed, and the board never boots.
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
 BR2_LINUX_KERNEL_INTREE_DTS_NAME="rockchip/rk3568-anbernic-rg-ds-plus rockchip/rk3568-anbernic-rg-ds"
 BR2_LINUX_KERNEL_INSTALL_TARGET=y
 

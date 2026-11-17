@@ -43,8 +43,13 @@ define GAMEOS_RETROARCH_CONFIGURE_CMDS
 		--enable-freetype
 endef
 
+# Do NOT pass TARGET_CONFIGURE_OPTS on the make command line here:
+# RetroArch's Makefile includes config.mk (written by configure with
+# all include paths/flags) and then appends via 'CFLAGS +='. A
+# command-line CFLAGS would override all of that. configure already
+# received our flags through the environment above.
 define GAMEOS_RETROARCH_BUILD_CMDS
-	$(TARGET_MAKE_ENV) $(MAKE) $(TARGET_CONFIGURE_OPTS) -C $(@D)
+	$(TARGET_MAKE_ENV) $(MAKE) -C $(@D)
 endef
 
 define GAMEOS_RETROARCH_INSTALL_TARGET_CMDS

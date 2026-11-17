@@ -8,15 +8,22 @@ GAMEOS_CORE_MGBA_VERSION = 0.10.5
 GAMEOS_CORE_MGBA_SITE = $(call github,mgba-emu,mgba,$(GAMEOS_CORE_MGBA_VERSION))
 GAMEOS_CORE_MGBA_LICENSE = MPL-2.0
 GAMEOS_CORE_MGBA_LICENSE_FILES = LICENSE
+GAMEOS_CORE_MGBA_INSTALL_STAGING = NO
+GAMEOS_CORE_MGBA_INSTALL_TARGET = NO
 
-define GAMEOS_CORE_MGBA_BUILD_CMDS
-	$(TARGET_MAKE_ENV) $(MAKE) $(TARGET_CONFIGURE_OPTS) \
-		-C $(@D)/src/platform/libretro
-endef
+# mGBA 0.10.5 has NO Makefile in src/platform/libretro — the core is a
+# CMake target. LIBMGBA_ONLY builds the minimal static core with no
+# external dependencies (bundled sources), exactly what a libretro
+# core needs; BUILD_LIBRETRO then produces mgba_libretro.so.
+GAMEOS_CORE_MGBA_CONF_OPTS = \
+	-DLIBMGBA_ONLY=ON \
+	-DBUILD_LIBRETRO=ON \
+	-DM_CORE_GBA=ON \
+	-DM_CORE_GB=ON
 
 define GAMEOS_CORE_MGBA_INSTALL_TARGET_CMDS
-	$(INSTALL) -D -m 0755 $(@D)/src/platform/libretro/mgba_libretro.so \
+	$(INSTALL) -D -m 0755 $(@D)/buildroot-build/mgba_libretro.so \
 		$(TARGET_DIR)/usr/lib/libretro/mgba_libretro.so
 endef
 
-$(eval $(generic-package))
+$(eval $(cmake-package))

@@ -11,8 +11,21 @@ GAMEOS_CORE_MELONDS_LICENSE_FILES = LICENSE
 
 # ARCH=arm64 enables the aarch64 JIT recompiler.
 # HAVE_WIFI=0 drops the libpcap dependency (local play only).
+#
+# IMPORTANT: the libretro Makefile appends its own include paths and
+# -D__LIBRETRO__ via 'CFLAGS +='. Passing CFLAGS on the make COMMAND
+# LINE (as TARGET_CONFIGURE_OPTS does) overrides those appends and the
+# build fails on missing headers. Pass our flags through the
+# ENVIRONMENT instead (makefile '+=' then appends to them) and only the
+# toolchain binaries on the command line. LD must be the C compiler
+# driver so the shared core links against libgcc/libc correctly.
 define GAMEOS_CORE_MELONDS_BUILD_CMDS
-	$(TARGET_MAKE_ENV) $(MAKE) $(TARGET_CONFIGURE_OPTS) -C $(@D) \
+	$(TARGET_MAKE_ENV) \
+	CFLAGS="$(TARGET_CFLAGS)" \
+	CXXFLAGS="$(TARGET_CXXFLAGS)" \
+	LDFLAGS="$(TARGET_LDFLAGS)" \
+	$(MAKE) -C $(@D) \
+		CC="$(TARGET_CC)" CXX="$(TARGET_CXX)" LD="$(TARGET_CC)" \
 		platform=unix ARCH=arm64 HAVE_WIFI=0 HAVE_NEON=1
 endef
 
