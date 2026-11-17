@@ -16,7 +16,11 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_TOOLCHAIN_BUILDROOT_VENDOR="gameos"
 BR2_ENABLE_LOCALE=y
 BR2_USE_WCHAR=y
-BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12=y
+# Fixed 6.12 LTS headers (older than the 7.2.11 kernel we run, which
+# is the supported direction). The old CUSTOM_6_12 line only declared
+# a series while the source defaulted to "same as kernel" (7.2.x),
+# failing the strict headers check.
+BR2_KERNEL_HEADERS_6_12=y
 
 # --- System ---
 # eudev is mandatory: 99-gameos-input.rules hides the raw gpio-keys /
