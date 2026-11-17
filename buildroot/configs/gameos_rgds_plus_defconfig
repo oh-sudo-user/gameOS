@@ -18,6 +18,9 @@ BR2_USE_WCHAR=y
 BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12=y
 
 # --- System ---
+# eudev is mandatory: 99-gameos-input.rules hides the raw gpio-keys /
+# adc-joystick devices so RetroArch/PPSSPP only see inputd's merged pad.
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 BR2_TARGET_GENERIC_HOSTNAME="gameos"
 BR2_TARGET_GENERIC_ISSUE="gameOS"
 BR2_TARGET_GENERIC_GETTY=n
