@@ -40,6 +40,10 @@ MTOOLS_SKIP_CHECK=1 "$HOST_DIR/bin/mcopy" -s -i "$BINARIES_DIR/boot.vfat" \
   "$BINARIES_DIR/boot-stage/extlinux" ::/
 
 echo "==> gameOS: genimage (GPT: boot + rootfs)"
+# genimage refuses a non-empty tmppath. A previous run interrupted during
+# genimage can leave residue in this project-specific tmp dir, so clear it
+# before each call (genimage normally cleans it on success).
+rm -rf "$BUILD_DIR/genimage.tmp"
 mkdir -p "$BUILD_DIR/genimage.root" "$BUILD_DIR/genimage.tmp"
 "$HOST_DIR/bin/genimage" \
   --config "$BOARD_DIR/genimage.cfg" \

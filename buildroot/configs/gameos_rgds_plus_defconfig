@@ -107,6 +107,10 @@ BR2_PACKAGE_ALSA_UTILS_AMIXER=y
 BR2_PACKAGE_EUDEV=y
 BR2_PACKAGE_PARTED=y
 BR2_PACKAGE_EXFATPROGS=y
+# sgdisk -e relocates the backup GPT to the true end of a larger card before
+# S20gameos creates the data partition (deterministic vs parted auto-fix).
+BR2_PACKAGE_GPTFDISK=y
+BR2_PACKAGE_GPTFDISK_SGDISK=y
 BR2_PACKAGE_EVTEST=y
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y

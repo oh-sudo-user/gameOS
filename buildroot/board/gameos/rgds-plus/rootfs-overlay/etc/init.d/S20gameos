@@ -1,15 +1,42 @@
 #!/bin/sh
 # gameOS system setup: data partition, performance governors, panel driver.
-# Runs after udev (S02udev) so /dev/mmcblk0 and input devices exist.
+# Runs after udev (S02udev) so block devices / by-partlabel symlinks exist.
 
-DEV=/dev/mmcblk0
 LOG=/tmp/gameos-setup.log
-
 log() { echo "[gameos-setup] $*" >> "$LOG"; }
-
 log "start"
 
-# --- wait for the SD card block device -------------------------------------
+# --- locate the boot disk from the ROOT partition (NOT a fixed mmcblk0) -----
+# RG DS Plus: eMMC = mmc0 (sdhci, non-removable), TF slot = mmc1 (sdmmc0).
+# With no eMMC populated the card enumerates as /dev/mmcblk1, so hardcoding
+# mmcblk0 would wait on the wrong disk and never create/mount the data
+# partition. The kernel boots via root=PARTLABEL=GAMEOS-ROOT; derive the
+# parent disk from whatever device actually holds root.
+DEV=""
+root_src=$(awk '$2 == "/" { print $1; exit }' /proc/self/mounts 2>/dev/null)
+case "$root_src" in
+  /dev/mmcblk*p[0-9]*) DEV=${root_src%p[0-9]*} ;;
+  /dev/nvme*p[0-9]*)   DEV=${root_src%p[0-9]*} ;;
+  /dev/sd*[0-9]*)      DEV=${root_src%[0-9]*} ;;
+  /dev/hd*[0-9]*)      DEV=${root_src%[0-9]*} ;;
+esac
+# Fallback: resolve the GPT partlabel symlink (udev) when /proc/mounts shows
+# root as /dev/root or a label rather than a usable partition node.
+if [ -z "$DEV" ] || [ ! -b "$DEV" ]; then
+  rp=$(readlink -f /dev/disk/by-partlabel/GAMEOS-ROOT 2>/dev/null)
+  case "$rp" in
+    /dev/mmcblk*p[0-9]*) DEV=${rp%p[0-9]*} ;;
+    /dev/nvme*p[0-9]*)   DEV=${rp%p[0-9]*} ;;
+    /dev/sd*[0-9]*)      DEV=${rp%[0-9]*} ;;
+  esac
+fi
+if [ -z "$DEV" ] || [ ! -b "$DEV" ]; then
+  log "ERROR: cannot determine boot disk (root_src='$root_src'); skipping data setup"
+  exit 0
+fi
+log "boot disk = $DEV (root source '$root_src')"
+
+# --- wait for the disk node (already present since we booted from it) ------
 i=0
 while [ ! -b "$DEV" ] && [ $i -lt 100 ]; do
   sleep 0.1
@@ -35,9 +62,21 @@ if [ -f /etc/gameos-firstboot ]; then
     # Create p3 only when the partition node is absent; otherwise reformat it.
     if [ ! -b ${DEV}p3 ]; then
       log "creating GAMEOS-DATA partition (p3 type: ${fstype:-none})"
+      # The flashed image is only ~1.5 GiB, so on a larger card the backup
+      # GPT header still sits at the end of the SMALL image. Relocate it to
+      # the true end of the disk FIRST (sgdisk -e) so "mkpart ... 100%" is
+      # deterministic instead of relying on parted's version-specific
+      # auto-fix behavior.
+      if command -v sgdisk >/dev/null 2>&1; then
+        sgdisk -e "$DEV" >>"$LOG" 2>&1 \
+          || log "WARN: sgdisk -e (relocate backup GPT) failed"
+        blockdev --rereadpt "$DEV" 2>/dev/null || true
+      else
+        log "WARN: sgdisk missing; relying on parted to fix the GPT"
+      fi
       # p1 ends at 272MiB, p2 (1200MiB) ends at 1472MiB; start data at 1536MiB
       parted -s "$DEV" mkpart GAMEOS-DATA exfat 1536MiB 100% >>"$LOG" 2>&1 \
-        || log "ERROR: parted failed"
+        || log "ERROR: parted mkpart failed"
       # give the kernel a moment to re-read the partition table
       sleep 1
       blockdev --rereadpt "$DEV" 2>/dev/null || true

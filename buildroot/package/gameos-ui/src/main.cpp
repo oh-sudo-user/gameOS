@@ -80,6 +80,32 @@ struct App {
 App app;
 
 // ---------------------------------------------------------------------------
+// per-console game list cache
+// ---------------------------------------------------------------------------
+// draw_home() runs every frame (~60 fps). Scanning the ROM tree each time
+// would hammer the SD card and burn CPU, so scan once per console and reuse
+// the result until invalidated (entering a console, returning from an
+// emulator, or an explicit refresh).
+static std::vector<Game> g_games_cache[5];
+static bool g_games_valid[5] = { false, false, false, false, false };
+
+static const std::vector<Game>& games_for(int idx)
+{
+    static const std::vector<Game> empty;
+    if (idx < 0 || idx >= 5) return empty;
+    if (!g_games_valid[idx]) {
+        g_games_cache[idx] = scan_games(consoles()[idx]);
+        g_games_valid[idx] = true;
+    }
+    return g_games_cache[idx];
+}
+
+static void invalidate_games(int idx)
+{
+    if (idx >= 0 && idx < 5) g_games_valid[idx] = false;
+}
+
+// ---------------------------------------------------------------------------
 // drawing helpers
 // ---------------------------------------------------------------------------
 void fill_rect(SDL_Renderer* r, int x, int y, int w, int h, SDL_Color c)
@@ -378,7 +404,7 @@ void draw_home(SDL_Renderer* r)
     if (app.carousel < 5) {
         const Console& c = cons[app.carousel];
         name = c.name_cn;
-        auto games = scan_games(c);
+        const auto& games = games_for(app.carousel);
         char b[64];
         snprintf(b, sizeof(b), "%s · %zu 个游戏", c.name_en, games.size());
         sub = b;
@@ -441,7 +467,7 @@ void draw_list(SDL_Renderer* r)
             fill_rect(r, W - 14, bary, 4, barh, C_ACCENT);
         }
     }
-    draw_hint(r, "↑ ↓ 选择    Ⓐ 启动游戏    Ⓑ 返回");
+    draw_hint(r, "↑ ↓ 选择   Ⓐ 启动   Ⓑ 返回   Ⓨ 刷新");
 }
 
 void draw_settings(SDL_Renderer* r)
@@ -561,10 +587,23 @@ void enter_selection()
                  "需要 bios7.bin、bios9.bin、firmware.bin 三个文件。");
         return;
     }
-    app.games = scan_games(c);
+    invalidate_games(app.carousel);   // entering a console: force a fresh scan
+    app.games = games_for(app.carousel);
     app.sel = 0;
     app.scroll = 0;
     app.screen = Screen::List;
+}
+
+// Explicit refresh (Y button / R key): rescan the current console. On the
+// list screen update app.games immediately; on home the next draw_home picks
+// up the invalidated cache.
+static void refresh_games()
+{
+    invalidate_games(app.carousel);
+    if (app.screen == Screen::List) {
+        app.games = games_for(app.carousel);
+        app.sel = std::clamp(app.sel, 0, std::max(0, (int)app.games.size() - 1));
+    }
 }
 
 void do_launch()
@@ -587,6 +626,12 @@ void do_launch()
         show_msg("无法启动模拟器", "模拟器程序缺失或损坏，请重新刷写系统。");
     else if (rc != 0)
         fprintf(stderr, "gameos-ui: emulator exited with %d\n", rc);
+
+    // Back from the emulator: refresh the cached list and keep selection in
+    // range (a ROM may have been added/removed, saves/screenshots changed).
+    invalidate_games(app.carousel);
+    app.games = games_for(app.carousel);
+    app.sel = std::clamp(app.sel, 0, std::max(0, (int)app.games.size() - 1));
 }
 
 void go_back()
@@ -682,6 +727,7 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_B: confirm_btn(); break;   // physical A (right)
     case SDL_CONTROLLER_BUTTON_A: go_back(); break;       // physical B (bottom)
     case SDL_CONTROLLER_BUTTON_START: start_btn(); break;
+    case SDL_CONTROLLER_BUTTON_X: refresh_games(); break;  // physical Y (top)
     case SDL_CONTROLLER_BUTTON_BACK:
         if (app.screen != Screen::Confirm) app.screen = Screen::Home;
         break;
@@ -700,6 +746,7 @@ void handle_key(SDL_KeyboardEvent& k)
     case SDLK_RETURN: case SDLK_z: confirm_btn(); break;
     case SDLK_ESCAPE: case SDLK_x: go_back(); break;
     case SDLK_s: start_btn(); break;
+    case SDLK_r: refresh_games(); break;
     case SDLK_UP:    navigate(0, -1); break;
     case SDLK_DOWN:  navigate(0, 1); break;
     case SDLK_LEFT:  navigate(-1, 0); break;
