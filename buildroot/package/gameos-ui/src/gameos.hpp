@@ -44,12 +44,29 @@ struct Settings {
     int brightness = 70;
     int volume = 70;
     int last_console = 0;
+    int theme = 0;
 };
 
 Settings load_settings();
 void save_settings(const Settings& s);
 void apply_brightness(int pct);
 void apply_volume(int pct);
+
+// Favorites (persisted across sessions), keyed "<system>/<title>".
+bool fav_contains(const std::string& sys, const std::string& title);
+void fav_toggle(const std::string& sys, const std::string& title);
+
+// Save-state / save-file management under /userdata/saves.
+struct SaveEntry {
+    std::string path;
+    std::string name;
+    long size = 0;
+};
+std::vector<SaveEntry> scan_saves();
+bool delete_save(const std::string& path);
+
+// Box-art path for a game, or "" if the user supplied no cover.
+std::string cover_path(const std::string& sys, const std::string& title);
 
 int battery_percent();      // -1 = unknown
 bool battery_charging();

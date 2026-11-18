@@ -1,0 +1,18 @@
+#!/bin/sh
+# Load firmware-dependent modules once the rootfs (and /lib/firmware) is
+# reachable. cfg80211/mac80211 and aw88166 are modules (linux-fragment.config)
+# to avoid early firmware-loader boot stalls. BT stays unloaded (chip
+# unpowered) until the Bluetooth stack explicitly enables it.
+case "$1" in
+    start)
+        modprobe rtw88_8821cs 2>/dev/null
+        modprobe snd-soc-aw88166 2>/dev/null
+        ;;
+    stop)
+        rmmod rtw88_8821cs 2>/dev/null
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,75 @@
+#!/bin/sh
+# Route the ALSA default device and pin 48 kHz on both streams.
+#
+# The aw88166 speaker amps consume 48 kHz whatever the I2S rate is (44.1 kHz
+# material plays ~9% fast and pitched up), so playback is always opened at
+# 48 kHz and plug resamples. Capture is pinned to the same rate because
+# playback and capture share one I2S DAI that rockchip-i2s-tdm marks
+# symmetric_rate: a 44.1 kHz microphone open next to 48 kHz playback is
+# refused outright. route_policy copy keeps a mono recorder on the left
+# channel (the mic) instead of plug's L/R average, which can cancel a
+# differential input to silence.
+#
+# Cards are found by name, not index: probe order swaps rk817 (jack) and
+# aw88166 (speakers) between boots. Headphone jack state is polled so the
+# route follows the plug; a running emulator re-reads ALSA on next launch.
+
+PIDFILE=/var/run/gameos-audio.pid
+
+route_once()
+{
+    [ -r /proc/asound/cards ] || return 0
+    spk=$(awk 'tolower($0) ~ /aw88166/ { print $1; exit }' /proc/asound/cards)
+    codec=$(awk 'tolower($0) ~ /rk817/ { print $1; exit }' /proc/asound/cards)
+    [ -n "$spk" ] || [ -n "$codec" ] || return 0
+    [ -n "$codec" ] || codec=$spk
+
+    jack=off
+    if [ -n "$codec" ]; then
+        j=$(amixer -c "$codec" cget name='Headphone Jack' 2>/dev/null \
+            | awk -F= '/: values=/ { print $2; exit }')
+        [ "$j" = "on" ] && jack=on
+    fi
+
+    if [ "$jack" = "on" ]; then play=$codec; else play=${spk:-$codec}; fi
+
+    cap='"null"'
+    [ -n "$codec" ] && cap="{ type plug route_policy copy slave { pcm \"hw:$codec\" format S16_LE channels 2 rate 48000 } }"
+
+    tmp=/etc/asound.conf.tmp
+    {
+        echo "# gameos-audio: play=$play jack=$jack"
+        echo "pcm.!default {"
+        echo "    type asym"
+        echo "    playback.pcm { type plug slave { pcm \"hw:$play\" format S16_LE channels 2 rate 48000 } }"
+        echo "    capture.pcm $cap"
+        echo "}"
+        echo "ctl.!default { type hw card $play }"
+    } > "$tmp"
+    if cmp -s "$tmp" /etc/asound.conf; then
+        rm -f "$tmp"
+    else
+        mv -f "$tmp" /etc/asound.conf
+    fi
+}
+
+case "$1" in
+    start)
+        route_once
+        (
+            while :; do
+                sleep 2
+                route_once
+            done
+        ) &
+        echo $! > "$PIDFILE"
+        ;;
+    stop)
+        [ -r "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac

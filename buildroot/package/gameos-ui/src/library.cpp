@@ -6,9 +6,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <sys/stat.h>
 
@@ -108,6 +110,66 @@ static int ext_rank(const std::string& name)
     return 20; // single-file roms (.nds/.gba/.gbc/...)
 }
 
+// Collapse "/./" and "/../" segments so a descriptor's relative references
+// compare equal to the paths produced by scan_dir.
+static std::string norm_path(const std::string& p)
+{
+    std::vector<std::string> parts;
+    std::istringstream ss(p);
+    std::string seg;
+    while (std::getline(ss, seg, '/')) {
+        if (seg.empty() || seg == ".") continue;
+        if (seg == "..") { if (!parts.empty()) parts.pop_back(); continue; }
+        parts.push_back(seg);
+    }
+    std::string out;
+    for (const auto& s : parts) out += "/" + s;
+    return out;
+}
+
+static std::string lower_ext(const std::string& name)
+{
+    auto dot = name.find_last_of('.');
+    if (dot == std::string::npos) return {};
+    std::string ext = name.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext;
+}
+
+// A .m3u playlist / .cue sheet names the disc or track files it launches.
+// Those payloads are one game with the descriptor, not separate entries —
+// hide them even when their stem differs (Multi.m3u -> "Multi (Disc 1).cue").
+static void collect_hidden(const std::vector<Game>& games, std::set<std::string>& hidden)
+{
+    for (const auto& g : games) {
+        std::string ext = lower_ext(g.path);
+        if (ext != ".m3u" && ext != ".cue") continue;
+        std::string dir = g.path.substr(0, g.path.find_last_of('/'));
+        std::ifstream f(g.path);
+        std::string line;
+        while (std::getline(f, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+                line.pop_back();
+            size_t beg = line.find_first_not_of(" \t");
+            if (beg == std::string::npos) continue;
+            line = line.substr(beg);
+            std::string ref;
+            if (ext == ".m3u") {
+                if (line[0] == '#') continue;
+                ref = line;
+            } else {
+                if (strncasecmp(line.c_str(), "FILE ", 5) != 0) continue;
+                auto q1 = line.find('"');
+                auto q2 = (q1 == std::string::npos) ? std::string::npos : line.find('"', q1 + 1);
+                if (q2 == std::string::npos) continue;
+                ref = line.substr(q1 + 1, q2 - q1 - 1);
+            }
+            if (ref.empty()) continue;
+            hidden.insert(norm_path(dir + "/" + ref));
+        }
+    }
+}
+
 // Recursive walk with a depth cap. lstat (not stat) so symlinked directories
 // are never followed — avoids loops; the exFAT rom partition has no symlinks
 // anyway. Subfolders let users organise roms by genre/series.
@@ -144,6 +206,13 @@ std::vector<Game> scan_games(const Console& c)
     std::vector<Game> out;
     std::string dir = std::string("/userdata/roms/") + c.id;
     scan_dir(dir, c, 0, out);
+
+    std::set<std::string> hidden;
+    collect_hidden(out, hidden);
+    if (!hidden.empty())
+        out.erase(std::remove_if(out.begin(), out.end(),
+                  [&](const Game& g) { return hidden.count(g.path) > 0; }),
+                  out.end());
 
     // Group by stem, best extension first, then keep the first of each stem.
     // Sorting by stem (full path) rather than title makes same-image files
@@ -210,6 +279,7 @@ Settings load_settings()
         if (k == "brightness") s.brightness = std::clamp(n, 10, 100);
         else if (k == "volume") s.volume = std::clamp(n, 0, 100);
         else if (k == "last_console") s.last_console = std::clamp(n, 0, 4);
+        else if (k == "theme") s.theme = std::clamp(n, 0, 3);
     }
     return s;
 }
@@ -219,7 +289,8 @@ void save_settings(const Settings& s)
     std::ostringstream ss;
     ss << "brightness=" << s.brightness << "\n"
        << "volume=" << s.volume << "\n"
-       << "last_console=" << s.last_console << "\n";
+       << "last_console=" << s.last_console << "\n"
+       << "theme=" << s.theme << "\n";
     write_file(SETTINGS_PATH, ss.str());
 }
 
@@ -246,14 +317,95 @@ void apply_brightness(int pct)
 void apply_volume(int pct)
 {
     pct = std::clamp(pct, 0, 100);
-    // rk817 headphone exposes "Master"; aw88166 speakers expose "PCM".
-    // Card probe order can swap 0/1, so fall back Master->PCM per card.
-    char cmd[384];
+    // rk817 headphone exposes "Master"; aw88166 speakers expose "PCM" or
+    // "Left PCM"/"Right PCM" (attenuation, no dB scale). Card probe order can
+    // swap 0/1, so fall back Master->PCM->Left/Right PCM per card.
+    char cmd[640];
     snprintf(cmd, sizeof(cmd),
-             "amixer -c 0 sset Master %d%% >/dev/null 2>&1 || amixer -c 0 sset PCM %d%% >/dev/null 2>&1; "
-             "amixer -c 1 sset Master %d%% >/dev/null 2>&1 || amixer -c 1 sset PCM %d%% >/dev/null 2>&1",
-             pct, pct, pct, pct);
+             "amixer -c 0 sset Master %d%% >/dev/null 2>&1 || amixer -c 0 sset PCM %d%% >/dev/null 2>&1 || "
+             "{ amixer -c 0 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 0 sset 'Right PCM' %d%% >/dev/null 2>&1; }; "
+             "amixer -c 1 sset Master %d%% >/dev/null 2>&1 || amixer -c 1 sset PCM %d%% >/dev/null 2>&1 || "
+             "{ amixer -c 1 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 1 sset 'Right PCM' %d%% >/dev/null 2>&1; }",
+             pct, pct, pct, pct, pct, pct, pct, pct);
     if (system(cmd) != 0) { /* ignore */ }
+}
+
+// ---------------------------------------------------------------------------
+// Favorites / saves / covers
+// ---------------------------------------------------------------------------
+static const char* FAV_PATH = "/userdata/system/favorites.ini";
+
+static std::set<std::string>& fav_set()
+{
+    static std::set<std::string> s;
+    static bool loaded = false;
+    if (!loaded) {
+        std::ifstream f(FAV_PATH);
+        std::string line;
+        while (std::getline(f, line))
+            if (!line.empty()) s.insert(line);
+        loaded = true;
+    }
+    return s;
+}
+
+static void fav_flush()
+{
+    std::ostringstream ss;
+    for (const auto& k : fav_set()) ss << k << "\n";
+    write_file(FAV_PATH, ss.str());
+}
+
+bool fav_contains(const std::string& sys, const std::string& title)
+{
+    return fav_set().count(sys + "/" + title) > 0;
+}
+
+void fav_toggle(const std::string& sys, const std::string& title)
+{
+    auto& s = fav_set();
+    std::string k = sys + "/" + title;
+    if (s.count(k)) s.erase(k); else s.insert(k);
+    fav_flush();
+}
+
+std::vector<SaveEntry> scan_saves()
+{
+    std::vector<SaveEntry> out;
+    DIR* d = opendir("/userdata/saves");
+    if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        std::string name = e->d_name;
+        if (name.empty() || name[0] == '.') continue;
+        std::string full = std::string("/userdata/saves/") + name;
+        struct stat st;
+        if (stat(full.c_str(), &st) < 0 || !S_ISREG(st.st_mode)) continue;
+        SaveEntry se;
+        se.path = full;
+        se.name = name;
+        se.size = (long)st.st_size;
+        out.push_back(std::move(se));
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end(),
+              [](const SaveEntry& a, const SaveEntry& b) { return a.name < b.name; });
+    return out;
+}
+
+bool delete_save(const std::string& path)
+{
+    return std::remove(path.c_str()) == 0;
+}
+
+std::string cover_path(const std::string& sys, const std::string& title)
+{
+    for (const char* ext : { ".png", ".jpg" }) {
+        std::string p = "/userdata/covers/" + sys + "/" + title + ext;
+        struct stat st;
+        if (stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return p;
+    }
+    return {};
 }
 
 // ---------------------------------------------------------------------------

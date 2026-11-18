@@ -37,8 +37,8 @@ const SDL_Color C_BG     = {  11,  16,  32, 255 };
 const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
 
-enum class Screen { Home, List, Settings, Msg, Confirm };
-enum class ConfirmAct { None, PowerOff, Reboot };
+enum class Screen { Home, List, Settings, Saves, Msg, Confirm };
+enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave };
 
 struct App {
     SDL_Window*   win_top = nullptr;
@@ -66,6 +66,11 @@ struct App {
     int sel = 0;
     int scroll = 0;
     int set_sel = 0;
+    bool fav_only = false;
+    std::vector<SaveEntry> saves;
+    int save_sel = 0;
+    int save_scroll = 0;
+    int save_del_idx = -1;
     std::string msg_title, msg_body;
     ConfirmAct confirm = ConfirmAct::None;
 
@@ -340,9 +345,12 @@ bool init_gfx()
     return true;
 }
 
+void clear_cover_cache();   // defined with the cover helpers below
+
 void shutdown_gfx()
 {
     clear_text_cache();  // text textures belong to the renderers destroyed below
+    clear_cover_cache();
     if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
     for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
@@ -398,6 +406,37 @@ void draw_hint(SDL_Renderer* r, const std::string& s)
     text(r, app.f_small, s, W / 2, H - 42, C_DIM, Align::Center);
 }
 
+// Dynamic dual-screen theme: an accent + a low-alpha tint laid over both
+// panels' backgrounds, so the whole device (top UI + bottom ambient) shifts
+// palette together. Persisted via Settings.theme.
+const SDL_Color C_THEMES[4] = {
+    {  53, 208, 186, 255 },   // 默认青
+    { 255, 180,  84, 255 },   // 暖橙
+    { 167, 139, 250, 255 },   // 幻紫
+    { 105, 220, 140, 255 },   // 翠绿
+};
+const char* THEME_NAMES[4] = { "默认青", "暖橙", "幻紫", "翠绿" };
+SDL_Color g_accent = C_THEMES[0];
+
+// Bounded box-art cache (covers belong to a renderer; cleared on shutdown).
+std::map<std::string, SDL_Texture*> g_cover_cache;
+void clear_cover_cache()
+{
+    for (auto& kv : g_cover_cache) SDL_DestroyTexture(kv.second);
+    g_cover_cache.clear();
+}
+SDL_Texture* cover_tex(SDL_Renderer* r, const std::string& path)
+{
+    if (path.empty()) return nullptr;
+    auto it = g_cover_cache.find(path);
+    if (it != g_cover_cache.end()) return it->second;
+    SDL_Texture* t = load_tex(r, path);
+    if (!t) return nullptr;
+    if (g_cover_cache.size() >= 24) clear_cover_cache();
+    g_cover_cache.emplace(path, t);
+    return t;
+}
+
 void draw_background(SDL_Renderer* r)
 {
     if (app.bg) {
@@ -405,8 +444,10 @@ void draw_background(SDL_Renderer* r)
         draw_tex(r, app.bg, dst);
     } else {
         fill_rect(r, 0, 0, W, H, C_BG);
-        fill_rect(r, 0, 0, W, 6, C_ACCENT);
+        fill_rect(r, 0, 0, W, 6, g_accent);
     }
+    // subtle theme tint over the top panel
+    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, 14 });
 }
 
 // ---------------------------------------------------------------------------
@@ -474,19 +515,25 @@ void draw_list(SDL_Renderer* r)
 
     fill_rect(r, 0, 0, W, 96, C_PANEL);
     text(r, app.f_title, c.name_cn, 32, 26, C_TEXT);
-    char b[64];
-    snprintf(b, sizeof(b), "%zu 个游戏", app.games.size());
+    char b[96];
+    snprintf(b, sizeof(b), "%zu 个游戏%s", app.games.size(),
+             app.fav_only ? " · 只看收藏" : "");
     text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, C_ACCENT);
+    fill_rect(r, 0, 96, W, 3, g_accent);
 
     if (app.games.empty()) {
-        text(r, app.f_body, "没有找到游戏", W / 2, 300, C_TEXT, Align::Center);
-        std::string p = std::string("请把游戏文件复制到  /userdata/roms/") + c.id;
+        text(r, app.f_body, app.fav_only ? "没有收藏的游戏" : "没有找到游戏",
+             W / 2, 300, C_TEXT, Align::Center);
+        std::string p = app.fav_only
+            ? "在列表里按 Ⓧ 收藏 / 取消收藏"
+            : std::string("请把游戏文件复制到  /userdata/roms/") + c.id;
         text(r, app.f_small, p, W / 2, 360, C_DIM, Align::Center);
-        text(r, app.f_small, "（把 TF 卡插到电脑上，打开 GAMEOS 盘符即可）",
-             W / 2, 400, C_DIM, Align::Center);
+        if (!app.fav_only)
+            text(r, app.f_small, "（把 TF 卡插到电脑上，打开 GAMEOS 盘符即可）",
+                 W / 2, 400, C_DIM, Align::Center);
     } else {
         const int rowh = 66, top = 116, vis = 9;
+        const int listw = W - 360;   // leave room for the cover panel
         if (app.sel < app.scroll) app.scroll = app.sel;
         if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
         for (int i = 0; i < vis; i++) {
@@ -494,11 +541,14 @@ void draw_list(SDL_Renderer* r)
             if (idx >= (int)app.games.size()) break;
             int y = top + i * rowh;
             if (idx == app.sel) {
-                fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
-                fill_rect(r, 24, y, 5, rowh - 6, C_ACCENT);
+                fill_rect(r, 24, y, listw - 48, rowh - 6, C_PANEL);
+                fill_rect(r, 24, y, 5, rowh - 6, g_accent);
             }
             SDL_Color tc = (idx == app.sel) ? C_TEXT : C_DIM;
-            text(r, app.f_body, app.games[idx].title, 48, y + 14, tc);
+            const Game& g = app.games[idx];
+            std::string label = g.title;
+            if (fav_contains(c.id, g.title)) label = "★ " + label;
+            text(r, app.f_body, label, 48, y + 14, tc);
         }
         // scrollbar
         if ((int)app.games.size() > vis) {
@@ -506,11 +556,24 @@ void draw_list(SDL_Renderer* r)
             int barh = std::max(30, trackh * vis / (int)app.games.size());
             int bary = top + (trackh - barh) * app.scroll /
                        std::max(1, (int)app.games.size() - vis);
-            fill_rect(r, W - 14, top, 4, trackh, { 60, 68, 96, 160 });
-            fill_rect(r, W - 14, bary, 4, barh, C_ACCENT);
+            fill_rect(r, listw - 14, top, 4, trackh, { 60, 68, 96, 160 });
+            fill_rect(r, listw - 14, bary, 4, barh, g_accent);
         }
+        // cover preview for the selected game
+        const Game& g = app.games[app.sel];
+        int px = W - 320, py = 140, pw = 280, ph = 280;
+        fill_rect(r, px - 8, py - 8, pw + 16, ph + 16, C_PANEL);
+        SDL_Texture* cv = cover_tex(r, cover_path(c.id, g.title));
+        if (cv) {
+            SDL_Rect dst = { px, py, pw, ph };
+            draw_tex(r, cv, dst);
+        } else if (app.icons[app.carousel]) {
+            SDL_Rect dst = { px + 40, py + 40, pw - 80, ph - 80 };
+            draw_tex(r, app.icons[app.carousel], dst, 160);
+        }
+        text(r, app.f_small, "封面", px + pw / 2, py + ph + 20, C_DIM, Align::Center);
     }
-    draw_hint(r, "↑ ↓ 选择   Ⓐ 启动   Ⓑ 返回   Ⓨ 刷新");
+    draw_hint(r, "↑↓ 选择  Ⓐ 启动  Ⓑ 返回  Ⓧ 收藏  Ⓨ 刷新  Ⓡ 只看收藏");
 }
 
 void draw_settings(SDL_Renderer* r)
@@ -518,29 +581,70 @@ void draw_settings(SDL_Renderer* r)
     draw_background(r);
     fill_rect(r, 0, 0, W, 96, C_PANEL);
     text(r, app.f_title, "系统设置", 32, 26, C_TEXT);
-    fill_rect(r, 0, 96, W, 3, C_ACCENT);
+    fill_rect(r, 0, 96, W, 3, g_accent);
 
-    const char* rows[] = { "屏幕亮度", "音量", "关机", "重启", "关于 gameOS" };
-    const int rowh = 84, top = 140;
-    for (int i = 0; i < 5; i++) {
+    const char* rows[] = { "屏幕亮度", "音量", "主题", "存档管理", "关机", "重启", "关于 gameOS" };
+    const int rowh = 72, top = 120;
+    for (int i = 0; i < 7; i++) {
         int y = top + i * rowh;
         if (i == app.set_sel) {
             fill_rect(r, 120, y, W - 240, rowh - 10, C_PANEL);
-            fill_rect(r, 120, y, 5, rowh - 10, C_ACCENT);
+            fill_rect(r, 120, y, 5, rowh - 10, g_accent);
         }
         SDL_Color tc = (i == app.set_sel) ? C_TEXT : C_DIM;
-        text(r, app.f_body, rows[i], 150, y + 18, tc);
+        text(r, app.f_body, rows[i], 150, y + 14, tc);
         if (i == 0 || i == 1) {
             int v = (i == 0) ? app.settings.brightness : app.settings.volume;
-            // value bar
-            fill_rect(r, 560, y + 26, 240, 12, { 60, 68, 96, 160 });
-            fill_rect(r, 560, y + 26, 240 * v / 100, 12, C_ACCENT);
+            fill_rect(r, 560, y + 22, 240, 12, { 60, 68, 96, 160 });
+            fill_rect(r, 560, y + 22, 240 * v / 100, 12, g_accent);
             char b[16];
             snprintf(b, sizeof(b), "%d%%", v);
+            text(r, app.f_body, b, 860, y + 10, tc, Align::Right);
+        } else if (i == 2) {
+            text(r, app.f_body, THEME_NAMES[app.settings.theme], 860, y + 14, g_accent, Align::Right);
+        } else if (i == 3) {
+            char b[32];
+            snprintf(b, sizeof(b), "%zu 个", app.saves.size());
             text(r, app.f_body, b, 860, y + 14, tc, Align::Right);
         }
     }
-    draw_hint(r, "↑ ↓ 选择    ← → 调节    Ⓐ 执行    Ⓑ 返回");
+    draw_hint(r, "↑↓ 选择  ←→ 调节/切换  Ⓐ 执行  Ⓑ 返回");
+}
+
+void draw_saves(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    text(r, app.f_title, "存档管理", 32, 26, C_TEXT);
+    char b[64];
+    snprintf(b, sizeof(b), "%zu 个存档", app.saves.size());
+    text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+
+    if (app.saves.empty()) {
+        text(r, app.f_body, "还没有存档", W / 2, 300, C_TEXT, Align::Center);
+        text(r, app.f_small, "游戏里按 SELECT+Ⓛ 快速存档 / SELECT+Ⓡ 读档",
+             W / 2, 360, C_DIM, Align::Center);
+    } else {
+        const int rowh = 60, top = 116, vis = 9;
+        if (app.save_sel < app.save_scroll) app.save_scroll = app.save_sel;
+        if (app.save_sel >= app.save_scroll + vis) app.save_scroll = app.save_sel - vis + 1;
+        for (int i = 0; i < vis; i++) {
+            int idx = app.save_scroll + i;
+            if (idx >= (int)app.saves.size()) break;
+            int y = top + i * rowh;
+            if (idx == app.save_sel) {
+                fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
+                fill_rect(r, 24, y, 5, rowh - 6, g_accent);
+            }
+            SDL_Color tc = (idx == app.save_sel) ? C_TEXT : C_DIM;
+            text(r, app.f_body, app.saves[idx].name, 48, y + 12, tc);
+            char kb[32];
+            snprintf(kb, sizeof(kb), "%ld KB", app.saves[idx].size / 1024);
+            text(r, app.f_small, kb, W - 48, y + 16, C_DIM, Align::Right);
+        }
+    }
+    draw_hint(r, "↑↓ 选择  Ⓐ 删除  Ⓑ 返回");
 }
 
 void draw_msg(SDL_Renderer* r)
@@ -567,7 +671,9 @@ void draw_confirm(SDL_Renderer* r)
     int pw = 640, ph = 300, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, C_RED);
-    const char* t = (app.confirm == ConfirmAct::PowerOff) ? "确认关机？" : "确认重启？";
+    const char* t = (app.confirm == ConfirmAct::PowerOff) ? "确认关机？"
+                  : (app.confirm == ConfirmAct::Reboot) ? "确认重启？"
+                  : "确认删除该存档？";
     text(r, app.f_title, t, W / 2, py + 60, C_TEXT, Align::Center);
     text(r, app.f_body, "Ⓐ 确认        Ⓑ 取消", W / 2, py + 170, C_DIM, Align::Center);
 }
@@ -584,10 +690,12 @@ void draw_ambient()
         draw_tex(r, app.ambient, dst);
     } else {
         fill_rect(r, 0, 0, W, H, C_BG);
-        fill_rect(r, 0, H - 6, W, 6, C_ACCENT);
+        fill_rect(r, 0, H - 6, W, 6, g_accent);
     }
+    // theme tint over the bottom panel (stronger than top for a live feel)
+    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, 26 });
 
-    text(r, app.f_logo, "gameOS", W / 2, 170, C_ACCENT, Align::Center);
+    text(r, app.f_logo, "gameOS", W / 2, 170, g_accent, Align::Center);
 
     time_t now = time(nullptr);
     struct tm tmv;
@@ -614,6 +722,43 @@ void show_msg(const std::string& title, const std::string& body)
     app.screen = Screen::Msg;
 }
 
+// Rebuild the visible list for the current console, honouring the
+// favorites-only filter, and keep the selection in range.
+static void rebuild_list()
+{
+    const Console& c = consoles()[app.carousel];
+    app.games = games_for(app.carousel);
+    if (app.fav_only) {
+        std::vector<Game> f;
+        for (const auto& g : app.games)
+            if (fav_contains(c.id, g.title)) f.push_back(g);
+        app.games = std::move(f);
+    }
+    app.sel = std::clamp(app.sel, 0, std::max(0, (int)app.games.size() - 1));
+    app.scroll = 0;
+}
+
+static void toggle_fav()
+{
+    if (app.screen != Screen::List || app.games.empty()) return;
+    fav_toggle(consoles()[app.carousel].id, app.games[app.sel].title);
+    if (app.fav_only) rebuild_list();
+}
+
+static void toggle_fav_only()
+{
+    if (app.screen != Screen::List) return;
+    app.fav_only = !app.fav_only;
+    rebuild_list();
+}
+
+static void cycle_theme(int dir = 1)
+{
+    app.settings.theme = (app.settings.theme + dir + 4) % 4;
+    g_accent = C_THEMES[app.settings.theme];
+    save_settings(app.settings);
+}
+
 void enter_selection()
 {
     if (app.carousel == 5) {
@@ -631,9 +776,8 @@ void enter_selection()
         return;
     }
     invalidate_games(app.carousel);   // entering a console: force a fresh scan
-    app.games = games_for(app.carousel);
     app.sel = 0;
-    app.scroll = 0;
+    rebuild_list();
     app.screen = Screen::List;
 }
 
@@ -643,10 +787,7 @@ void enter_selection()
 static void refresh_games()
 {
     invalidate_games(app.carousel);
-    if (app.screen == Screen::List) {
-        app.games = games_for(app.carousel);
-        app.sel = std::clamp(app.sel, 0, std::max(0, (int)app.games.size() - 1));
-    }
+    if (app.screen == Screen::List) rebuild_list();
 }
 
 void do_launch()
@@ -673,8 +814,7 @@ void do_launch()
     // Back from the emulator: refresh the cached list and keep selection in
     // range (a ROM may have been added/removed, saves/screenshots changed).
     invalidate_games(app.carousel);
-    app.games = games_for(app.carousel);
-    app.sel = std::clamp(app.sel, 0, std::max(0, (int)app.games.size() - 1));
+    rebuild_list();
 }
 
 void go_back()
@@ -687,9 +827,13 @@ void go_back()
     case Screen::Msg:
         app.screen = Screen::Home;
         break;
-    case Screen::Confirm:
-        app.confirm = ConfirmAct::None;
+    case Screen::Saves:
         app.screen = Screen::Settings;
+        break;
+    case Screen::Confirm:
+        app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
+                                                           : Screen::Settings;
+        app.confirm = ConfirmAct::None;
         break;
     default:
         break;
@@ -706,18 +850,41 @@ void confirm_btn()
         do_launch();
         break;
     case Screen::Settings:
-        if (app.set_sel == 2) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 3) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 4)
+        if (app.set_sel == 2) cycle_theme();
+        else if (app.set_sel == 3) {
+            app.saves = scan_saves();
+            app.save_sel = 0;
+            app.save_scroll = 0;
+            app.screen = Screen::Saves;
+        }
+        else if (app.set_sel == 4) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 5) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 6)
             show_msg("关于 gameOS",
                      "gameOS 1.0\n"
                      "为 Anbernic RG DS Plus 全新打造的开源游戏系统。\n"
                      "NDS · GBA · GBC · PS1 · PSP\n"
                      "github.com/oh-sudo-user/gameOS");
         break;
+    case Screen::Saves:
+        if (!app.saves.empty()) {
+            app.save_del_idx = app.save_sel;
+            app.confirm = ConfirmAct::DeleteSave;
+            app.screen = Screen::Confirm;
+        }
+        break;
     case Screen::Confirm:
-        app.exit_code = (app.confirm == ConfirmAct::PowerOff) ? 90 : 91;
-        app.running = false;
+        if (app.confirm == ConfirmAct::DeleteSave) {
+            if (app.save_del_idx >= 0 && app.save_del_idx < (int)app.saves.size())
+                delete_save(app.saves[app.save_del_idx].path);
+            app.saves = scan_saves();
+            app.save_sel = std::clamp(app.save_sel, 0, std::max(0, (int)app.saves.size() - 1));
+            app.confirm = ConfirmAct::None;
+            app.screen = Screen::Saves;
+        } else {
+            app.exit_code = (app.confirm == ConfirmAct::PowerOff) ? 90 : 91;
+            app.running = false;
+        }
         break;
     default:
         break;
@@ -742,7 +909,7 @@ void navigate(int dx, int dy)
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 4);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 6);
         if (dx) {
             if (app.set_sel == 0) {
                 app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
@@ -752,8 +919,14 @@ void navigate(int dx, int dy)
                 app.settings.volume = std::clamp(app.settings.volume + dx * 5, 0, 100);
                 apply_volume(app.settings.volume);
                 save_settings(app.settings);
+            } else if (app.set_sel == 2) {
+                cycle_theme(dx);
             }
         }
+        break;
+    case Screen::Saves:
+        if (dy && !app.saves.empty())
+            app.save_sel = std::clamp(app.save_sel + dy, 0, (int)app.saves.size() - 1);
         break;
     default:
         break;
@@ -771,6 +944,8 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_A: go_back(); break;       // physical B (bottom)
     case SDL_CONTROLLER_BUTTON_START: start_btn(); break;
     case SDL_CONTROLLER_BUTTON_X: refresh_games(); break;  // physical Y (left)
+    case SDL_CONTROLLER_BUTTON_Y: toggle_fav(); break;     // physical X (top)
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: toggle_fav_only(); break; // physical R
     case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
     case SDL_CONTROLLER_BUTTON_GUIDE:  // physical MENU (BTN_MODE)
         if (app.screen != Screen::Confirm) app.screen = Screen::Home;
@@ -791,6 +966,8 @@ void handle_key(SDL_KeyboardEvent& k)
     case SDLK_ESCAPE: case SDLK_x: go_back(); break;
     case SDLK_s: start_btn(); break;
     case SDLK_r: refresh_games(); break;
+    case SDLK_f: toggle_fav(); break;
+    case SDLK_TAB: toggle_fav_only(); break;
     case SDLK_UP:    navigate(0, -1); break;
     case SDLK_DOWN:  navigate(0, 1); break;
     case SDLK_LEFT:  navigate(-1, 0); break;
@@ -846,6 +1023,8 @@ int main(int, char**)
 
     app.settings = load_settings();
     app.carousel = app.settings.last_console;
+    g_accent = C_THEMES[app.settings.theme];
+    app.saves = scan_saves();
     apply_brightness(app.settings.brightness);
     // Restore the user's saved volume on every startup. S20gameos now only
     // sets a first-boot default, so without this the mixer would stay at the
@@ -889,6 +1068,7 @@ int main(int, char**)
         case Screen::Home:     draw_home(r); break;
         case Screen::List:     draw_list(r); break;
         case Screen::Settings: draw_settings(r); break;
+        case Screen::Saves:    draw_saves(r); break;
         case Screen::Msg:      draw_msg(r); break;
         case Screen::Confirm:  draw_confirm(r); break;
         }

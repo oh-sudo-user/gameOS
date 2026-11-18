@@ -115,6 +115,13 @@ BR2_PACKAGE_EVTEST=y
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX=y
+# RTL8821CS WiFi uses the rtw88 driver (RTL_88XX only covers old rtlwifi
+# chips); its BT half needs rtl_bt/rtl8821cs_fw.bin + config (RTL_88XX_BT).
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_RTW88=y
+BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX_BT=y
+# regulatory.db: without it cfg80211 falls back to the usermode firmware
+# helper and stalls boot ~60s (BananaOS rcS pitfall).
+BR2_PACKAGE_WIRELESS_REGDB=y
 
 # --- gameOS components ---
 BR2_PACKAGE_GAMEOS_INPUTD=y
