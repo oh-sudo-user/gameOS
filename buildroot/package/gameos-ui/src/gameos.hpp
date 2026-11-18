@@ -46,6 +46,7 @@ struct Settings {
     int last_console = 0;
     int theme = 0;
     int bluetooth = 0;   // 1 = stack was on; restored at session start
+    int language = 0;    // enum Lang (i18n.hpp); 0 = 简体中文
 };
 
 Settings load_settings();

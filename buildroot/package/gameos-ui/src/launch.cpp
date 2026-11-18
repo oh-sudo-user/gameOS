@@ -6,18 +6,63 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gameos.hpp"
+#include "i18n.hpp"
 
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace gameos {
 
+// PPSSPP keeps its menu language in [General] Language of ppsspp.ini
+// (locale string, e.g. "zh_CN"). Patch the key in place so the emulator
+// menu follows the system language; create a minimal ini on first run.
+static void apply_ppsspp_language()
+{
+    const std::string dir = "/userdata/system/ppsspp/.config/ppsspp/PSP/SYSTEM";
+    const std::string path = dir + "/ppsspp.ini";
+    const std::string val = std::string("Language = ") + ppsspp_locale();
+    if (system(("mkdir -p " + dir).c_str()) != 0) return;
+
+    std::istringstream ss(read_file(path));
+    std::ostringstream out;
+    std::string line;
+    bool in_general = false, have_general = false, done = false;
+    while (std::getline(ss, line)) {
+        std::string t = line;
+        size_t b = t.find_first_not_of(" \t\r");
+        std::string trimmed = (b == std::string::npos) ? "" : t.substr(b);
+        if (!trimmed.empty() && trimmed[0] == '[') {
+            if (in_general && !done) { out << val << "\n"; done = true; }
+            in_general = (trimmed.compare(0, 9, "[General]") == 0);
+            if (in_general) have_general = true;
+        } else if (in_general && !done &&
+                   trimmed.compare(0, 8, "Language") == 0 &&
+                   trimmed.size() > 8 &&
+                   (trimmed[8] == ' ' || trimmed[8] == '\t' || trimmed[8] == '=')) {
+            out << val << "\n";
+            done = true;
+            continue;
+        }
+        out << line << "\n";
+    }
+    if (in_general && !done) { out << val << "\n"; done = true; }
+    if (!have_general) out << "[General]\n" << val << "\n";
+    write_file(path, out.str());
+}
+
 int launch_game(const Console& c, const Game& g)
 {
+    // Localise emulator menus to the system language before forking.
+    // RetroArch: an extra appendconfig (applied last) sets user_language.
+    write_file("/tmp/gameos-ra-lang.cfg",
+               "user_language = " + std::to_string(retro_language()) + "\n");
+    apply_ppsspp_language();
+
     pid_t pid = fork();
     if (pid < 0) return -1;
 
@@ -47,6 +92,7 @@ int launch_game(const Console& c, const Game& g)
             execlp("retroarch", "retroarch",
                    "-L", core.c_str(),
                    "--appendconfig", cfg.c_str(),
+                   "--appendconfig", "/tmp/gameos-ra-lang.cfg",
                    g.path.c_str(), (char*)nullptr);
         } else {
             execlp("ppsspp-run", "ppsspp-run", g.path.c_str(), (char*)nullptr);

@@ -10,6 +10,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gameos.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -309,6 +310,30 @@ void open_controller()
     }
 }
 
+// (Re)load the text fonts for the active language. Korean needs its own
+// font (Noto Sans SC has no Hangul); every other language is covered by
+// Noto Sans SC, including traditional Chinese, kana and Cyrillic.
+void reload_fonts()
+{
+    clear_text_cache();   // cached textures reference the fonts closed below
+    std::string fonts = fonts_dir();
+    std::string noto = fonts +
+        (g_lang == LANG_KO ? "/NotoSansKR-Regular.ttf" : "/NotoSansSC-Regular.otf");
+    for (TTF_Font** f : { &app.f_title, &app.f_body, &app.f_small }) {
+        if (*f) TTF_CloseFont(*f);
+        *f = nullptr;
+    }
+    app.f_title = TTF_OpenFont(noto.c_str(), 40);
+    app.f_body  = TTF_OpenFont(noto.c_str(), 30);
+    app.f_small = TTF_OpenFont(noto.c_str(), 22);
+    if (!app.f_title) {   // missing KR font must not leave the UI fontless
+        noto = fonts + "/NotoSansSC-Regular.otf";
+        app.f_title = TTF_OpenFont(noto.c_str(), 40);
+        app.f_body  = TTF_OpenFont(noto.c_str(), 30);
+        app.f_small = TTF_OpenFont(noto.c_str(), 22);
+    }
+}
+
 bool init_gfx()
 {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
@@ -325,18 +350,15 @@ bool init_gfx()
 
     std::string fonts = fonts_dir();
     std::string assets = assets_dir();
-    std::string noto = fonts + "/NotoSansSC-Regular.otf";
     std::string orbi = fonts + "/Orbitron.ttf";
 
     app.f_logo  = TTF_OpenFont(orbi.c_str(), 52);
     app.f_clock = TTF_OpenFont(orbi.c_str(), 96);
-    app.f_title = TTF_OpenFont(noto.c_str(), 40);
-    app.f_body  = TTF_OpenFont(noto.c_str(), 30);
-    app.f_small = TTF_OpenFont(noto.c_str(), 22);
-    if (!app.f_logo)  app.f_logo  = TTF_OpenFont(noto.c_str(), 48);
-    if (!app.f_clock) app.f_clock = TTF_OpenFont(noto.c_str(), 90);
+    reload_fonts();
+    if (!app.f_logo)  app.f_logo  = TTF_OpenFont((fonts_dir() + "/NotoSansSC-Regular.otf").c_str(), 48);
+    if (!app.f_clock) app.f_clock = TTF_OpenFont((fonts_dir() + "/NotoSansSC-Regular.otf").c_str(), 90);
     if (!app.f_title) {
-        fprintf(stderr, "gameos-ui: cannot open font %s\n", noto.c_str());
+        fprintf(stderr, "gameos-ui: cannot open text fonts in %s\n", fonts.c_str());
         return false;
     }
 
@@ -456,7 +478,6 @@ const SDL_Color C_THEMES[4] = {
     { 167, 139, 250, 255 },   // 幻紫
     { 105, 220, 140, 255 },   // 翠绿
 };
-const char* THEME_NAMES[4] = { "默认青", "暖橙", "幻紫", "翠绿" };
 SDL_Color g_accent = C_THEMES[0];
 
 // Bounded box-art cache (covers belong to a renderer; cleared on shutdown).
@@ -528,14 +549,14 @@ void draw_home(SDL_Renderer* r)
     std::string name, sub;
     if (app.carousel < 5) {
         const Console& c = cons[app.carousel];
-        name = c.name_cn;
+        name = console_name(c.id);
         const auto& games = games_for(app.carousel);
-        char b[64];
-        snprintf(b, sizeof(b), "%s · %zu 个游戏", c.name_en, games.size());
+        char b[128];
+        snprintf(b, sizeof(b), tr(T_GAMES_FMT), c.name_en, games.size());
         sub = b;
     } else {
-        name = "系统设置";
-        sub = "亮度 · 音量 · 电源";
+        name = tr(T_SETTINGS);
+        sub = tr(T_SETTINGS_SUB);
     }
     text(r, app.f_title, name, W / 2, 500, C_TEXT, Align::Center);
     text(r, app.f_small, sub, W / 2, 556, C_DIM, Align::Center);
@@ -546,7 +567,7 @@ void draw_home(SDL_Renderer* r)
         fill_rect(r, W / 2 - total * 12 + i * 24, 610, 10, 10, dc);
     }
 
-    draw_hint(r, "← → 选择    Ⓐ 进入    START 设置");
+    draw_hint(r, tr(T_HOME_HINT));
 }
 
 void draw_list(SDL_Renderer* r)
@@ -555,22 +576,26 @@ void draw_list(SDL_Renderer* r)
     const Console& c = consoles()[app.carousel];
 
     fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, c.name_cn, 32, 26, C_TEXT);
+    text(r, app.f_title, console_name(c.id), 32, 26, C_TEXT);
     char b[96];
-    snprintf(b, sizeof(b), "%zu 个游戏%s", app.games.size(),
-             app.fav_only ? " · 只看收藏" : "");
-    text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
+    snprintf(b, sizeof(b), tr(T_LIST_COUNT_FMT), app.games.size());
+    std::string cnt = b;
+    if (app.fav_only) cnt += tr(T_FAV_SUFFIX);
+    text(r, app.f_body, cnt, W - 32, 34, C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
     if (app.games.empty()) {
-        text(r, app.f_body, app.fav_only ? "没有收藏的游戏" : "没有找到游戏",
+        text(r, app.f_body, app.fav_only ? tr(T_NO_FAV) : tr(T_NO_GAMES),
              W / 2, 300, C_TEXT, Align::Center);
-        std::string p = app.fav_only
-            ? "在列表里按 Ⓧ 收藏 / 取消收藏"
-            : std::string("请把游戏文件复制到  /userdata/roms/") + c.id;
+        char p[256];
+        if (app.fav_only) {
+            snprintf(p, sizeof(p), "%s", tr(T_FAV_HELP));
+        } else {
+            snprintf(p, sizeof(p), tr(T_COPY_ROMS_FMT), c.id);
+        }
         text(r, app.f_small, p, W / 2, 360, C_DIM, Align::Center);
         if (!app.fav_only)
-            text(r, app.f_small, "（把 TF 卡插到电脑上，打开 GAMEOS 盘符即可）",
+            text(r, app.f_small, tr(T_TF_HELP),
                  W / 2, 400, C_DIM, Align::Center);
     } else {
         const int rowh = 66, top = 116, vis = 9;
@@ -612,9 +637,9 @@ void draw_list(SDL_Renderer* r)
             SDL_Rect dst = { px + 40, py + 40, pw - 80, ph - 80 };
             draw_tex(r, app.icons[app.carousel], dst, 160);
         }
-        text(r, app.f_small, "封面", px + pw / 2, py + ph + 20, C_DIM, Align::Center);
+        text(r, app.f_small, tr(T_COVER), px + pw / 2, py + ph + 20, C_DIM, Align::Center);
     }
-    draw_hint(r, "↑↓ 选择  Ⓐ 启动  Ⓑ 返回  Ⓧ 收藏  Ⓨ 刷新  Ⓡ 只看收藏");
+    draw_hint(r, tr(T_LIST_HINT));
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +705,7 @@ void bt_poll()
     if (now - app.bt_op_at > 90000) {   // a stuck op must not lock the screen
         app.bt_busy = false;
         app.bt_op.clear();
-        app.bt_status = "操作超时";
+        app.bt_status = tr(T_BT_TIMEOUT);
         return;
     }
     if (now - app.bt_poll_at < 150) return;
@@ -696,12 +721,12 @@ void bt_poll()
     app.bt_op.clear();
     if (op == "devices" || op == "scan") {
         bt_parse_devs(out);
-        if (op == "scan") app.bt_status = "搜索完成";
+        if (op == "scan") app.bt_status = tr(T_SCAN_DONE);
     } else if (op == "up") {
         app.bt_on = (rc == 0);
         app.settings.bluetooth = app.bt_on ? 1 : 0;
         save_settings(app.settings);
-        app.bt_status = app.bt_on ? "蓝牙已开启" : "开启失败：未找到蓝牙芯片";
+        app.bt_status = app.bt_on ? tr(T_BT_ON_OK) : tr(T_BT_ON_FAIL);
         if (app.bt_on) bt_start("devices");
     } else if (op == "down") {
         app.bt_on = false;
@@ -709,7 +734,7 @@ void bt_poll()
         save_settings(app.settings);
         app.bt_devs.clear();
         app.bt_sel = 0;
-        app.bt_status = "蓝牙已关闭";
+        app.bt_status = tr(T_BT_OFF_OK);
     } else {
         // pair / connect / disconnect / forget: last line "OK" or "ERROR <why>"
         std::string last;
@@ -718,12 +743,12 @@ void bt_poll()
         while (std::getline(ss, line))
             if (!line.empty() && line != "\r") last = line;
         if (rc == 0) {
-            if (op == "pair") app.bt_status = "配对成功";
-            else if (op == "connect") app.bt_status = "已连接";
-            else if (op == "disconnect") app.bt_status = "已断开";
-            else app.bt_status = "已忽略该设备";
+            if (op == "pair") app.bt_status = tr(T_PAIR_OK);
+            else if (op == "connect") app.bt_status = tr(T_CONNECTED);
+            else if (op == "disconnect") app.bt_status = tr(T_DISCONNECTED);
+            else app.bt_status = tr(T_FORGOT);
         } else {
-            app.bt_status = last.empty() ? "操作失败" : last;
+            app.bt_status = last.empty() ? tr(T_OP_FAIL) : last;
         }
         bt_start("devices");
     }
@@ -740,21 +765,21 @@ void bt_enter()
     app.screen = Screen::Bluetooth;
 }
 
-const char* bt_kind_cn(const std::string& k)
+const char* bt_kind_name(const std::string& k)
 {
-    if (k == "audio") return "音频";
-    if (k == "gamepad") return "手柄";
-    if (k == "keyboard") return "键盘";
-    if (k == "mouse") return "鼠标";
-    return "设备";
+    if (k == "audio") return tr(T_KIND_AUDIO);
+    if (k == "gamepad") return tr(T_KIND_PAD);
+    if (k == "keyboard") return tr(T_KIND_KBD);
+    if (k == "mouse") return tr(T_KIND_MOUSE);
+    return tr(T_KIND_DEV);
 }
 
 void draw_bluetooth(SDL_Renderer* r)
 {
     draw_background(r);
     fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, "蓝牙", 32, 26, C_TEXT);
-    text(r, app.f_body, app.bt_on ? "已开启" : "已关闭", W - 32, 34,
+    text(r, app.f_title, tr(T_BT), 32, 26, C_TEXT);
+    text(r, app.f_body, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED), W - 32, 34,
          app.bt_on ? C_GREEN : C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
@@ -763,8 +788,8 @@ void draw_bluetooth(SDL_Renderer* r)
         fill_rect(r, 24, top, W - 48, rowh - 6, C_PANEL);
         fill_rect(r, 24, top, 5, rowh - 6, g_accent);
     }
-    text(r, app.f_body, "蓝牙开关", 48, top + 12, app.bt_sel == 0 ? C_TEXT : C_DIM);
-    text(r, app.f_body, app.bt_on ? "开" : "关", W - 48, top + 12,
+    text(r, app.f_body, tr(T_BT_SWITCH), 48, top + 12, app.bt_sel == 0 ? C_TEXT : C_DIM);
+    text(r, app.f_body, app.bt_on ? tr(T_ON) : tr(T_OFF), W - 48, top + 12,
          app.bt_on ? g_accent : C_DIM, Align::Right);
 
     if (app.bt_on) {
@@ -784,33 +809,35 @@ void draw_bluetooth(SDL_Renderer* r)
             }
             SDL_Color tc = (app.bt_sel == idx + 1) ? C_TEXT : C_DIM;
             text(r, app.f_body, d.name.empty() ? d.mac : d.name, 48, y + 12, tc);
-            std::string right = bt_kind_cn(d.kind);
-            if (d.connected) right += " · 已连接";
-            else if (d.paired) right += " · 已配对";
+            std::string right = bt_kind_name(d.kind);
+            if (d.connected) right += tr(T_CONN_SUFFIX);
+            else if (d.paired) right += tr(T_PAIRED_SUFFIX);
             text(r, app.f_small, right, W - 48, y + 16,
                  d.connected ? C_GREEN : C_DIM, Align::Right);
         }
         if (n == 0 && !app.bt_busy)
-            text(r, app.f_body, "还没有设备 — 按 Ⓧ 搜索附近的设备",
+            text(r, app.f_body, tr(T_NO_DEVS),
                  W / 2, top + 2 * rowh + 20, C_DIM, Align::Center);
     }
 
-    std::string st = app.bt_busy ? "正在处理…" : app.bt_status;
+    std::string st = app.bt_busy ? tr(T_PROCESSING) : app.bt_status;
     if (!st.empty())
         text(r, app.f_small, st, W / 2, H - 96, C_AMBER, Align::Center);
-    draw_hint(r, "Ⓐ 开关/配对/连接  Ⓧ 搜索  Ⓨ 忽略  Ⓑ 返回");
+    draw_hint(r, tr(T_BT_HINT));
 }
 
 void draw_settings(SDL_Renderer* r)
 {
     draw_background(r);
     fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, "系统设置", 32, 26, C_TEXT);
+    text(r, app.f_title, tr(T_SETTINGS), 32, 26, C_TEXT);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
-    const char* rows[] = { "屏幕亮度", "音量", "蓝牙", "主题", "存档管理", "关机", "重启", "关于 gameOS" };
-    const int rowh = 72, top = 120;
-    for (int i = 0; i < 8; i++) {
+    const char* rows[] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_THEME),
+                           tr(T_LANGUAGE), tr(T_SAVES), tr(T_POWEROFF),
+                           tr(T_REBOOT), tr(T_ABOUT) };
+    const int rowh = 64, top = 120;
+    for (int i = 0; i < 9; i++) {
         int y = top + i * rowh;
         if (i == app.set_sel) {
             fill_rect(r, 120, y, W - 240, rowh - 10, C_PANEL);
@@ -826,32 +853,34 @@ void draw_settings(SDL_Renderer* r)
             snprintf(b, sizeof(b), "%d%%", v);
             text(r, app.f_body, b, 860, y + 10, tc, Align::Right);
         } else if (i == 2) {
-            text(r, app.f_body, app.bt_on ? "已开启" : "已关闭", 860, y + 14,
+            text(r, app.f_body, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED), 860, y + 14,
                  app.bt_on ? C_GREEN : C_DIM, Align::Right);
         } else if (i == 3) {
-            text(r, app.f_body, THEME_NAMES[app.settings.theme], 860, y + 14, g_accent, Align::Right);
+            text(r, app.f_body, theme_name(app.settings.theme), 860, y + 14, g_accent, Align::Right);
         } else if (i == 4) {
+            text(r, app.f_body, lang_name(app.settings.language), 860, y + 14, g_accent, Align::Right);
+        } else if (i == 5) {
             char b[32];
-            snprintf(b, sizeof(b), "%zu 个", app.saves.size());
+            snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size());
             text(r, app.f_body, b, 860, y + 14, tc, Align::Right);
         }
     }
-    draw_hint(r, "↑↓ 选择  ←→ 调节/切换  Ⓐ 执行  Ⓑ 返回");
+    draw_hint(r, tr(T_SETTINGS_HINT));
 }
 
 void draw_saves(SDL_Renderer* r)
 {
     draw_background(r);
     fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, "存档管理", 32, 26, C_TEXT);
+    text(r, app.f_title, tr(T_SAVES), 32, 26, C_TEXT);
     char b[64];
-    snprintf(b, sizeof(b), "%zu 个存档", app.saves.size());
+    snprintf(b, sizeof(b), tr(T_SAVE_COUNT_FMT), app.saves.size());
     text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
     if (app.saves.empty()) {
-        text(r, app.f_body, "还没有存档", W / 2, 300, C_TEXT, Align::Center);
-        text(r, app.f_small, "游戏里按 SELECT+Ⓛ 快速存档 / SELECT+Ⓡ 读档",
+        text(r, app.f_body, tr(T_NO_SAVES), W / 2, 300, C_TEXT, Align::Center);
+        text(r, app.f_small, tr(T_SAVES_HELP),
              W / 2, 360, C_DIM, Align::Center);
     } else {
         const int rowh = 60, top = 116, vis = 9;
@@ -872,7 +901,7 @@ void draw_saves(SDL_Renderer* r)
             text(r, app.f_small, kb, W - 48, y + 16, C_DIM, Align::Right);
         }
     }
-    draw_hint(r, "↑↓ 选择  Ⓐ 删除  Ⓑ 返回");
+    draw_hint(r, tr(T_SAVES_HINT));
 }
 
 void draw_msg(SDL_Renderer* r)
@@ -889,7 +918,7 @@ void draw_msg(SDL_Renderer* r)
         text(r, app.f_body, l, W / 2, y, C_TEXT, Align::Center);
         y += 44;
     }
-    text(r, app.f_small, "Ⓑ 返回", W / 2, py + ph - 52, C_DIM, Align::Center);
+    text(r, app.f_small, tr(T_BACK), W / 2, py + ph - 52, C_DIM, Align::Center);
 }
 
 void draw_confirm(SDL_Renderer* r)
@@ -899,11 +928,11 @@ void draw_confirm(SDL_Renderer* r)
     int pw = 640, ph = 300, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, C_RED);
-    const char* t = (app.confirm == ConfirmAct::PowerOff) ? "确认关机？"
-                  : (app.confirm == ConfirmAct::Reboot) ? "确认重启？"
-                  : "确认删除该存档？";
+    const char* t = (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
+                  : (app.confirm == ConfirmAct::Reboot) ? tr(T_CONFIRM_REBOOT)
+                  : tr(T_CONFIRM_DEL);
     text(r, app.f_title, t, W / 2, py + 60, C_TEXT, Align::Center);
-    text(r, app.f_body, "Ⓐ 确认        Ⓑ 取消", W / 2, py + 170, C_DIM, Align::Center);
+    text(r, app.f_body, tr(T_CONFIRM_HINT), W / 2, py + 170, C_DIM, Align::Center);
 }
 
 // ---------------------------------------------------------------------------
@@ -931,12 +960,9 @@ void draw_ambient()
     std::string hhmm = two(tmv.tm_hour) + ":" + two(tmv.tm_min);
     text(r, app.f_clock, hhmm, W / 2, 260, C_TEXT, Align::Center);
 
-    static const char* wd[] = { "日", "一", "二", "三", "四", "五", "六" };
-    char date[96];
-    snprintf(date, sizeof(date), "%d 年 %d 月 %d 日  星期%s",
-             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, wd[tmv.tm_wday]);
+    std::string date = format_date(tmv);
     text(r, app.f_body, date, W / 2, 420, C_DIM, Align::Center);
-    text(r, app.f_small, "为 Anbernic RG DS Plus 打造", W / 2, 500, C_DIM, Align::Center);
+    text(r, app.f_small, tr(T_TAGLINE), W / 2, 500, C_DIM, Align::Center);
     SDL_RenderPresent(r);
 }
 
@@ -987,6 +1013,14 @@ static void cycle_theme(int dir = 1)
     save_settings(app.settings);
 }
 
+static void cycle_lang(int dir = 1)
+{
+    app.settings.language = (app.settings.language + dir + LANG_COUNT) % LANG_COUNT;
+    g_lang = (Lang)app.settings.language;
+    save_settings(app.settings);
+    reload_fonts();   // Korean uses a different font file
+}
+
 void enter_selection()
 {
     if (app.carousel == 5) {
@@ -1017,11 +1051,9 @@ void do_launch()
     // BIOS is only needed to actually run a game; gate launching, not list
     // entry, so an empty NDS library looks like every other empty console.
     if (c.dual && !nds_bios_ok()) {
-        show_msg("需要 NDS BIOS 文件",
-                 "缺少：" + bios_missing_list() + "\n"
-                 "请把你自己的 NDS BIOS 文件复制到 TF 卡的\n"
-                 "bios 文件夹（GAMEOS 盘符 → bios）。\n"
-                 "需要 bios7.bin、bios9.bin、firmware.bin 三个文件。");
+        char m[128];
+        snprintf(m, sizeof(m), tr(T_BIOS_MISSING_FMT), bios_missing_list().c_str());
+        show_msg(tr(T_BIOS_TITLE), std::string(m) + "\n" + tr(T_BIOS_BODY));
         return;
     }
     const Game& g = app.games[app.sel];
@@ -1037,7 +1069,7 @@ void do_launch()
         return;
     }
     if (rc == 127)
-        show_msg("无法启动模拟器", "模拟器程序缺失或损坏，请重新刷写系统。");
+        show_msg(tr(T_EMU_FAIL), tr(T_EMU_FAIL_BODY));
     else if (rc != 0)
         fprintf(stderr, "gameos-ui: emulator exited with %d\n", rc);
 
@@ -1085,32 +1117,29 @@ void confirm_btn()
     case Screen::Settings:
         if (app.set_sel == 2) bt_enter();
         else if (app.set_sel == 3) cycle_theme();
-        else if (app.set_sel == 4) {
+        else if (app.set_sel == 4) cycle_lang();
+        else if (app.set_sel == 5) {
             app.saves = scan_saves();
             app.save_sel = 0;
             app.save_scroll = 0;
             app.screen = Screen::Saves;
         }
-        else if (app.set_sel == 5) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 6) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 7)
-            show_msg("关于 gameOS",
-                     "gameOS 1.0\n"
-                     "为 Anbernic RG DS Plus 全新打造的开源游戏系统。\n"
-                     "NDS · GBA · GBC · PS1 · PSP\n"
-                     "github.com/oh-sudo-user/gameOS");
+        else if (app.set_sel == 6) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 7) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 8)
+            show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
         break;
     case Screen::Bluetooth:
         if (app.bt_busy) break;
         if (app.bt_sel == 0) {
-            app.bt_status = app.bt_on ? "正在关闭…" : "正在开启…";
+            app.bt_status = app.bt_on ? tr(T_TURNING_OFF) : tr(T_TURNING_ON);
             bt_start(app.bt_on ? "down" : "up");
         } else if (app.bt_sel <= (int)app.bt_devs.size()) {
             const BtDev& d = app.bt_devs[app.bt_sel - 1];
             if (!bt_mac_valid(d.mac)) break;
-            if (!d.paired) { app.bt_status = "正在配对…（最长 40 秒）"; bt_start("pair", d.mac); }
-            else if (!d.connected) { app.bt_status = "正在连接…"; bt_start("connect", d.mac); }
-            else { app.bt_status = "正在断开…"; bt_start("disconnect", d.mac); }
+            if (!d.paired) { app.bt_status = tr(T_PAIRING); bt_start("pair", d.mac); }
+            else if (!d.connected) { app.bt_status = tr(T_CONNECTING); bt_start("connect", d.mac); }
+            else { app.bt_status = tr(T_DISCONNECTING); bt_start("disconnect", d.mac); }
         }
         break;
     case Screen::Saves:
@@ -1160,7 +1189,7 @@ void navigate(int dx, int dy)
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 7);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 8);
         if (dx) {
             if (app.set_sel == 0) {
                 app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
@@ -1172,6 +1201,8 @@ void navigate(int dx, int dy)
                 save_settings(app.settings);
             } else if (app.set_sel == 3) {
                 cycle_theme(dx);
+            } else if (app.set_sel == 4) {
+                cycle_lang(dx);
             }
         }
         break;
@@ -1200,7 +1231,7 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_START: start_btn(); break;
     case SDL_CONTROLLER_BUTTON_X:   // physical Y (left)
         if (app.screen == Screen::Bluetooth) {
-            if (app.bt_on && !app.bt_busy) { app.bt_status = "正在搜索…"; bt_start("scan"); }
+            if (app.bt_on && !app.bt_busy) { app.bt_status = tr(T_SCANNING); bt_start("scan"); }
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -1208,7 +1239,7 @@ void handle_button(SDL_ControllerButtonEvent& b)
             if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
                 const BtDev& d = app.bt_devs[app.bt_sel - 1];
                 if (d.paired && bt_mac_valid(d.mac)) {
-                    app.bt_status = "正在忽略…";
+                    app.bt_status = tr(T_FORGETTING);
                     bt_start("forget", d.mac);
                 }
             }
@@ -1236,7 +1267,7 @@ void handle_key(SDL_KeyboardEvent& k)
     case SDLK_s: start_btn(); break;
     case SDLK_r:
         if (app.screen == Screen::Bluetooth) {
-            if (app.bt_on && !app.bt_busy) { app.bt_status = "正在搜索…"; bt_start("scan"); }
+            if (app.bt_on && !app.bt_busy) { app.bt_status = tr(T_SCANNING); bt_start("scan"); }
         } else refresh_games();
         break;
     case SDLK_f:
@@ -1244,7 +1275,7 @@ void handle_key(SDL_KeyboardEvent& k)
             if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
                 const BtDev& d = app.bt_devs[app.bt_sel - 1];
                 if (d.paired && bt_mac_valid(d.mac)) {
-                    app.bt_status = "正在忽略…";
+                    app.bt_status = tr(T_FORGETTING);
                     bt_start("forget", d.mac);
                 }
             }
@@ -1305,6 +1336,7 @@ int main(int, char**)
     setenv("SDL_VIDEODRIVER", "kmsdrm", 0);
 
     app.settings = load_settings();
+    g_lang = (Lang)std::clamp(app.settings.language, 0, (int)LANG_COUNT - 1);
     app.carousel = app.settings.last_console;
     g_accent = C_THEMES[app.settings.theme];
     app.saves = scan_saves();

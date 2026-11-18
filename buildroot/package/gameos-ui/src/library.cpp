@@ -1,6 +1,7 @@
 // gameOS front-end — library scanning, settings, system state.
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gameos.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -282,6 +283,7 @@ Settings load_settings()
         else if (k == "last_console") s.last_console = std::clamp(n, 0, 4);
         else if (k == "theme") s.theme = std::clamp(n, 0, 3);
         else if (k == "bluetooth") s.bluetooth = std::clamp(n, 0, 1);
+        else if (k == "language") s.language = std::clamp(n, 0, LANG_COUNT - 1);
     }
     return s;
 }
@@ -293,7 +295,8 @@ void save_settings(const Settings& s)
        << "volume=" << s.volume << "\n"
        << "last_console=" << s.last_console << "\n"
        << "theme=" << s.theme << "\n"
-       << "bluetooth=" << s.bluetooth << "\n";
+       << "bluetooth=" << s.bluetooth << "\n"
+       << "language=" << s.language << "\n";
     write_file(SETTINGS_PATH, ss.str());
 }
 
