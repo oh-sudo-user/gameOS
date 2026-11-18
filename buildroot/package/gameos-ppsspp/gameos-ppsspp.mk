@@ -36,6 +36,22 @@ GAMEOS_PPSSPP_INSTALL_STAGING = NO
 #    fonts directly without it.
 #  * PNG: ARM64 requires libpng >= 1.7 (line 1290) but Buildroot has 1.6.x;
 #    USE_SYSTEM_LIBPNG=OFF uses the bundled ext/libpng17 instead.
+#
+# Run 14 compile fix (0001-sdlgl-guard-x11-kmsdrm.patch, verified against
+# PPSSPP v1.20.4 SDL/SDLGLGraphicsContext.cpp):
+#   ARM_DEVICE force-sets USING_EGL ON (CMakeLists line 88), so -DUSING_EGL=OFF
+#   cannot take effect on aarch64. With USING_EGL the file's EGL_Open()/EGL_Close()
+#   call XOpenDisplay/XCloseDisplay and read sysInfo.info.x11 unconditionally in
+#   the !USING_FBDEV branch. Our SDL2 + mesa are KMS/DRM-only (no X11), so those
+#   symbols are undeclared and the x11 union member does not exist -> compile
+#   error. The patch guards every X11 reference with SDL_VIDEO_DRIVER_X11 (the
+#   same convention the file already uses for DIRECTFB/WAYLAND/VIVANTE) and adds
+#   a SDL_SYSWM_KMSDRM case using EGL_DEFAULT_DISPLAY with a null native window.
+#   EGL_Init then cannot create a window surface, so Init() leaves useEGLSwap
+#   false and renders/swaps through the SDL_GL context (SDL_GL_SwapWindow) that
+#   SDL2's KMSDRM driver backs with GBM+EGL — the correct path on this device.
+#   The patch lives in the package ROOT (not patches/): Buildroot only auto-globs
+#   package/<pkg>/*.patch, never a patches/ subdirectory.
 GAMEOS_PPSSPP_CONF_OPTS = \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DUSING_GLES2=ON \

@@ -1,6 +1,6 @@
 #!/bin/sh
-# gameOS session supervisor: keeps the UI alive, handles power requests.
-# UI exit codes: 90 = poweroff, 91 = reboot, anything else = restart.
+# gameOS session supervisor: keeps the UI AND the input daemon alive, handles
+# power requests. UI exit codes: 90 = poweroff, 91 = reboot, else = restart.
 
 export SDL_VIDEODRIVER=kmsdrm
 export SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0
@@ -10,14 +10,43 @@ export XDG_RUNTIME_DIR=/tmp/gameos-runtime
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-# input merger daemon (virtual gamepad from split evdev devices)
-/usr/bin/gameos-inputd &
-INPUTD_PID=$!
+SLOG=/tmp/gameos-session.log
+
+# input merger daemon (virtual gamepad from split evdev devices). Supervised:
+# respawned below whenever it dies, so a crash never leaves the UI without
+# input (which would make the device unusable).
+start_inputd() {
+  /usr/bin/gameos-inputd &
+  INPUTD_PID=$!
+  echo "[gameos-session] inputd started pid $INPUTD_PID" >> "$SLOG"
+}
+
+# True only if inputd is running and not a zombie (a dead child not yet reaped
+# still answers kill -0, so check the process state too). The state letter is
+# the field after the closing paren of comm, robust to spaces in the name.
+inputd_alive() {
+  [ -n "$INPUTD_PID" ] || return 1
+  kill -0 "$INPUTD_PID" 2>/dev/null || return 1
+  state=$(sed -n 's/.*) \([A-Za-z]\).*/\1/p' "/proc/$INPUTD_PID/stat" 2>/dev/null)
+  [ "$state" != Z ]
+}
+
+start_inputd
 
 fails=0
 while true; do
+  # respawn the input daemon if it exited/crashed since the last iteration
+  if ! inputd_alive; then
+    echo "[gameos-session] inputd not running; respawning" >> "$SLOG"
+    start_inputd
+  fi
+
+  start=$(date +%s)
   /usr/bin/gameos-ui
   rc=$?
+  end=$(date +%s)
+  uptime=$((end - start))
+
   case $rc in
     90)
       kill "$INPUTD_PID" 2>/dev/null
@@ -29,15 +58,20 @@ while true; do
       sync
       /sbin/reboot -f
       ;;
-    0)
-      fails=0
-      sleep 0.2
-      ;;
     *)
-      fails=$((fails + 1))
-      echo "[gameos-session] UI exited with $rc (fail #$fails)" >> /tmp/gameos-session.log
-      # back off on repeated crashes so the device stays usable via SSH/serial
-      if [ $fails -ge 5 ]; then sleep 5; else sleep 1; fi
+      # A clean exit (rc 0) after a normal session (>= 3s uptime) resets the
+      # fail counter. But ANY exit after < 3s — including rc 0, which the UI
+      # returns when graphics re-init fails after an emulator launch — is a
+      # startup failure. Treat it as a crash and back off so we never spin in
+      # a tight restart loop; the device stays reachable via SSH/serial.
+      if [ "$rc" = 0 ] && [ "$uptime" -ge 3 ]; then
+        fails=0
+        sleep 0.2
+      else
+        fails=$((fails + 1))
+        echo "[gameos-session] UI exited rc=$rc after ${uptime}s (fail #$fails)" >> "$SLOG"
+        if [ "$fails" -ge 5 ]; then sleep 5; else sleep 1; fi
+      fi
       ;;
   esac
 done

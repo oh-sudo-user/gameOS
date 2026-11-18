@@ -238,6 +238,13 @@ bool init_gfx()
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!app.ren_top)
         app.ren_top = SDL_CreateRenderer(app.win_top, -1, SDL_RENDERER_SOFTWARE);
+    if (!app.ren_top) {
+        // Both accelerated and software renderers failed. Bail out instead of
+        // returning true with a null renderer, which would crash the draw loop
+        // (SDL_SetRenderDrawColor/RenderCopy on nullptr) every frame.
+        fprintf(stderr, "gameos-ui: cannot create renderer: %s\n", SDL_GetError());
+        return false;
+    }
 
     if (ndisp > 1) {
         app.win_bot = SDL_CreateWindow("gameOS ambient",
@@ -569,8 +576,11 @@ void do_launch()
     shutdown_gfx();                    // release DRM master
     int rc = launch_game(c, g);
     if (!init_gfx()) {                 // emulator exited — take panels back
+        // Graphics re-init failed (DRM still held / mode broken). Exit non-zero
+        // so the session supervisor backs off instead of treating it as a clean
+        // exit and spinning in a tight restart loop.
         app.running = false;
-        app.exit_code = 0;
+        app.exit_code = 1;
         return;
     }
     if (rc == 127)
@@ -739,8 +749,15 @@ int main(int, char**)
     app.settings = load_settings();
     app.carousel = app.settings.last_console;
     apply_brightness(app.settings.brightness);
+    // Restore the user's saved volume on every startup. S20gameos now only
+    // sets a first-boot default, so without this the mixer would stay at the
+    // hardware default and ignore the saved setting.
+    apply_volume(app.settings.volume);
 
-    if (!init_gfx()) return 1;
+    if (!init_gfx()) {
+        shutdown_gfx();   // release any partial resources / DRM master
+        return 1;
+    }
 
     while (app.running) {
         SDL_Event e;

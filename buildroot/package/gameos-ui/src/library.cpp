@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <dirent.h>
 #include <fstream>
 #include <sstream>
@@ -75,19 +76,59 @@ static bool has_ext(const std::string& name, const std::vector<std::string>& ext
     return false;
 }
 
-std::vector<Game> scan_games(const Console& c)
+// Path without its extension — identifies one physical image regardless of
+// how many files describe it (Game.bin / Game.cue share a stem).
+static std::string stem_of(const std::string& p)
 {
-    std::vector<Game> out;
-    std::string dir = std::string("/userdata/roms/") + c.id;
+    auto dot = p.find_last_of('.');
+    auto slash = p.find_last_of('/');
+    // only strip the dot if it is in the basename (after the last slash)
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+        return p;
+    return p.substr(0, dot);
+}
+
+// Preference when several files describe the same image: the launchable
+// descriptor (.m3u playlist / .cue sheet / compressed .chd) wins over the raw
+// .bin track, so a PS1 game is listed once and launches via its .cue/.m3u.
+static int ext_rank(const std::string& name)
+{
+    auto dot = name.find_last_of('.');
+    if (dot == std::string::npos) return 0;
+    std::string ext = name.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    if (ext == ".m3u") return 100;
+    if (ext == ".cue") return 90;
+    if (ext == ".chd") return 80;
+    if (ext == ".pbp") return 70;
+    if (ext == ".iso") return 60;
+    if (ext == ".cso") return 55;
+    if (ext == ".img") return 50;
+    if (ext == ".bin") return 10;
+    return 20; // single-file roms (.nds/.gba/.gbc/...)
+}
+
+// Recursive walk with a depth cap. lstat (not stat) so symlinked directories
+// are never followed — avoids loops; the exFAT rom partition has no symlinks
+// anyway. Subfolders let users organise roms by genre/series.
+static void scan_dir(const std::string& dir, const Console& c,
+                     int depth, std::vector<Game>& out)
+{
+    if (depth > 4) return;
     DIR* d = opendir(dir.c_str());
-    if (!d) return out;
+    if (!d) return;
     struct dirent* e;
     while ((e = readdir(d))) {
         std::string name = e->d_name;
         if (name.empty() || name[0] == '.') continue;
         std::string full = dir + "/" + name;
         struct stat st;
-        if (stat(full.c_str(), &st) < 0 || !S_ISREG(st.st_mode)) continue;
+        if (lstat(full.c_str(), &st) < 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            scan_dir(full, c, depth + 1, out);
+            continue;
+        }
+        if (!S_ISREG(st.st_mode)) continue;
         if (!has_ext(name, c.exts)) continue;
         Game g;
         g.path = full;
@@ -96,9 +137,35 @@ std::vector<Game> scan_games(const Console& c)
         out.push_back(std::move(g));
     }
     closedir(d);
-    std::sort(out.begin(), out.end(),
+}
+
+std::vector<Game> scan_games(const Console& c)
+{
+    std::vector<Game> out;
+    std::string dir = std::string("/userdata/roms/") + c.id;
+    scan_dir(dir, c, 0, out);
+
+    // Group by stem, best extension first, then keep the first of each stem.
+    // Sorting by stem (full path) rather than title makes same-image files
+    // adjacent even when different folders share a base name, so the dedup
+    // never drops a distinct game or keeps a duplicate .bin.
+    std::sort(out.begin(), out.end(), [](const Game& a, const Game& b) {
+        std::string sa = stem_of(a.path), sb = stem_of(b.path);
+        if (sa != sb) return sa < sb;
+        return ext_rank(a.path) > ext_rank(b.path);
+    });
+    std::vector<Game> dedup;
+    std::string last_stem;
+    for (const auto& g : out) {
+        std::string s = stem_of(g.path);
+        if (!dedup.empty() && s == last_stem) continue;
+        dedup.push_back(g);
+        last_stem = s;
+    }
+
+    std::sort(dedup.begin(), dedup.end(),
               [](const Game& a, const Game& b) { return a.title < b.title; });
-    return out;
+    return dedup;
 }
 
 bool nds_bios_ok()
@@ -208,21 +275,50 @@ static std::string battery_node()
     return found;
 }
 
+// Battery readings are cached and refreshed at most once every few seconds.
+// draw_topbar() calls these every frame; re-reading sysfs 60x/sec is wasteful.
+// The node path is re-resolved until found, because the power_supply driver
+// may probe after the UI has already started (a one-shot static would then
+// cache "no battery" forever).
+namespace {
+constexpr int BATTERY_REFRESH_SEC = 5;
+std::string g_bat_node;
+int    g_bat_percent  = -1;
+bool   g_bat_charging = false;
+time_t g_bat_last     = 0;
+bool   g_bat_valid    = false;
+
+void battery_refresh()
+{
+    time_t now = time(nullptr);
+    if (g_bat_valid && (now - g_bat_last) < BATTERY_REFRESH_SEC)
+        return;
+    if (g_bat_node.empty())
+        g_bat_node = battery_node();   // retry until the driver appears
+    g_bat_last  = now;
+    g_bat_valid = true;
+    if (g_bat_node.empty()) {
+        g_bat_percent  = -1;
+        g_bat_charging = false;
+        return;
+    }
+    std::string cap = read_file(g_bat_node + "/capacity");
+    g_bat_percent = cap.empty() ? -1 : std::clamp(atoi(cap.c_str()), 0, 100);
+    std::string st = read_file(g_bat_node + "/status");
+    g_bat_charging = st.find("Charging") != std::string::npos;
+}
+} // namespace
+
 int battery_percent()
 {
-    static std::string node = battery_node();
-    if (node.empty()) return -1;
-    std::string cap = read_file(node + "/capacity");
-    if (cap.empty()) return -1;
-    return std::clamp(atoi(cap.c_str()), 0, 100);
+    battery_refresh();
+    return g_bat_percent;
 }
 
 bool battery_charging()
 {
-    static std::string node = battery_node();
-    if (node.empty()) return false;
-    std::string st = read_file(node + "/status");
-    return st.find("Charging") != std::string::npos;
+    battery_refresh();
+    return g_bat_charging;
 }
 
 } // namespace gameos

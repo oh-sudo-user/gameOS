@@ -1,0 +1,68 @@
+--- a/SDL/SDLGLGraphicsContext.cpp
++++ b/SDL/SDLGLGraphicsContext.cpp
+@@ -92,17 +92,36 @@
+ 	SDL_VERSION(&sysInfo.version);
+ 	if (!SDL_GetWindowWMInfo(window, &sysInfo)) {
+ 		fprintf(stderr, "ERROR: Unable to retrieve native window handle\n");
++#if defined(SDL_VIDEO_DRIVER_X11)
+ 		g_Display = (EGLNativeDisplayType)XOpenDisplay(nullptr);
+ 		g_XDisplayOpen = g_Display != nullptr;
+ 		if (!g_XDisplayOpen)
+ 			EGL_ERROR("Unable to get display!", false);
++#else
++		/* No X11 on this KMS/DRM target: use the default EGL display. */
++		g_Display = (EGLNativeDisplayType)EGL_DEFAULT_DISPLAY;
++		g_XDisplayOpen = false;
++#endif
+ 		g_Window = (EGLNativeWindowType)nullptr;
+ 	} else {
+ 		switch (sysInfo.subsystem) {
++#if defined(SDL_VIDEO_DRIVER_X11)
+ 		case SDL_SYSWM_X11:
+ 			g_Display = (EGLNativeDisplayType)sysInfo.info.x11.display;
+ 			g_Window = (EGLNativeWindowType)sysInfo.info.x11.window;
+ 			break;
++#endif
++#if defined(SDL_VIDEO_DRIVER_KMSDRM)
++		case SDL_SYSWM_KMSDRM:
++			/* KMS/DRM: SDL owns the GBM device and EGL surface. There is
++			 * no X11 native window here, so g_Window stays null; the
++			 * redundant EGL display below cannot create a window surface,
++			 * so Init() falls back to the SDL_GL context (SDL_GL_SwapWindow),
++			 * which is the correct render path on KMS/DRM. */
++			g_Display = (EGLNativeDisplayType)EGL_DEFAULT_DISPLAY;
++			g_Window = (EGLNativeWindowType)nullptr;
++			break;
++#endif
+ #if defined(SDL_VIDEO_DRIVER_DIRECTFB)
+ 		case SDL_SYSWM_DIRECTFB:
+ 			g_Display = (EGLNativeDisplayType)EGL_DEFAULT_DISPLAY;
+@@ -124,11 +143,19 @@
+ 		}
+ 
+ 		if (!EGL_OpenInit()) {
++#if defined(SDL_VIDEO_DRIVER_X11)
+ 			// Let's try again with X11.
+ 			g_Display = (EGLNativeDisplayType)XOpenDisplay(nullptr);
+ 			g_XDisplayOpen = g_Display != nullptr;
+ 			if (!g_XDisplayOpen)
+ 				EGL_ERROR("Unable to get display!", false);
++#else
++			// No X11: retry with the default EGL native display.
++			g_Display = (EGLNativeDisplayType)EGL_DEFAULT_DISPLAY;
++			g_XDisplayOpen = false;
++			if (!EGL_OpenInit())
++				EGL_ERROR("Unable to get display!", false);
++#endif
+ 			g_Window = (EGLNativeWindowType)nullptr;
+ 		}
+ 	}
+@@ -286,7 +313,7 @@
+ 		g_eglDisplay = EGL_NO_DISPLAY;
+ 	}
+ 	if (g_Display != nullptr) {
+-#if !defined(USING_FBDEV)
++#if !defined(USING_FBDEV) && defined(SDL_VIDEO_DRIVER_X11)
+ 		if (g_XDisplayOpen)
+ 			XCloseDisplay((Display *)g_Display);
+ #endif

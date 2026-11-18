@@ -25,6 +25,8 @@
 #include <dirent.h>
 #include <poll.h>
 #include <signal.h>
+#include <time.h>
+#include <limits.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <sys/ioctl.h>
@@ -42,7 +44,7 @@ static int open_named(const char *want)
     int fd = -1;
     while ((e = readdir(d))) {
         if (strncmp(e->d_name, "event", 5) != 0) continue;
-        char path[64];
+        char path[PATH_MAX];
         snprintf(path, sizeof(path), "/dev/input/%s", e->d_name);
         int f = open(path, O_RDONLY | O_NONBLOCK);
         if (f < 0) continue;
@@ -144,7 +146,7 @@ static void set_backlight(int percent_of_max)
     int idx = 0;
     while ((e = readdir(d)) && idx < 8) {
         if (e->d_name[0] == '.') continue;
-        char p[192], mp[192];
+        char p[PATH_MAX], mp[PATH_MAX];
         snprintf(p, sizeof(p), "/sys/class/backlight/%s/brightness", e->d_name);
         snprintf(mp, sizeof(mp), "/sys/class/backlight/%s/max_brightness", e->d_name);
         int f = open(p, O_RDWR);
@@ -208,44 +210,96 @@ int main(void)
     }
     fprintf(stderr, PROG ": virtual gamepad up (buttons fd=%d axes fd=%d)\n", bfd, afd);
 
-    struct pollfd pf[4];
-    int fds[4] = {bfd, afd, vfd, hfd};
+    // Live device fds, addressed by slot so reconnects (which change the fd
+    // number) never confuse the source identification. Slots 0/1 (buttons,
+    // axes) are required; 2/3 (volume, hall) are optional and may appear late.
+    int *slots[4] = { &bfd, &afd, &vfd, &hfd };
+    const char *names[4] = { "gpio-keys-control", "adc-joystick",
+                             "gpio-keys-volume", "gpio-keys-hall" };
+    time_t last_reconnect = 0;
 
     while (running) {
+        // (Re)open any missing device at most once per second: recovers from
+        // runtime disconnects and picks up optional devices that probe late.
+        time_t now = time(NULL);
+        if (now != last_reconnect) {
+            last_reconnect = now;
+            for (int i = 0; i < 4; i++) {
+                if (*slots[i] < 0) {
+                    int f = open_named(names[i]);
+                    if (f >= 0) {
+                        *slots[i] = f;
+                        fprintf(stderr, PROG ": %s connected fd=%d\n", names[i], f);
+                    }
+                }
+            }
+            if (ufd < 0) ufd = uinput_open();
+        }
+
+        // Required device missing: wait briefly instead of busy-spinning.
+        if (bfd < 0 || afd < 0 || ufd < 0) { usleep(200000); continue; }
+
+        struct pollfd pf[4];
+        int slot_of[4];
         int n = 0;
         for (int i = 0; i < 4; i++) {
-            if (fds[i] >= 0) {
-                pf[n].fd = fds[i];
+            if (*slots[i] >= 0) {
+                pf[n].fd = *slots[i];
                 pf[n].events = POLLIN;
                 pf[n].revents = 0;
+                slot_of[n] = i;
                 n++;
             }
         }
-        if (poll(pf, n, 1000) <= 0) continue;
+        int pr = poll(pf, n, 1000);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) continue;
 
         for (int i = 0; i < n; i++) {
-            if (!(pf[i].revents & POLLIN)) continue;
-            struct input_event ev[32];
-            ssize_t rd = read(pf[i].fd, ev, sizeof(ev));
-            if (rd <= 0) continue;
-            int count = (int)(rd / sizeof(ev[0]));
-            int src = pf[i].fd;
-            int need_syn = 0;
+            int slot = slot_of[i];
+            int fd = pf[i].fd;
 
+            // Hangup / error / invalid fd: the device is gone. Close it and
+            // mark the slot empty so the reconnect block above reopens it.
+            // Without this, poll returns POLLNVAL/HUP immediately forever and
+            // the daemon busy-spins at 100% CPU with no input.
+            if (pf[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                fprintf(stderr, PROG ": %s poll error (revents=0x%x); reconnecting\n",
+                        names[slot], (unsigned)pf[i].revents);
+                close(fd);
+                *slots[slot] = -1;
+                continue;
+            }
+            if (!(pf[i].revents & POLLIN)) continue;
+
+            struct input_event ev[32];
+            ssize_t rd = read(fd, ev, sizeof(ev));
+            // EOF (0) or a real error (not EAGAIN/EINTR) means the device
+            // disappeared mid-read: drop it and reconnect.
+            if (rd == 0 || (rd < 0 && errno != EAGAIN && errno != EINTR)) {
+                fprintf(stderr, PROG ": %s read EOF/error; reconnecting\n", names[slot]);
+                close(fd);
+                *slots[slot] = -1;
+                continue;
+            }
+            if (rd < 0) continue;   // EAGAIN / EINTR: nothing to do
+
+            int count = (int)(rd / sizeof(ev[0]));
+            int need_syn = 0;
             for (int k = 0; k < count; k++) {
                 int t = ev[k].type, c = ev[k].code, v = ev[k].value;
-                if (src == bfd && t == EV_KEY &&
+                if (slot == 0 && t == EV_KEY &&
                     ((c >= BTN_MISC && c < KEY_OK) ||
                      (c >= BTN_DPAD_UP && c <= BTN_DPAD_RIGHT))) {
                     emit(ufd, EV_KEY, c, v);
                     need_syn = 1;
-                } else if (src == afd && t == EV_ABS && (c == ABS_X || c == ABS_Y)) {
-                    emit(ufd, EV_ABS, c, norm_axis(afd, c, v));
+                } else if (slot == 1 && t == EV_ABS && (c == ABS_X || c == ABS_Y)) {
+                    emit(ufd, EV_ABS, c, norm_axis(fd, c, v));
                     need_syn = 1;
-                } else if (src == vfd && t == EV_KEY && v == 1 &&
+                } else if (slot == 2 && t == EV_KEY && v == 1 &&
                            (c == KEY_VOLUMEUP || c == KEY_VOLUMEDOWN)) {
                     handle_volume(c);
-                } else if (src == hfd && t == EV_SW && c == SW_LID) {
+                } else if (slot == 3 && t == EV_SW && c == SW_LID) {
                     // v=1: lid closed -> blank panels; v=0: open -> restore
                     set_backlight(v ? 0 : -1);
                 }
