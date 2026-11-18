@@ -14,7 +14,9 @@ GAMEOS_CORE_PCSX_DEPENDENCIES = zlib libpng
 # through the environment, not the make command line, or the core's
 # own 'CFLAGS +=' include paths/defines are overridden. CC/CXX on the
 # command line let Makefile.libretro auto-detect aarch64 (ari64 dynarec
-# + neon GPU); final linking uses CC_LINK=$(CC).
+# + neon GPU). The shared core is linked with CC_LINK (default $(CC));
+# force the C++ driver like upstream does for the unai GPU branch, so
+# any C++ objects (e.g. gpu_unai/old/if.cpp) link libstdc++ correctly.
 define GAMEOS_CORE_PCSX_BUILD_CMDS
 	$(TARGET_MAKE_ENV) \
 	CFLAGS="$(TARGET_CFLAGS)" \
@@ -22,6 +24,7 @@ define GAMEOS_CORE_PCSX_BUILD_CMDS
 	LDFLAGS="$(TARGET_LDFLAGS)" \
 	$(MAKE) -C $(@D) -f Makefile.libretro \
 		CC="$(TARGET_CC)" CXX="$(TARGET_CXX)" LD="$(TARGET_LD)" \
+		CC_LINK="$(TARGET_CXX)" \
 		platform=unix ARCH=arm64
 endef
 
