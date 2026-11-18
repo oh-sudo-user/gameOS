@@ -60,6 +60,12 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "输入 WiFi 密码", "正在连接…", "已连接 · %s", "连接失败",
         "未连接", "没有检测到 WiFi 硬件", "已保存", "开放网络", "已忘记该网络",
         "空格", "删除", "确定", "取消",
+        // system update
+        "系统更新", "←→ 选择  Ⓐ 检查/安装/重启  Ⓑ 返回", "正在检查更新…",
+        "已是最新版本", "发现新版本 %s", "下载中 %d%%", "正在写入新系统…",
+        "更新已就绪，重启后生效", "更新失败：%s",
+        "没有网络连接，请先在设置里连接 WiFi", "重启并应用更新",
+        "当前版本 %s", "Ⓐ 检查更新",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -109,6 +115,12 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "輸入 WiFi 密碼", "正在連線…", "已連線 · %s", "連線失敗",
         "未連線", "沒有偵測到 WiFi 硬體", "已儲存", "開放網路", "已忘記該網路",
         "空格", "刪除", "確定", "取消",
+        // system update
+        "系統更新", "←→ 選擇  Ⓐ 檢查/安裝/重啟  Ⓑ 返回", "正在檢查更新…",
+        "已是最新版本", "發現新版本 %s", "下載中 %d%%", "正在寫入新系統…",
+        "更新已就緒，重啟後生效", "更新失敗：%s",
+        "沒有網路連線，請先在設定裡連接 WiFi", "重啟並套用更新",
+        "目前版本 %s", "Ⓐ 檢查更新",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -164,6 +176,12 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "未接続", "WiFi ハードウェアが見つかりません", "保存済み",
         "オープンネットワーク", "ネットワークを削除しました",
         "スペース", "削除", "OK", "キャンセル",
+        // system update
+        "システム更新", "←→ 選択  Ⓐ 確認/適用/再起動  Ⓑ 戻る", "アップデートを確認中…",
+        "最新です", "新しいバージョン %s", "ダウンロード中 %d%%", "書き込み中…",
+        "再起動で適用されます", "失敗：%s",
+        "ネットワークがありません — 設定で WiFi に接続してください", "再起動して適用",
+        "現在のバージョン %s", "Ⓐ 確認する",
     },
     // ------------------------------------------------------------------ en
     {
@@ -218,6 +236,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Not connected", "No WiFi hardware detected", "Saved", "Open network",
         "Network forgotten",
         "Space", "Delete", "OK", "Cancel",
+        // system update
+        "System update", "←→ select  Ⓐ check/install/restart  Ⓑ back",
+        "Checking for updates…", "Up to date", "New version %s",
+        "Downloading %d%%", "Writing the new system…",
+        "Ready — restart to apply", "Update failed: %s",
+        "No network — connect WiFi in Settings", "Restart and apply",
+        "Current version %s", "Ⓐ Check for updates",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -272,6 +297,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Не подключено", "WiFi-адаптер не найден", "Сохранено", "Открытая сеть",
         "Сеть удалена",
         "Пробел", "Удалить", "ОК", "Отмена",
+        // system update
+        "Обновление системы", "←→ выбор  Ⓐ проверить/установить/перезагрузка  Ⓑ назад",
+        "Проверка обновлений…", "Актуальная версия", "Доступна версия %s",
+        "Загрузка %d%%", "Запись системы…",
+        "Готово — перезагрузите", "Ошибка обновления: %s",
+        "Нет сети — подключите WiFi в настройках", "Перезагрузить и применить",
+        "Версия %s", "Ⓐ Проверить",
     },
     // ------------------------------------------------------------------ es
     {
@@ -327,6 +359,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Sin conexión", "No se detecta hardware WiFi", "Guardada", "Red abierta",
         "Red olvidada",
         "Espacio", "Borrar", "OK", "Cancelar",
+        // system update
+        "Actualización", "←→ elegir  Ⓐ buscar/instalar/reiniciar  Ⓑ volver",
+        "Buscando actualizaciones…", "Actualizado", "Nueva versión %s",
+        "Descargando %d%%", "Escribiendo el sistema…",
+        "Listo — reinicia para aplicar", "Error de actualización: %s",
+        "Sin red — conecta WiFi en Ajustes", "Reiniciar y aplicar",
+        "Versión actual %s", "Ⓐ Buscar actualizaciones",
     },
     // ------------------------------------------------------------------ ko
     {
@@ -381,6 +420,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "연결 안 됨", "WiFi 하드웨어를 찾지 못했습니다", "저장됨", "개방 네트워크",
         "네트워크를 잊었습니다",
         "공백", "삭제", "확인", "취소",
+        // system update
+        "시스템 업데이트", "←→ 선택  Ⓐ 확인/설치/재시작  Ⓑ 뒤로",
+        "업데이트 확인 중…", "최신 버전", "새 버전 %s",
+        "다운로드 중 %d%%", "새 시스템 기록 중…",
+        "재시작하면 적용됩니다", "업데이트 실패: %s",
+        "네트워크 없음 — 설정에서 WiFi를 연결하세요", "재시작하여 적용",
+        "현재 버전 %s", "Ⓐ 업데이트 확인",
     },
 };
 

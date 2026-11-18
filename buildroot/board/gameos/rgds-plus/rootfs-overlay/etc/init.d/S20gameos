@@ -10,8 +10,8 @@ log "start"
 # RG DS Plus: eMMC = mmc0 (sdhci, non-removable), TF slot = mmc1 (sdmmc0).
 # With no eMMC populated the card enumerates as /dev/mmcblk1, so hardcoding
 # mmcblk0 would wait on the wrong disk and never create/mount the data
-# partition. The kernel boots via root=PARTLABEL=GAMEOS-ROOT; derive the
-# parent disk from whatever device actually holds root.
+# partition. The kernel boots from slot A or B (GAMEOS-ROOT-A / GAMEOS-ROOT-B
+# chosen by boot.scr); derive the parent disk from whatever device holds root.
 DEV=""
 root_src=$(awk '$2 == "/" { print $1; exit }' /proc/self/mounts 2>/dev/null)
 case "$root_src" in
@@ -23,7 +23,7 @@ esac
 # Fallback: resolve the GPT partlabel symlink (udev) when /proc/mounts shows
 # root as /dev/root or a label rather than a usable partition node.
 if [ -z "$DEV" ] || [ ! -b "$DEV" ]; then
-  rp=$(readlink -f /dev/disk/by-partlabel/GAMEOS-ROOT 2>/dev/null)
+  rp=$(readlink -f /dev/disk/by-partlabel/GAMEOS-ROOT-A 2>/dev/null)
   case "$rp" in
     /dev/mmcblk*p[0-9]*) DEV=${rp%p[0-9]*} ;;
     /dev/nvme*p[0-9]*)   DEV=${rp%p[0-9]*} ;;
@@ -62,14 +62,14 @@ fi
 FIRSTBOOT=0
 if [ -f /etc/gameos-firstboot ]; then
   FIRSTBOOT=1
-  fstype=$(blkid -o value -s TYPE ${DEV}p3 2>/dev/null)
+  fstype=$(blkid -o value -s TYPE ${DEV}p4 2>/dev/null)
   if [ "$fstype" = exfat ]; then
     log "GAMEOS-DATA already exfat; clearing firstboot marker"
     rm -f /etc/gameos-firstboot
   else
-    # Create p3 only when the partition node is absent; otherwise reformat it.
-    if [ ! -b ${DEV}p3 ]; then
-      log "creating GAMEOS-DATA partition (p3 type: ${fstype:-none})"
+    # Create p4 only when the partition node is absent; otherwise reformat it.
+    if [ ! -b ${DEV}p4 ]; then
+      log "creating GAMEOS-DATA partition (p4 type: ${fstype:-none})"
       # The flashed image is only ~1.5 GiB, so on a larger card the backup
       # GPT header still sits at the end of the SMALL image. Relocate it to
       # the true end of the disk FIRST (sgdisk -e) so "mkpart ... 100%" is
@@ -82,30 +82,32 @@ if [ -f /etc/gameos-firstboot ]; then
       else
         log "WARN: sgdisk missing; relying on parted to fix the GPT"
       fi
-      # p1 ends at 272MiB, p2 (1200MiB) ends at 1472MiB; start data at 1536MiB
+      # p1 ends at 272MiB, ROOT-A and ROOT-B are 1200MiB each, so the first
+      # free sector is at 2672MiB. sgdisk's 0 start means "first available",
+      # which stays correct if the slot sizes change.
       # parted has no exfat fs-type token ("invalid token: exfat"), so create
       # the partition with sgdisk instead: 0700 = Microsoft basic data, which
       # both Linux and Windows recognise for the exFAT data partition.
       if command -v sgdisk >/dev/null 2>&1; then
-        sgdisk -n 3:1536MiB:0 -t 3:0700 -c 3:GAMEOS-DATA "$DEV" >>"$LOG" 2>&1 \
+        sgdisk -n 4:0:0 -t 4:0700 -c 4:GAMEOS-DATA "$DEV" >>"$LOG" 2>&1 \
           || log "ERROR: sgdisk mkpart failed"
       else
-        parted -s "$DEV" mkpart GAMEOS-DATA 1536MiB 100% >>"$LOG" 2>&1 \
+        parted -s "$DEV" mkpart GAMEOS-DATA 2688MiB 100% >>"$LOG" 2>&1 \
           || log "ERROR: parted mkpart failed"
       fi
       # give the kernel a moment to re-read the partition table
       sleep 1
       blockdev --rereadpt "$DEV" 2>/dev/null || true
-      # BLKRRPART refuses while root is mounted from p2, so the new node may
-      # not appear until reboot; partx adds just p3 via BLKPG, which works
-      # even with the other partitions in use.
+      # BLKRRPART refuses while root is mounted from ROOT-A/ROOT-B, so the new
+      # node may not appear until reboot; partx adds just p4 via BLKPG, which
+      # works even with the other partitions in use.
       if command -v partx >/dev/null 2>&1; then
-        partx -a -n 3 "$DEV" >>"$LOG" 2>&1 || true
+        partx -a -n 4 "$DEV" >>"$LOG" 2>&1 || true
       fi
       j=0
-      while [ ! -b ${DEV}p3 ] && [ $j -lt 50 ]; do sleep 0.1; j=$((j + 1)); done
+      while [ ! -b ${DEV}p4 ] && [ $j -lt 50 ]; do sleep 0.1; j=$((j + 1)); done
     fi
-    if [ -b ${DEV}p3 ] && mkfs.exfat -n GAMEOS ${DEV}p3 >>"$LOG" 2>&1; then
+    if [ -b ${DEV}p4 ] && mkfs.exfat -n GAMEOS ${DEV}p4 >>"$LOG" 2>&1; then
       log "GAMEOS-DATA formatted exfat"
       rm -f /etc/gameos-firstboot
     else
@@ -117,8 +119,8 @@ fi
 # --- mount userdata ---------------------------------------------------------
 mkdir -p /userdata
 if ! mountpoint -q /userdata; then
-  mount -t exfat -o utf8 ${DEV}p3 /userdata 2>>"$LOG" \
-    || mount -t exfat ${DEV}p3 /userdata 2>>"$LOG" \
+  mount -t exfat -o utf8 ${DEV}p4 /userdata 2>>"$LOG" \
+    || mount -t exfat ${DEV}p4 /userdata 2>>"$LOG" \
     || log "WARN: could not mount GAMEOS-DATA"
 fi
 

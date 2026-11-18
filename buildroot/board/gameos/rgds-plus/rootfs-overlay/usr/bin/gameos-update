@@ -1,0 +1,199 @@
+#!/bin/sh
+# gameOS OTA: fetch a release manifest, download the rootfs + boot assets and
+# write them into the slot that is NOT running. U-Boot's boot.scr then boots
+# that slot on the next start and falls back to the old one after four
+# unconfirmed boots (see board/gameos/rgds-plus/boot.cmd).
+#
+#   gameos-update check      compare the release manifest with /etc/gameos-version
+#   gameos-update apply      download, verify, write the idle slot, then ready
+#   gameos-update autocheck  check only when a network link is up (boot time)
+#   gameos-update status     print the current state file
+#
+# The UI polls /run/gameos/update-state (key=value: state, version, pct, msg)
+# and runs the commands above in the background. Release artifacts come from
+# the GitHub "latest release" alias, so no API token or rate limit is involved:
+#   https://github.com/<repo>/releases/latest/download/<asset>
+
+REPO=oh-sudo-user/gameOS
+BASE="https://github.com/$REPO/releases/latest/download"
+APPDIR=/userdata/system/update
+RUN=/run/gameos
+STATE=$RUN/update-state
+OUT=$RUN/update-op.out
+RC=$RUN/update-op.rc
+MANIFEST=$APPDIR/manifest.json
+ROOTFS=$APPDIR/rootfs.ext4.gz
+BOOT=$APPDIR/boot.tar.gz
+CACERT=/etc/ssl/certs/ca-certificates.crt
+
+mkdir -p "$RUN" "$APPDIR"
+case $1 in
+check|apply|autocheck)
+    exec 9>"$RUN/update.lock"; flock 9
+    echo $$ > "$RUN/update.pid"
+    ;;
+esac
+
+state() {  # state <key> <value> ... (file rewritten atomically)
+    printf '%s\n' "$@" > "$STATE.new" && mv -f "$STATE.new" "$STATE"
+}
+jget() { sed -n "s/.*\"$2\": *\"\([^\"]*\)\".*/\1/p" "$1" | head -n 1; }
+jnum() { sed -n "s/.*\"$2\": *\([0-9][0-9]*\).*/\1/p" "$1" | head -n 1; }
+section() { sed -n "/\"$2\": *{/,/}/p" "$1"; }
+online() { ip -4 route 2>/dev/null | grep -q '^default '; }
+current_slot() {
+    s=$(sed -n 's/.*root=PARTLABEL=GAMEOS-ROOT-\([AB]\).*/\1/p' /proc/cmdline | head -n 1)
+    echo "$(echo "${s:-A}" | tr 'AB' 'ab')"
+}
+part_dev() {  # part_dev GAMEOS-ROOT-B -> /dev/... or nothing
+    p=$(readlink -f "/dev/disk/by-partlabel/$1" 2>/dev/null)
+    [ -b "$p" ] && { echo "$p"; return 0; }
+    root=$(awk '$2 == "/" { print $1; exit }' /proc/self/mounts)
+    disk=${root%p[0-9]*}
+    [ -b "$disk" ] || return 1
+    nr=$(partx -s -o NR,NAME "$disk" 2>/dev/null | awk -v n="$1" '$2 == n { print $1; exit }')
+    [ -n "$nr" ] && echo "${disk}p$nr"
+}
+
+fetch() {  # fetch <url> <file> <expected-size> ; progress goes to update-state
+    rm -f "$2.part"
+    curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 20 \
+        --cacert "$CACERT" -o "$2.part" "$1" 9>&- &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        # busybox has no stat(1); wc -c is the portable size query here.
+        cur=$(wc -c < "$2.part" 2>/dev/null)
+        case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+        pct=0
+        [ "$3" -gt 0 ] 2>/dev/null && pct=$((cur * 100 / $3))
+        [ $pct -gt 99 ] && pct=99
+        state "state=downloading" "pct=$pct" "version=$RELVER" "msg=$4"
+        sleep 1
+    done
+    wait "$pid" || { rm -f "$2.part"; return 1; }
+    mv -f "$2.part" "$2"
+}
+
+do_check() {
+    state "state=checking" "pct=0" "version=" "msg="
+    if ! online; then
+        state "state=nowifi" "pct=0" "version=" "msg=no network"
+        return 1
+    fi
+    rm -f "$MANIFEST.part"
+    if ! curl -fsSL --retry 2 --connect-timeout 20 --cacert "$CACERT" \
+            -o "$MANIFEST.part" "$BASE/manifest.json" 9>&-; then
+        rm -f "$MANIFEST.part"
+        state "state=failed" "pct=0" "version=" "msg=manifest download failed"
+        return 1
+    fi
+    mv -f "$MANIFEST.part" "$MANIFEST"
+    RELVER=$(jget "$MANIFEST" version)
+    [ -n "$RELVER" ] || { state "state=failed" "msg=bad manifest"; return 1; }
+    CUR=$(cat /etc/gameos-version 2>/dev/null)
+    if [ "$RELVER" = "$CUR" ]; then
+        state "state=uptodate" "pct=0" "version=$RELVER" "msg="
+    else
+        state "state=available" "pct=0" "version=$RELVER" "msg=current $CUR"
+    fi
+    return 0
+}
+
+do_apply() {
+    [ -f "$MANIFEST" ] || do_check || return 1
+    RELVER=$(jget "$MANIFEST" version)
+    CUR=$(cat /etc/gameos-version 2>/dev/null)
+    [ "$RELVER" = "$CUR" ] && { state "state=uptodate" "version=$RELVER"; return 0; }
+
+    online || { state "state=nowifi" "version=$RELVER" "msg=no network"; return 1; }
+    mountpoint -q /userdata || { state "state=failed" "version=$RELVER" "msg=no data partition"; return 1; }
+
+    rsec=$(section "$MANIFEST" rootfs)
+    rfile=$(echo "$rsec" | sed -n 's/.*"file": *"\([^"]*\)".*/\1/p')
+    rsha=$(echo "$rsec" | sed -n 's/.*"sha256": *"\([0-9a-f]*\)".*/\1/p')
+    rsize=$(echo "$rsec" | sed -n 's/.*"size": *\([0-9][0-9]*\).*/\1/p')
+    rgz=$(echo "$rsec" | sed -n 's/.*"gz": *\([0-9][0-9]*\).*/\1/p')
+    bsha=$(section "$MANIFEST" boot | sed -n 's/.*"sha256": *"\([0-9a-f]*\)".*/\1/p')
+    bsize=$(section "$MANIFEST" boot | sed -n 's/.*"size": *\([0-9][0-9]*\).*/\1/p')
+    [ -n "$rfile" ] && [ -n "$rsha" ] || { state "state=failed" "version=$RELVER" "msg=bad manifest"; return 1; }
+
+    # 1. rootfs: verify the compressed hash, then the uncompressed length
+    fetch "$BASE/$rfile" "$ROOTFS" "$rgz" "rootfs" || {
+        state "state=failed" "version=$RELVER" "msg=rootfs download failed"; return 1; }
+    state "state=downloading" "pct=100" "version=$RELVER" "msg=verify"
+    got=$(sha256sum "$ROOTFS" | cut -d' ' -f1)
+    if [ "$got" != "$rsha" ]; then
+        rm -f "$ROOTFS"
+        state "state=failed" "version=$RELVER" "msg=rootfs checksum mismatch"; return 1
+    fi
+
+    slot=$(current_slot)
+    [ "$slot" = a ] && target=b || target=a
+    part=$(part_dev "GAMEOS-ROOT-$(echo "$target" | tr ab AB)")
+    if [ -z "$part" ]; then
+        state "state=failed" "version=$RELVER" "msg=no idle slot"; return 1
+    fi
+    case $(awk -v p="$part" '$1 == p { print "mounted" }' /proc/self/mounts) in
+    mounted) state "state=failed" "version=$RELVER" "msg=slot in use"; return 1 ;;
+    esac
+    # busybox has no blockdev; fall back to the sysfs sector count (512B units).
+    psize=$(blockdev --getsize64 "$part" 2>/dev/null || echo 0)
+    if [ "$psize" = 0 ] 2>/dev/null; then
+        secs=$(cat "/sys/class/block/${part##*/}/size" 2>/dev/null)
+        case "$secs" in ''|*[!0-9]*) secs=0 ;; esac
+        psize=$((secs * 512))
+    fi
+    if [ "$psize" -lt "$rsize" ] 2>/dev/null; then
+        state "state=failed" "version=$RELVER" "msg=slot too small"; return 1
+    fi
+    raw=$(gzip -l "$ROOTFS" 2>/dev/null | awk 'NR == 2 { print $2 }')
+    case "$raw" in
+    ''|*[!0-9]*) : ;;   # busybox and GNU gzip -l formats differ; not a gate
+    *) [ "$raw" = "$rsize" ] || { state "state=failed" "version=$RELVER" "msg=rootfs size mismatch"; return 1; } ;;
+    esac
+
+    state "state=installing" "pct=0" "version=$RELVER" "msg=rootfs to slot $target"
+    if ! gzip -dc "$ROOTFS" | dd of="$part" bs=4M conv=fsync 2>/dev/null; then
+        state "state=failed" "version=$RELVER" "msg=write failed"; return 1
+    fi
+    sync
+
+    # 2. boot assets for the new slot (kernel + DTBs)
+    fetch "$BASE/gameOS-boot.tar.gz" "$BOOT" "$bsize" "boot" || {
+        state "state=failed" "version=$RELVER" "msg=boot download failed"; return 1; }
+    got=$(sha256sum "$BOOT" | cut -d' ' -f1)
+    if [ "$got" != "$bsha" ]; then
+        rm -f "$BOOT"
+        state "state=failed" "version=$RELVER" "msg=boot checksum mismatch"; return 1
+    fi
+    mountpoint -q /boot || mount "${part%p[0-9]}p1" /boot 2>/dev/null
+    if ! mountpoint -q /boot; then
+        state "state=failed" "version=$RELVER" "msg=no boot partition"; return 1
+    fi
+    state "state=installing" "pct=100" "version=$RELVER" "msg=kernel to slot $target"
+    mkdir -p "/boot/$target"
+    tar -xzf "$BOOT" -C "/boot/$target" 9>&- || {
+        state "state=failed" "version=$RELVER" "msg=boot extract failed"; return 1; }
+    sync
+
+    # 3. tell boot.scr to try the new slot; S99update clears n once the UI is up
+    printf 'slot=%s\nn=0\n' "$target" > /boot/state.new && mv -f /boot/state.new /boot/state
+    sync
+    rm -f "$ROOTFS" "$BOOT"
+    state "state=ready" "pct=100" "version=$RELVER" "msg=slot $target"
+    return 0
+}
+
+case $1 in
+check)      do_check >"$OUT" 2>&1 ;;
+apply)      do_apply >"$OUT" 2>&1 ;;
+autocheck)
+    online || exit 0
+    do_check >"$OUT" 2>&1
+    ;;
+status)     cat "$STATE" 2>/dev/null ;;
+*)          echo "usage: gameos-update check|apply|autocheck|status" >&2; exit 1 ;;
+esac
+rc=$?
+echo "$rc" > "$RC"
+exit "$rc"

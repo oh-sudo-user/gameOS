@@ -58,6 +58,9 @@ BR2_TARGET_UBOOT_CUSTOM_TARBALL=y
 BR2_TARGET_UBOOT_CUSTOM_TARBALL_LOCATION="https://github.com/u-boot/u-boot/archive/refs/tags/v2026.01.tar.gz"
 BR2_TARGET_UBOOT_BOARD_DEFCONFIG="quartz64-a-rk3566"
 BR2_TARGET_UBOOT_PATCH="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/uboot-patches"
+# A/B boot: boot.scr picks slot A/B and rolls back after 4 unconfirmed boots
+# (needs CMD_SETEXPR for the counter; the command runs boot.scr first).
+BR2_TARGET_UBOOT_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/uboot-fragment.config"
 BR2_TARGET_UBOOT_NEEDS_DTC=y
 BR2_TARGET_UBOOT_NEEDS_PYLIBFDT=y
 BR2_TARGET_UBOOT_NEEDS_PYELFTOOLS=y
@@ -142,6 +145,12 @@ BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
 BR2_PACKAGE_WPA_SUPPLICANT_WPA3=y
 BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
 BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
+# OTA: HTTPS download of the release manifest and images (GitHub redirects to
+# objects.githubusercontent.com, so curl's redirect + TLS handling is used
+# instead of busybox wget), with the Mozilla bundle for certificate checks.
+BR2_PACKAGE_LIBCURL=y
+BR2_PACKAGE_LIBCURL_CURL=y
+BR2_PACKAGE_CA_CERTIFICATES=y
 
 # --- gameOS components ---
 BR2_PACKAGE_GAMEOS_INPUTD=y

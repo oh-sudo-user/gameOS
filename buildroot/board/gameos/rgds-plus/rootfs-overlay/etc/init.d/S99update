@@ -1,0 +1,44 @@
+#!/bin/sh
+# gameOS boot confirmation and update check — the last init script.
+#
+# boot.scr bumps n in /boot/state on every boot and rolls the slot back to A
+# after four boots that never confirmed. Confirmation means the UI really got
+# on screen: gameos-ui touches /run/gameos/ui-ok after its first seconds of
+# rendering, so a rootfs whose session never starts keeps n climbing and the
+# next power-on returns to the previous slot. Once confirmed we also ask for
+# a release manifest in the background (best effort, needs WiFi).
+
+confirm() {
+    slot=$(sed -n 's/.*root=PARTLABEL=GAMEOS-ROOT-\([AB]\).*/\1/p' /proc/cmdline | head -n 1)
+    slot=$(echo "${slot:-A}" | tr AB ab)
+    if ! mountpoint -q /boot; then
+        p=$(readlink -f /dev/disk/by-partlabel/GAMEOS-BOOT 2>/dev/null)
+        [ -b "$p" ] && mount -t vfat "$p" /boot 2>/dev/null
+    fi
+    mountpoint -q /boot || return 1
+    printf 'slot=%s\nn=0\n' "$slot" > /boot/state.new || return 1
+    mv -f /boot/state.new /boot/state || return 1
+    sync
+    return 0
+}
+
+case "$1" in
+start)
+    (
+        i=0
+        while [ $i -lt 180 ] && [ ! -f /run/gameos/ui-ok ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        [ -f /run/gameos/ui-ok ] || exit 0
+        confirm
+        sleep 3
+        gameos-update autocheck >/dev/null 2>&1
+    ) &
+    ;;
+stop|restart) : ;;
+*)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac

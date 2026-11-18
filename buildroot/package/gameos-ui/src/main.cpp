@@ -42,7 +42,7 @@ const SDL_Color C_BG     = {  11,  16,  32, 255 };
 const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
 
-enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Msg, Confirm };
+enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave };
 
 struct BtDev {
@@ -119,6 +119,16 @@ struct App {
     bool wifi_kb = false;
     std::string wifi_target, wifi_pw;
     int kb_r = 1, kb_c = 0, kb_shift = 0;
+
+    // system update screen (gameos-update runs in the background)
+    std::string upd_state, upd_version, upd_msg;
+    std::string upd_cur;               // /etc/gameos-version
+    std::string upd_op;                // running op: check/apply
+    int upd_pct = 0;
+    bool upd_busy = false;
+    Uint32 upd_poll_at = 0;
+    Uint32 upd_op_at = 0;
+    Uint32 upd_refresh_at = 0;
 
     bool running = true;
     int exit_code = 0;
@@ -1026,10 +1036,146 @@ void wifi_enter()
     }
 }
 
+// ---------------------------------------------------------------------------
+// system update (gameos-update writes /run/gameos/update-state)
+// ---------------------------------------------------------------------------
+void update_refresh()
+{
+    if (app.upd_cur.empty()) {
+        std::string v = read_file("/etc/gameos-version");
+        while (!v.empty() && (v.back() == '\n' || v.back() == '\r')) v.pop_back();
+        app.upd_cur = v;
+    }
+    std::string out = read_file("/run/gameos/update-state");
+    app.upd_state.clear();
+    app.upd_version.clear();
+    app.upd_msg.clear();
+    app.upd_pct = 0;
+    std::istringstream ss(out);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (k == "state")        app.upd_state = v;
+        else if (k == "version") app.upd_version = v;
+        else if (k == "msg")     app.upd_msg = v;
+        else if (k == "pct")     app.upd_pct = std::clamp(atoi(v.c_str()), 0, 100);
+    }
+}
+
+void update_start(const std::string& op)
+{
+    unlink("/run/gameos/update-op.rc");
+    std::string cmd = "mkdir -p /run/gameos; gameos-update " + op +
+                      " >/dev/null 2>&1 &";
+    if (system(cmd.c_str()) != 0) { /* ignore */ }
+    app.upd_busy = true;
+    app.upd_op = op;
+    app.upd_op_at = SDL_GetTicks();
+    app.upd_pct = 0;
+    app.upd_msg.clear();
+    app.upd_state = (op == "apply") ? "downloading" : "checking";
+}
+
+void update_poll()
+{
+    Uint32 now = SDL_GetTicks();
+    if (app.screen == Screen::Update && now - app.upd_refresh_at > 500) {
+        app.upd_refresh_at = now;
+        update_refresh();
+    }
+    if (!app.upd_busy) return;
+    Uint32 limit = (app.upd_op == "apply") ? 1800000u : 120000u;
+    if (now - app.upd_op_at > limit) {
+        app.upd_busy = false;
+        app.upd_op.clear();
+        app.upd_state = "failed";
+        app.upd_msg = "timeout";
+        return;
+    }
+    if (now - app.upd_poll_at < 300) return;
+    app.upd_poll_at = now;
+    FILE* f = fopen("/run/gameos/update-op.rc", "r");
+    if (!f) return;
+    int rc = 1;
+    if (fscanf(f, "%d", &rc) != 1) rc = 1;
+    fclose(f);
+    app.upd_busy = false;
+    app.upd_op.clear();
+    update_refresh();
+    if (rc != 0 && app.upd_state != "failed" && app.upd_state != "nowifi")
+        app.upd_state = "failed";
+}
+
+void update_enter()
+{
+    update_refresh();
+    app.screen = Screen::Update;
+    if (!app.upd_busy && (app.upd_state.empty() || app.upd_state == "idle"))
+        update_start("check");
+}
+
+void draw_update(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    text(r, app.f_title, tr(T_UPDATE), 32, 26, C_TEXT);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+
+    char b[192];
+    if (!app.upd_cur.empty()) {
+        snprintf(b, sizeof(b), tr(T_UPDATE_CURRENT), app.upd_cur.c_str());
+        text(r, app.f_small, b, 32, 120, C_DIM);
+    }
+
+    std::string st;
+    SDL_Color c = C_TEXT;
+    if (app.upd_busy && app.upd_op == "apply" && app.upd_state == "downloading") {
+        snprintf(b, sizeof(b), tr(T_UPDATE_DOWNLOADING), app.upd_pct);
+        st = b; c = g_accent;
+    } else if (app.upd_busy && app.upd_op == "apply") {
+        st = tr(T_UPDATE_INSTALLING); c = C_AMBER;
+    } else if (app.upd_busy) {
+        st = tr(T_UPDATE_CHECKING); c = C_DIM;
+    } else if (app.upd_state == "available") {
+        snprintf(b, sizeof(b), tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
+        st = b; c = C_GREEN;
+    } else if (app.upd_state == "uptodate") {
+        st = tr(T_UPDATE_UPTODATE); c = C_GREEN;
+    } else if (app.upd_state == "ready") {
+        st = tr(T_UPDATE_READY); c = C_GREEN;
+    } else if (app.upd_state == "nowifi") {
+        st = tr(T_UPDATE_NOWIFI); c = C_AMBER;
+    } else if (app.upd_state == "failed") {
+        snprintf(b, sizeof(b), tr(T_UPDATE_FAILED), app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
+        st = b; c = C_RED;
+    } else {
+        st = tr(T_UPDATE_IDLE); c = C_DIM;
+    }
+    auto lines = wrap(app.f_body, st, W - 160);
+    int y = 230;
+    for (const auto& l : lines) {
+        text(r, app.f_body, l, W / 2, y, c, Align::Center);
+        y += 52;
+    }
+
+    if (app.upd_busy && app.upd_op == "apply" && app.upd_state == "downloading") {
+        fill_rect(r, W / 2 - 300, 420, 600, 18, { 60, 68, 96, 160 });
+        fill_rect(r, W / 2 - 300, 420, 600 * app.upd_pct / 100, 18, g_accent);
+        snprintf(b, sizeof(b), "%d%%", app.upd_pct);
+        text(r, app.f_small, b, W / 2, 452, C_DIM, Align::Center);
+    }
+    if (!app.upd_busy && app.upd_state == "ready") {
+        text(r, app.f_body, tr(T_UPDATE_REBOOT), W / 2, 430, C_AMBER, Align::Center);
+    }
+    draw_hint(r, tr(T_UPDATE_HINT));
+}
+
 void draw_kb(SDL_Renderer* r)
 {
-    fill_rect(r, 0, 0, W, H, { 5, 8, 18, 205 });
-    int pw = 944, ph = 476, px = (W - pw) / 2, py = (H - ph) / 2;
+    fill_rect(r, 0, 0, W, H, { 5, 8, 18, 205 });    int pw = 944, ph = 476, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, g_accent);
     text(r, app.f_title, tr(T_WIFI_PASSWORD), W / 2, py + 22, C_TEXT, Align::Center);
@@ -1199,10 +1345,10 @@ void draw_settings(SDL_Renderer* r)
     fill_rect(r, 0, 96, W, 3, g_accent);
 
     const char* rows[] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
-                           tr(T_THEME), tr(T_LANGUAGE), tr(T_SAVES),
+                           tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
                            tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT) };
-    const int rowh = 58, top = 104;
-    for (int i = 0; i < 10; i++) {
+    const int rowh = 54, top = 104;
+    for (int i = 0; i < 11; i++) {
         int y = top + i * rowh;
         if (i == app.set_sel) {
             fill_rect(r, 120, y, W - 240, rowh - 8, C_PANEL);
@@ -1231,6 +1377,30 @@ void draw_settings(SDL_Renderer* r)
         } else if (i == 5) {
             text(r, app.f_body, lang_name(app.settings.language), 860, y + 14, g_accent, Align::Right);
         } else if (i == 6) {
+            char u[96];
+            const char* s;
+            SDL_Color uc = C_DIM;
+            if (app.upd_busy) {
+                s = (app.upd_op == "apply") ? tr(T_UPDATE_INSTALLING)
+                                            : tr(T_UPDATE_CHECKING);
+            } else if (app.upd_state == "available") {
+                snprintf(u, sizeof(u), tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
+                s = u; uc = C_GREEN;
+            } else if (app.upd_state == "uptodate") {
+                s = tr(T_UPDATE_UPTODATE); uc = C_GREEN;
+            } else if (app.upd_state == "ready") {
+                s = tr(T_UPDATE_REBOOT); uc = C_GREEN;
+            } else if (app.upd_state == "nowifi") {
+                s = tr(T_UPDATE_NOWIFI);
+            } else if (app.upd_state == "failed") {
+                snprintf(u, sizeof(u), tr(T_UPDATE_FAILED),
+                         app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
+                s = u;
+            } else {
+                s = tr(T_UPDATE_IDLE);
+            }
+            text(r, app.f_small, s, 860, y + 14, uc, Align::Right);
+        } else if (i == 7) {
             char b[32];
             snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size());
             text(r, app.f_body, b, 860, y + 14, tc, Align::Right);
@@ -1478,6 +1648,9 @@ void go_back()
     case Screen::Bluetooth:
         app.screen = Screen::Settings;
         break;
+    case Screen::Update:
+        app.screen = Screen::Settings;
+        break;
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
                                                            : Screen::Settings;
@@ -1503,20 +1676,27 @@ void confirm_btn()
         else if (app.set_sel == 3) wifi_enter();
         else if (app.set_sel == 4) cycle_theme();
         else if (app.set_sel == 5) cycle_lang();
-        else if (app.set_sel == 6) {
+        else if (app.set_sel == 6) update_enter();
+        else if (app.set_sel == 7) {
             app.saves = scan_saves();
             app.save_sel = 0;
             app.save_scroll = 0;
             app.screen = Screen::Saves;
         }
-        else if (app.set_sel == 7) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 8) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 9)
+        else if (app.set_sel == 8) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 9) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 10)
             show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
         break;
     case Screen::Wifi:
         if (app.wifi_kb) kb_press();
         else if (!app.wifi_busy) wifi_press_net();
+        break;
+    case Screen::Update:
+        if (app.upd_busy) break;
+        if (app.upd_state == "available") update_start("apply");
+        else if (app.upd_state == "ready") { app.exit_code = 91; app.running = false; }
+        else update_start("check");
         break;
     case Screen::Bluetooth:
         if (app.bt_busy) break;
@@ -1563,6 +1743,7 @@ void start_btn()
         sound_play(SND_CONFIRM);
         app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
         wifi_refresh_status();   // fills in the WiFi row before it is drawn
+        update_refresh();        // and the update row
         app.screen = Screen::Settings;
         app.set_sel = 0;
     }
@@ -1589,7 +1770,7 @@ void navigate(int dx, int dy)
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 9);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 10);
         if (dx) {
             if (app.set_sel == 0) {
                 app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
@@ -1652,7 +1833,9 @@ void handle_button(SDL_ControllerButtonEvent& b)
                 app.wifi_status = tr(T_WIFI_SCANNING);
                 wifi_start("scan");
             }
-        } else if (app.screen != Screen::Wifi) refresh_games();
+        } else if (app.screen == Screen::Update) {
+            if (!app.upd_busy) { sound_play(SND_SWITCH); update_start("check"); }
+        } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
         if (app.screen == Screen::Bluetooth) {
@@ -1669,6 +1852,8 @@ void handle_button(SDL_ControllerButtonEvent& b)
                 sound_play(SND_BACK);
                 wifi_forget_net();
             }
+        } else if (app.screen == Screen::Update) {
+            // nothing to forget here
         } else toggle_fav();
         break;
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: toggle_fav_only(); break; // physical R
@@ -1700,6 +1885,8 @@ void handle_key(SDL_KeyboardEvent& k)
                 app.wifi_status = tr(T_WIFI_SCANNING);
                 wifi_start("scan");
             }
+        } else if (app.screen == Screen::Update) {
+            if (!app.upd_busy) { sound_play(SND_SWITCH); update_start("check"); }
         } else refresh_games();
         break;
     case SDLK_f:
@@ -1717,6 +1904,8 @@ void handle_key(SDL_KeyboardEvent& k)
                 sound_play(SND_BACK);
                 wifi_forget_net();
             }
+        } else if (app.screen == Screen::Update) {
+            // nothing to forget here
         } else toggle_fav();
         break;
     case SDLK_TAB: toggle_fav_only(); break;
@@ -1853,6 +2042,17 @@ int main(int, char**)
         poll_repeat();
         bt_poll();
         wifi_poll();
+        update_poll();
+
+        // Tell S99update the UI really got on screen: boot.scr only clears the
+        // boot counter once this marker exists, so a rootfs whose session
+        // never renders still rolls back after four tries.
+        static Uint32 ui_t0 = SDL_GetTicks();
+        static bool ui_ok = false;
+        if (!ui_ok && SDL_GetTicks() - ui_t0 > 3000) {
+            ui_ok = true;
+            system("mkdir -p /run/gameos; : > /run/gameos/ui-ok");
+        }
 
         SDL_Renderer* r = app.ren_top;
         switch (app.screen) {
@@ -1862,6 +2062,7 @@ int main(int, char**)
         case Screen::Wifi:      draw_wifi(r); break;
         case Screen::Bluetooth: draw_bluetooth(r); break;
         case Screen::Saves:     draw_saves(r); break;
+        case Screen::Update:    draw_update(r); break;
         case Screen::Msg:       draw_msg(r); break;
         case Screen::Confirm:   draw_confirm(r); break;
         }
