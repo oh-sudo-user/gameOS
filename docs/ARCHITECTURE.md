@@ -75,13 +75,17 @@ RetroArch 的 KMS/DRM context 补丁（`GAMEOS_DUALSCREEN=1` 时启用）：
 
 ```
 busybox init
-  ├─ rcS → S20gameos   (首 boot 扩容 exFAT 数据分区、性能 governor、
+  ├─ rcS → S00splash   (双屏开机动画守护进程；内核 console 只留在串口，
+  │                     面板不显示任何启动文字)
+  │        S20gameos   (首 boot 扩容 exFAT 数据分区、性能 governor、
   │                     背光/音量默认值；面板驱动已编入内核无需加载)
   │        S27sleepd   (合盖暂停游戏并休眠、开盖恢复；充电时只熄屏；
   │                     RTC 定时醒来防电池睡干)
   └─ respawn: gameos-session
        ├─ gameos-inputd &
        └─ gameos-ui     (自研 SDL2 前端；退出码 90=关机 91=重启)
+            ├─ 启动前写 /run/gameos/splash.stop 并等 splash 退出，
+            │  接管 DRM master（splash 先淡入 UI 背景再释放，无黑缝）
             └─ 启动游戏时 SDL_Quit 释放 DRM master → fork/exec
                retroarch / ppsspp-run → 退出后重新接管双屏
 ```

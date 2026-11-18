@@ -43,6 +43,8 @@ Every other system runs on the top screen with the bottom one dark, which is exa
 - **A library that stays out of the way.** Favorites (and a favorites-only view), optional box art, subfolders for organizing, and multi-disc PS1 games shown as one entry instead of five.
 - **Save management.** Browse and delete save files from Settings — no card reader needed.
 - **Comfort.** Four color themes, brightness and volume adjustment, battery indicator, and Bluetooth audio for headphones and speakers.
+- **Small sounds, big feel.** Moving, confirming, going back, favoriting — each action has its own little music-box chime. Same family, different notes, never in the way.
+- **A boot worth watching.** No wall of console text: an animated brand screen (glowing logo, a light sweep, an orbiting spinner) covers both panels from power-on until the library fades in.
 - **Close the lid, keep your place.** The game pauses and the device sleeps; open the lid and you are back where you were. While charging it just turns the screens off. If the battery runs low during sleep, it wakes on a timer and shuts down cleanly rather than dying mid-save.
 
 ### Getting started
@@ -99,6 +101,7 @@ BootROM → idbloader (RK3568 DDR firmware + SPL)
         → U-Boot v2026.01 (SD-card-first, power-key boot)
         → Linux 7.2.11 (mainline + pinned RK3566 patch set + RG DS Plus device tree)
         → Buildroot rootfs (busybox init)
+        → gameos-splash (animated boot screen, both panels)
         → gameos-inputd + gameos-sleepd
         → gameos-ui (SDL2 straight to DRM/KMS)
         → RetroArch / PPSSPP
@@ -173,6 +176,8 @@ NDS 游戏需要三个从你自己的主机上导出的 BIOS 文件：`bios7.bin
 - **省心的游戏库。** 收藏（和只看收藏）、可选封面图、子文件夹整理，多盘 PS1 游戏只显示一条，不会列出五条。
 - **存档管理。** 在设置里浏览、删除存档，不用拔卡。
 - **用得舒服。** 四套配色主题、亮度音量调节、电量显示，蓝牙耳机/音箱音频。
+- **小音效，大手感。** 移动、确认、返回、收藏，每个操作都有一声自己的音乐盒小音：同一家族、不同音符，清脆但不吵。
+- **开机也好看。** 没有满屏滚动的启动文字：从上电到游戏库淡入，两块屏一直是一段品牌动画——发光的 logo、扫过字面的光、转圈的小点。
 - **合盖不丢进度。** 合上盖子，游戏暂停、机器休眠；开盖回到刚才的地方。充电时合盖只熄屏。休眠中电量不足的话，它会定时醒来正常关机，而不是睡到一半没电。
 
 ### 上手
@@ -229,6 +234,7 @@ BootROM → idbloader（RK3568 DDR 固件 + SPL）
         → U-Boot v2026.01（SD 卡优先、电源键开机）
         → Linux 7.2.11（主线内核 + 固定版本 RK3566 补丁集 + RG DS Plus 设备树）
         → Buildroot 根文件系统（busybox init）
+        → gameos-splash（双屏开机动画）
         → gameos-inputd + gameos-sleepd
         → gameos-ui（SDL2 直写 DRM/KMS）
         → RetroArch / PPSSPP

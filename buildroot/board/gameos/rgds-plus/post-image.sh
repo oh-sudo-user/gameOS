@@ -23,11 +23,15 @@ cp "$BINARIES_DIR/rk3568-anbernic-rg-ds-plus.dtb" \
    "$BINARIES_DIR/rk3568-anbernic-rg-ds.dtb" \
    "$BINARIES_DIR/boot-stage/"
 
+# Console on the serial port ONLY: with console=tty0 the kernel and every
+# init script would print boot text on the game panels. The panels instead
+# show gameos-splash (S00splash) from early boot until the UI takes over.
+# loglevel=7 keeps the serial port fully verbose for debugging.
 cat > "$BINARIES_DIR/boot-stage/extlinux/extlinux.conf" <<'EOF'
 LABEL gameOS
   KERNEL /Image
   FDT /rk3568-anbernic-rg-ds-plus.dtb
-  APPEND root=PARTLABEL=GAMEOS-ROOT rootwait rw console=ttyS2,1500000n8 console=tty0 quiet loglevel=3 vt.global_cursor_default=0
+  APPEND root=PARTLABEL=GAMEOS-ROOT rootwait rw console=ttyS2,1500000n8 loglevel=7 vt.global_cursor_default=0
 EOF
 
 echo "==> gameOS: creating boot.vfat"

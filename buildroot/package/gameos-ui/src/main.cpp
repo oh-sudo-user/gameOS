@@ -1359,6 +1359,22 @@ int main(int, char**)
 {
     setenv("SDL_VIDEODRIVER", "kmsdrm", 0);
 
+    // Boot-splash handoff: the splash daemon has owned DRM master since
+    // early boot. Ask it to cross-fade out and wait until it releases the
+    // panels, otherwise SDL_Init below cannot become DRM master.
+    {
+        std::string pid = read_file("/run/gameos/splash.pid");
+        while (!pid.empty() && (pid.back() == '\n' || pid.back() == '\r' || pid.back() == ' '))
+            pid.pop_back();
+        if (!pid.empty()) {
+            write_file("/run/gameos/splash.stop", "1");
+            for (int i = 0; i < 100; i++) {           // up to 5 s
+                if (access(("/proc/" + pid).c_str(), F_OK) != 0) break;
+                usleep(50 * 1000);
+            }
+        }
+    }
+
     app.settings = load_settings();
     g_lang = (Lang)std::clamp(app.settings.language, 0, (int)LANG_COUNT - 1);
     app.carousel = app.settings.last_console;

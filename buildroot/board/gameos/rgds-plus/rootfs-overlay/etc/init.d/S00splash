@@ -1,0 +1,14 @@
+#!/bin/sh
+# Boot animation: first script in rcS, so the panels show the animated
+# brand screen before anything else can print. The daemon double-forks
+# and returns at once; gameos-ui asks it to leave via
+# /run/gameos/splash.stop right before taking over DRM master.
+case "$1" in
+  start)
+    /usr/bin/gameos-splash
+    ;;
+  stop)
+    mkdir -p /run/gameos
+    touch /run/gameos/splash.stop
+    ;;
+esac

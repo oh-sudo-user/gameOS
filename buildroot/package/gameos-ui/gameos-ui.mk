@@ -20,6 +20,7 @@ endef
 
 define GAMEOS_UI_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/gameos-ui $(TARGET_DIR)/usr/bin/gameos-ui
+	$(INSTALL) -D -m 0755 $(@D)/gameos-splash $(TARGET_DIR)/usr/bin/gameos-splash
 endef
 
 $(eval $(generic-package))

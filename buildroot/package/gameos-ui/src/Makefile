@@ -7,10 +7,15 @@ LIBS = $(shell $(PKG_CONFIG) --libs $(PKGS))
 
 SRCS = main.cpp library.cpp launch.cpp i18n.cpp sound.cpp
 
+all: gameos-ui gameos-splash
+
 gameos-ui: $(SRCS) gameos.hpp i18n.hpp sound.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LIBS)
 
-clean:
-	rm -f gameos-ui
+gameos-splash: splash.cpp
+	$(CXX) $(CXXFLAGS) -o $@ splash.cpp $(LIBS)
 
-.PHONY: clean
+clean:
+	rm -f gameos-ui gameos-splash
+
+.PHONY: all clean
