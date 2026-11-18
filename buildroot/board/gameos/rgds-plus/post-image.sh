@@ -101,7 +101,10 @@ gzip -9 -c "$BINARIES_DIR/rootfs.ext4" > "$BINARIES_DIR/gameOS-rootfs.ext4.gz"
 tar -czf "$BINARIES_DIR/gameOS-boot.tar.gz" -C "$BINARIES_DIR/boot-stage/a" \
   Image rk3568-anbernic-rg-ds-plus.dtb rk3568-anbernic-rg-ds.dtb
 
-ROOTFS_SIZE=$(stat -c %s "$BINARIES_DIR/rootfs.ext4")
+# images/rootfs.ext4 is a symlink to rootfs.ext2 in this Buildroot, so -L is
+# required: without it stat reports the 11-byte link name and the updater's
+# size gate rejects every download.
+ROOTFS_SIZE=$(stat -L -c %s "$BINARIES_DIR/rootfs.ext4")
 ROOTFS_GZ=$(stat -c %s "$BINARIES_DIR/gameOS-rootfs.ext4.gz")
 ROOTFS_SHA=$(sha256sum "$BINARIES_DIR/gameOS-rootfs.ext4.gz" | cut -d' ' -f1)
 BOOT_SHA=$(sha256sum "$BINARIES_DIR/gameOS-boot.tar.gz" | cut -d' ' -f1)
