@@ -94,6 +94,7 @@ jobs:
         run: |
           ls -lh output/images/gameOS-rgds-plus.img.gz
           cat output/images/gameOS-rgds-plus.img.gz.sha256
+          cat output/images/manifest.json
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
@@ -102,6 +103,9 @@ jobs:
           path: |
             output/images/gameOS-rgds-plus.img.gz
             output/images/gameOS-rgds-plus.img.gz.sha256
+            output/images/manifest.json
+            output/images/gameOS-rootfs.ext4.gz
+            output/images/gameOS-boot.tar.gz
           compression-level: 0
 
       - name: Publish release (tags only)
@@ -111,7 +115,11 @@ jobs:
           files: |
             output/images/gameOS-rgds-plus.img.gz
             output/images/gameOS-rgds-plus.img.gz.sha256
+            output/images/manifest.json
+            output/images/gameOS-rootfs.ext4.gz
+            output/images/gameOS-boot.tar.gz
           body: |
             gameOS 镜像（Anbernic RG DS Plus）。
             刷写方法见仓库 docs/FLASHING.md：用 balenaEtcher 将
             gameOS-rgds-plus.img.gz 直接刷入 microSD 卡即可。
+            已在运行 gameOS 的设备可在「设置 > 系统更新」里直接检查并安装本版本。
