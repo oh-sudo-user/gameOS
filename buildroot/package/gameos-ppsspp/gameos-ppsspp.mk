@@ -85,11 +85,13 @@ GAMEOS_PPSSPP_CONF_OPTS = \
 # cmake-package defaults to IN-SOURCE build (SUPPORTS_IN_SOURCE_BUILD ?=
 # YES -> BUILDDIR = $(@D)); PPSSPPSDL has no custom output dir, so the
 # binary lands at the source root $(@D)/PPSSPPSDL, NOT buildroot-build.
+# v1.20.4 keeps translations at assets/lang (there is NO top-level lang/),
+# and PPSSPP's VFS registers /usr/share/ppsspp/assets as a root, so copying
+# assets/ alone places lang where I18n expects it (assets/lang/<id>.ini).
 define GAMEOS_PPSSPP_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/PPSSPPSDL $(TARGET_DIR)/usr/bin/PPSSPPSDL
 	mkdir -p $(TARGET_DIR)/usr/share/ppsspp
 	cp -dpfr $(@D)/assets $(TARGET_DIR)/usr/share/ppsspp/
-	cp -dpfr $(@D)/lang $(TARGET_DIR)/usr/share/ppsspp/
 endef
 
 $(eval $(cmake-package))

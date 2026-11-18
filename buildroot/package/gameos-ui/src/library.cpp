@@ -246,10 +246,13 @@ void apply_brightness(int pct)
 void apply_volume(int pct)
 {
     pct = std::clamp(pct, 0, 100);
-    char cmd[256];
+    // rk817 headphone exposes "Master"; aw88166 speakers expose "PCM".
+    // Card probe order can swap 0/1, so fall back Master->PCM per card.
+    char cmd[384];
     snprintf(cmd, sizeof(cmd),
-             "amixer -c 0 sset Master %d%% >/dev/null 2>&1; "
-             "amixer -c 1 sset Master %d%% >/dev/null 2>&1", pct, pct);
+             "amixer -c 0 sset Master %d%% >/dev/null 2>&1 || amixer -c 0 sset PCM %d%% >/dev/null 2>&1; "
+             "amixer -c 1 sset Master %d%% >/dev/null 2>&1 || amixer -c 1 sset PCM %d%% >/dev/null 2>&1",
+             pct, pct, pct, pct);
     if (system(cmd) != 0) { /* ignore */ }
 }
 

@@ -181,9 +181,11 @@ static void set_backlight(int percent_of_max)
 
 static void handle_volume(int code)
 {
+    // rk817 headphone = "Master"; aw88166 speakers = "PCM". Card order can
+    // swap, so fall back Master->PCM on each card.
     const char *cmd = (code == KEY_VOLUMEUP)
-        ? "amixer -c 0 sset Master 5%+ >/dev/null 2>&1; amixer -c 1 sset Master 5%+ >/dev/null 2>&1"
-        : "amixer -c 0 sset Master 5%- >/dev/null 2>&1; amixer -c 1 sset Master 5%- >/dev/null 2>&1";
+        ? "amixer -c 0 sset Master 5%+ >/dev/null 2>&1 || amixer -c 0 sset PCM 5%+ >/dev/null 2>&1; amixer -c 1 sset Master 5%+ >/dev/null 2>&1 || amixer -c 1 sset PCM 5%+ >/dev/null 2>&1"
+        : "amixer -c 0 sset Master 5%- >/dev/null 2>&1 || amixer -c 0 sset PCM 5%- >/dev/null 2>&1; amixer -c 1 sset Master 5%- >/dev/null 2>&1 || amixer -c 1 sset PCM 5%- >/dev/null 2>&1";
     if (system(cmd) != 0) { /* ignore */ }
 }
 
@@ -192,7 +194,7 @@ int main(void)
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
 
-    int ufd = -1, bfd = -1, afd = -1, vfd = -1, hfd = -1;
+    int ufd = -1, bfd = -1, afd = -1, vfd = -1, hfd = -1, homefd = -1;
 
     // wait for devices (udev may still be settling at boot)
     for (int tries = 0; tries < 60 && running; tries++) {
@@ -201,6 +203,7 @@ int main(void)
         if (afd < 0) afd = open_named("adc-joystick");
         if (vfd < 0) vfd = open_named("gpio-keys-volume");
         if (hfd < 0) hfd = open_named("gpio-keys-hall");
+        if (homefd < 0) homefd = open_named("adc-keys-home");
         if (ufd >= 0 && bfd >= 0 && afd >= 0) break;
         usleep(500000);
     }
@@ -213,9 +216,10 @@ int main(void)
     // Live device fds, addressed by slot so reconnects (which change the fd
     // number) never confuse the source identification. Slots 0/1 (buttons,
     // axes) are required; 2/3 (volume, hall) are optional and may appear late.
-    int *slots[4] = { &bfd, &afd, &vfd, &hfd };
-    const char *names[4] = { "gpio-keys-control", "adc-joystick",
-                             "gpio-keys-volume", "gpio-keys-hall" };
+    int *slots[5] = { &bfd, &afd, &vfd, &hfd, &homefd };
+    const char *names[5] = { "gpio-keys-control", "adc-joystick",
+                             "gpio-keys-volume", "gpio-keys-hall",
+                             "adc-keys-home" };
     time_t last_reconnect = 0;
 
     while (running) {
@@ -224,7 +228,7 @@ int main(void)
         time_t now = time(NULL);
         if (now != last_reconnect) {
             last_reconnect = now;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 if (*slots[i] < 0) {
                     int f = open_named(names[i]);
                     if (f >= 0) {
@@ -239,10 +243,10 @@ int main(void)
         // Required device missing: wait briefly instead of busy-spinning.
         if (bfd < 0 || afd < 0 || ufd < 0) { usleep(200000); continue; }
 
-        struct pollfd pf[4];
-        int slot_of[4];
+        struct pollfd pf[5];
+        int slot_of[5];
         int n = 0;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             if (*slots[i] >= 0) {
                 pf[n].fd = *slots[i];
                 pf[n].events = POLLIN;
@@ -302,6 +306,10 @@ int main(void)
                 } else if (slot == 3 && t == EV_SW && c == SW_LID) {
                     // v=1: lid closed -> blank panels; v=0: open -> restore
                     set_backlight(v ? 0 : -1);
+                } else if (slot == 4 && t == EV_KEY && c == BTN_BACK) {
+                    // adc-keys-home (HOME) -> BTN_BACK on the merged pad
+                    emit(ufd, EV_KEY, BTN_BACK, v);
+                    need_syn = 1;
                 }
             }
             if (need_syn) syn(ufd);

@@ -202,14 +202,16 @@ void open_controller()
                 char guid[64];
                 SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i),
                                           guid, sizeof(guid));
+                // SDL evdev order: BTN_JOYSTICK..KEY_MAX first, then 0..BTN_JOYSTICK,
+                // so BTN_BACK(0x116) lands LAST (b17); sticks/dpad are b11..b16.
                 std::string map = std::string(guid) +
                     ",gameOS Gamepad,platform:Linux,"
                     "a:b0,b:b1,x:b3,y:b2,"
-                    "back:b8,start:b9,guide:b10,"
+                    "back:b17,start:b9,guide:b10,"
                     "leftshoulder:b4,rightshoulder:b5,"
                     "lefttrigger:b6,righttrigger:b7,"
-                    "leftstick:b12,rightstick:b13,"
-                    "dpup:b14,dpdown:b15,dpleft:b16,dpright:b17,"
+                    "leftstick:b11,rightstick:b12,"
+                    "dpup:b13,dpdown:b14,dpleft:b15,dpright:b16,"
                     "leftx:a0,lefty:a1,";
                 SDL_GameControllerAddMapping(map.c_str());
             }
@@ -727,8 +729,9 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_B: confirm_btn(); break;   // physical A (right)
     case SDL_CONTROLLER_BUTTON_A: go_back(); break;       // physical B (bottom)
     case SDL_CONTROLLER_BUTTON_START: start_btn(); break;
-    case SDL_CONTROLLER_BUTTON_X: refresh_games(); break;  // physical Y (top)
-    case SDL_CONTROLLER_BUTTON_BACK:
+    case SDL_CONTROLLER_BUTTON_X: refresh_games(); break;  // physical Y (left)
+    case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
+    case SDL_CONTROLLER_BUTTON_GUIDE:  // physical MENU (BTN_MODE)
         if (app.screen != Screen::Confirm) app.screen = Screen::Home;
         break;
     case SDL_CONTROLLER_BUTTON_DPAD_UP:    navigate(0, -1); break;
@@ -759,31 +762,38 @@ void handle_key(SDL_KeyboardEvent& k)
 void poll_repeat()
 {
     int dx = 0, dy = 0;
+    bool from_btn = false;
     if (app.pad) {
-        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  dx = -1;
-        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) dx = 1;
-        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_UP))    dy = -1;
-        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  dy = 1;
+        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  { dx = -1; from_btn = true; }
+        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) { dx = 1;  from_btn = true; }
+        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_UP))    { dy = -1; from_btn = true; }
+        if (SDL_GameControllerGetButton(app.pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  { dy = 1;  from_btn = true; }
         Sint16 ax = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_LEFTX);
         Sint16 ay = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_LEFTY);
-        if (ax < -16000) dx = -1; else if (ax > 16000) dx = 1;
-        if (ay < -16000) dy = -1; else if (ay > 16000) dy = 1;
+        if (ax < -16000) { dx = -1; from_btn = false; } else if (ax > 16000) { dx = 1; from_btn = false; }
+        if (ay < -16000) { dy = -1; from_btn = false; } else if (ay > 16000) { dy = 1; from_btn = false; }
     }
     int dir = dy ? dy * 2 : dx; // encode: vertical takes priority
+    auto step = [&]() {
+        if (dir == -2) navigate(0, -1);
+        else if (dir == 2) navigate(0, 1);
+        else if (dir != 0) navigate(dir, 0);
+    };
     Uint32 now = SDL_GetTicks();
     if (dir != app.hold_dir) {
         app.hold_dir = dir;
         app.hold_since = now;
         app.last_repeat = now;
-        return; // first press already handled by button event
+        // D-pad first move is handled by handle_button; a stick deflection
+        // emits no button event, so step now instead of a 400ms dead delay.
+        if (!from_btn) step();
+        return;
     }
     if (dir == 0) return;
     Uint32 delay = (now - app.hold_since < 400) ? 400 : 130;
     if (now - app.last_repeat >= delay) {
         app.last_repeat = now;
-        if (dir == -2) navigate(0, -1);
-        else if (dir == 2) navigate(0, 1);
-        else navigate(dir, 0);
+        step();
     }
 }
 
@@ -791,7 +801,7 @@ void poll_repeat()
 
 int main(int, char**)
 {
-    setenv("SDL_VIDEODRIVER", "kmsdrm", 1);
+    setenv("SDL_VIDEODRIVER", "kmsdrm", 0);
 
     app.settings = load_settings();
     app.carousel = app.settings.last_console;
