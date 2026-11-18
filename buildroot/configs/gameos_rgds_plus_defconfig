@@ -135,6 +135,13 @@ BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX_BT=y
 # regulatory.db: without it cfg80211 falls back to the usermode firmware
 # helper and stalls boot ~60s.
 BR2_PACKAGE_WIRELESS_REGDB=y
+# WiFi client stack: wpa_supplicant over nl80211 + wpa_cli driven by the UI,
+# busybox udhcpc for the lease. WPA3 pulls in OpenSSL (needed for OTA too).
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_WPA3=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
 
 # --- gameOS components ---
 BR2_PACKAGE_GAMEOS_INPUTD=y

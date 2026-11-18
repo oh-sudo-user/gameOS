@@ -42,12 +42,19 @@ const SDL_Color C_BG     = {  11,  16,  32, 255 };
 const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
 
-enum class Screen { Home, List, Settings, Bluetooth, Saves, Msg, Confirm };
+enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave };
 
 struct BtDev {
     std::string mac, name, kind;
     bool paired = false, connected = false;
+};
+
+struct WifiNet {
+    std::string ssid;
+    int  signal = 0;      // dBm
+    bool secure = false;
+    bool saved = false;
 };
 
 struct App {
@@ -94,6 +101,24 @@ struct App {
     int bt_scroll = 0;
     Uint32 bt_poll_at = 0;
     Uint32 bt_op_at = 0;               // when the running op started (timeout)
+
+    // WiFi screen state (ops run via gameos-wifi in the background)
+    bool wifi_busy = false;
+    std::string wifi_op;               // scan/connect/forget
+    std::string wifi_status;           // one-line feedback under the list
+    std::string wifi_state;            // wpa_state/NOHW from gameos-wifi status
+    std::string wifi_link;             // associated SSID
+    std::string wifi_ip;
+    std::vector<WifiNet> wifi_nets;
+    std::vector<std::string> wifi_known;
+    int wifi_sel = 0, wifi_scroll = 0;
+    Uint32 wifi_poll_at = 0;
+    Uint32 wifi_op_at = 0;
+    Uint32 wifi_status_at = 0;
+    // password keyboard
+    bool wifi_kb = false;
+    std::string wifi_target, wifi_pw;
+    int kb_r = 1, kb_c = 0, kb_shift = 0;
 
     bool running = true;
     int exit_code = 0;
@@ -768,6 +793,343 @@ void bt_enter()
     app.screen = Screen::Bluetooth;
 }
 
+// ---------------------------------------------------------------------------
+// WiFi: gameos-wifi ops run in the background, polled like the Bluetooth ones.
+// The helper owns wpa_supplicant/udhcpc; the UI only issues short commands and
+// reads the status file, so scanning and association never stall rendering.
+// ---------------------------------------------------------------------------
+std::string run_cmd(const char* cmd)
+{
+    std::string out;
+    FILE* f = popen(cmd, "r");
+    if (!f) return out;
+    char buf[512];
+    while (fgets(buf, sizeof buf, f)) out += buf;
+    pclose(f);
+    return out;
+}
+
+bool wifi_saved(const std::string& ssid)
+{
+    return std::find(app.wifi_known.begin(), app.wifi_known.end(), ssid)
+           != app.wifi_known.end();
+}
+
+void wifi_load_known()
+{
+    app.wifi_known.clear();
+    std::istringstream ss(run_cmd("gameos-wifi known 2>/dev/null"));
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) app.wifi_known.push_back(line);
+    }
+    for (auto& n : app.wifi_nets) n.saved = wifi_saved(n.ssid);
+}
+
+void wifi_refresh_status()
+{
+    std::string out = run_cmd("gameos-wifi status 2>/dev/null");
+    std::istringstream ss(out);
+    std::string line;
+    app.wifi_state.clear();
+    app.wifi_link.clear();
+    app.wifi_ip.clear();
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (k == "state") app.wifi_state = v;
+        else if (k == "ssid") app.wifi_link = v;
+        else if (k == "ip") app.wifi_ip = v;
+    }
+    for (auto& n : app.wifi_nets) n.saved = wifi_saved(n.ssid);
+}
+
+void wifi_start(const std::string& op)
+{
+    unlink("/run/gameos/wifi-op.rc");
+    std::string cmd = "mkdir -p /run/gameos; gameos-wifi " + op +
+                      " > /run/gameos/wifi-op.out 2>&1; echo $? > /run/gameos/wifi-op.rc &";
+    if (system(cmd.c_str()) != 0) { /* ignore */ }
+    app.wifi_op = op;
+    app.wifi_busy = true;
+    app.wifi_op_at = SDL_GetTicks();
+}
+
+void wifi_parse_nets(const std::string& out)
+{
+    app.wifi_nets.clear();
+    std::istringstream ss(out);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t t1 = line.find('\t');
+        if (t1 == std::string::npos) continue;
+        size_t t2 = line.find('\t', t1 + 1);
+        if (t2 == std::string::npos) continue;
+        WifiNet n;
+        n.signal = atoi(line.substr(0, t1).c_str());
+        n.secure = line[t1 + 1] == '1';
+        n.ssid = line.substr(t2 + 1);
+        if (n.ssid.empty()) continue;
+        n.saved = wifi_saved(n.ssid);
+        bool dup = false;
+        for (auto& e : app.wifi_nets)
+            if (e.ssid == n.ssid) { dup = true; if (n.signal > e.signal) e = n; break; }
+        if (!dup) app.wifi_nets.push_back(n);
+    }
+    std::sort(app.wifi_nets.begin(), app.wifi_nets.end(),
+              [](const WifiNet& a, const WifiNet& b) { return a.signal > b.signal; });
+    app.wifi_sel = std::clamp(app.wifi_sel, 0,
+                              std::max(0, (int)app.wifi_nets.size() - 1));
+}
+
+void wifi_begin_connect(const std::string& ssid, const std::string& pw)
+{
+    app.wifi_target = ssid;
+    write_file("/run/gameos/wifi-arg", ssid + "\n" + pw + "\n");
+    app.wifi_status = tr(T_WIFI_CONNECTING);
+    wifi_start("connect");
+}
+
+void wifi_press_net()
+{
+    if (app.wifi_sel < 0 || app.wifi_sel >= (int)app.wifi_nets.size()) return;
+    const WifiNet& n = app.wifi_nets[app.wifi_sel];
+    if (n.secure && !n.saved) {          // ask for the passphrase
+        app.wifi_target = n.ssid;
+        app.wifi_pw.clear();
+        app.wifi_kb = true;
+        app.kb_r = 1; app.kb_c = 0; app.kb_shift = 0;
+    } else {
+        wifi_begin_connect(n.ssid, "");  // open network or saved key
+    }
+}
+
+void wifi_forget_net()
+{
+    if (app.wifi_sel < 0 || app.wifi_sel >= (int)app.wifi_nets.size()) return;
+    const WifiNet& n = app.wifi_nets[app.wifi_sel];
+    if (!n.saved) return;
+    write_file("/run/gameos/wifi-arg", n.ssid + "\n");
+    wifi_start("forget");
+}
+
+const std::vector<std::vector<std::string>>& kb_rows()
+{
+    static const std::vector<std::vector<std::string>> rows = {
+        { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
+        { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" },
+        { "a", "s", "d", "f", "g", "h", "j", "k", "l", "-" },
+        { "z", "x", "c", "v", "b", "n", "m", "_", ".", "@" },
+        { "ABC", " ", "DEL", "OK", "X" },
+    };
+    return rows;
+}
+
+void kb_press()
+{
+    const auto& rows = kb_rows();
+    if (app.kb_r < 0 || app.kb_r >= (int)rows.size()) return;
+    const auto& row = rows[app.kb_r];
+    if (app.kb_c < 0 || app.kb_c >= (int)row.size()) return;
+    const std::string k = row[app.kb_c];
+    if (k == "ABC") { app.kb_shift ^= 1; return; }
+    if (k == "DEL") { if (!app.wifi_pw.empty()) app.wifi_pw.pop_back(); return; }
+    if (k == " ")   { if (app.wifi_pw.size() < 63) app.wifi_pw += " "; return; }
+    if (k == "X")   { app.wifi_kb = false; return; }
+    if (k == "OK") {
+        if (app.wifi_pw.empty()) return;     // a WPA key cannot be empty
+        wifi_begin_connect(app.wifi_target, app.wifi_pw);
+        app.wifi_kb = false;
+        return;
+    }
+    std::string ch = k;
+    if (app.kb_shift && ch.size() == 1 && ch[0] >= 'a' && ch[0] <= 'z')
+        ch[0] = (char)(ch[0] - 'a' + 'A');
+    if (app.wifi_pw.size() < 63) app.wifi_pw += ch;
+}
+
+void wifi_poll()
+{
+    Uint32 now = SDL_GetTicks();
+    // live link status while the page is open (wpa_cli is cheap)
+    if (app.screen == Screen::Wifi && now - app.wifi_status_at > 2000) {
+        app.wifi_status_at = now;
+        wifi_refresh_status();
+    }
+    if (!app.wifi_busy) return;
+    if (now - app.wifi_op_at > 60000) {   // scan/assoc timeout
+        app.wifi_busy = false;
+        app.wifi_op.clear();
+        app.wifi_status = tr(T_OP_FAIL);
+        return;
+    }
+    if (now - app.wifi_poll_at < 150) return;
+    app.wifi_poll_at = now;
+    FILE* f = fopen("/run/gameos/wifi-op.rc", "r");
+    if (!f) return;
+    int rc = 1;
+    if (fscanf(f, "%d", &rc) != 1) rc = 1;
+    fclose(f);
+    app.wifi_busy = false;
+    std::string out = read_file("/run/gameos/wifi-op.out");
+    std::string op = app.wifi_op;
+    app.wifi_op.clear();
+    if (op == "scan") {
+        wifi_parse_nets(out);
+        app.wifi_status = app.wifi_nets.empty() ? tr(T_WIFI_NO_NETS) : "";
+        wifi_load_known();
+    } else if (op == "connect") {
+        std::string last;
+        std::istringstream ss(out);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (!line.empty()) last = line;
+        }
+        if (rc == 0 && last.rfind("OK", 0) == 0) {
+            char b[96];
+            std::string ip = last.size() > 3 ? last.substr(3) : "";
+            snprintf(b, sizeof(b), tr(T_WIFI_CONNECTED_FMT), ip.c_str());
+            app.wifi_status = b;
+        } else {
+            app.wifi_status = last.empty() ? tr(T_WIFI_CONNECT_FAIL) : last;
+        }
+        wifi_load_known();
+        wifi_refresh_status();
+    } else if (op == "forget") {
+        app.wifi_status = tr(T_WIFI_FORGET_DONE);
+        wifi_load_known();
+        wifi_refresh_status();
+        wifi_start("scan");
+    }
+}
+
+void wifi_enter()
+{
+    app.wifi_status.clear();
+    app.wifi_kb = false;
+    app.wifi_pw.clear();
+    app.wifi_target.clear();
+    app.wifi_sel = 0;
+    app.wifi_scroll = 0;
+    app.wifi_nets.clear();
+    wifi_refresh_status();
+    wifi_load_known();
+    app.screen = Screen::Wifi;
+    if (app.wifi_state != "NOHW") {
+        app.wifi_status = tr(T_WIFI_SCANNING);
+        wifi_start("scan");
+    }
+}
+
+void draw_kb(SDL_Renderer* r)
+{
+    fill_rect(r, 0, 0, W, H, { 5, 8, 18, 205 });
+    int pw = 944, ph = 476, px = (W - pw) / 2, py = (H - ph) / 2;
+    fill_rect(r, px, py, pw, ph, C_PANEL);
+    fill_rect(r, px, py, pw, 4, g_accent);
+    text(r, app.f_title, tr(T_WIFI_PASSWORD), W / 2, py + 22, C_TEXT, Align::Center);
+    text(r, app.f_small, app.wifi_target, W / 2, py + 78, C_DIM, Align::Center);
+
+    fill_rect(r, px + 56, py + 108, pw - 112, 52, { 60, 68, 96, 120 });
+    std::string disp = app.wifi_pw;
+    if (disp.size() > 42) disp = disp.substr(disp.size() - 42);
+    text(r, app.f_body, disp + "_", px + 72, py + 120, C_TEXT);
+
+    const auto& rows = kb_rows();
+    const int kh = 54, gap = 6, ky0 = py + 182;
+    for (int ri = 0; ri < (int)rows.size(); ri++) {
+        const auto& row = rows[ri];
+        int kw, kgap;
+        if (ri == (int)rows.size() - 1) {   // wide action row
+            kw = (pw - 112 - 4 * 8) / 5;
+            kgap = 8;
+        } else {
+            kw = 80; kgap = gap;
+        }
+        int total = (int)row.size() * (kw + kgap) - kgap;
+        int x0 = px + (pw - total) / 2;
+        int y = ky0 + ri * (kh + gap);
+        for (int ci = 0; ci < (int)row.size(); ci++) {
+            int x = x0 + ci * (kw + kgap);
+            bool sel = app.kb_r == ri && app.kb_c == ci;
+            fill_rect(r, x, y, kw, kh, sel ? g_accent : SDL_Color{ 32, 41, 70, 220 });
+            std::string lab = row[ci];
+            if (lab == "ABC") lab = app.kb_shift ? "abc" : "ABC";
+            else if (lab == " ") lab = tr(T_KB_SPACE);
+            else if (lab == "DEL") lab = tr(T_KB_DEL);
+            else if (lab == "OK") lab = tr(T_KB_OK);
+            else if (lab == "X") lab = tr(T_KB_CANCEL);
+            else if (app.kb_shift && lab.size() == 1)
+                lab[0] = (char)toupper((unsigned char)lab[0]);
+            text(r, app.f_small, lab, x + kw / 2, y + 15,
+                 sel ? SDL_Color{ 11, 16, 32, 255 } : C_TEXT, Align::Center);
+        }
+    }
+    text(r, app.f_small, tr(T_CONFIRM_HINT), W / 2, py + ph - 34, C_DIM, Align::Center);
+}
+
+void draw_wifi(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    text(r, app.f_title, tr(T_WIFI), 32, 26, C_TEXT);
+
+    std::string right = tr(T_WIFI_DISCONNECTED);
+    SDL_Color rc = C_DIM;
+    if (app.wifi_state == "NOHW") {
+        right = tr(T_WIFI_UNAVAILABLE);
+    } else if (!app.wifi_ip.empty()) {
+        char b[64];
+        snprintf(b, sizeof(b), tr(T_WIFI_CONNECTED_FMT), app.wifi_ip.c_str());
+        right = b;
+        rc = C_GREEN;
+    }
+    text(r, app.f_body, right, W - 32, 34, rc, Align::Right);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+
+    const int rowh = 62, top = 116, vis = 7;
+    int n = (int)app.wifi_nets.size();
+    if (app.wifi_sel < app.wifi_scroll) app.wifi_scroll = app.wifi_sel;
+    if (app.wifi_sel >= app.wifi_scroll + vis) app.wifi_scroll = app.wifi_sel - vis + 1;
+    if (app.wifi_scroll < 0) app.wifi_scroll = 0;
+    for (int i = 0; i < vis; i++) {
+        int idx = app.wifi_scroll + i;
+        if (idx >= n) break;
+        int y = top + i * rowh;
+        const WifiNet& w = app.wifi_nets[idx];
+        if (idx == app.wifi_sel) {
+            fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
+            fill_rect(r, 24, y, 5, rowh - 6, g_accent);
+        }
+        SDL_Color tc = (idx == app.wifi_sel) ? C_TEXT : C_DIM;
+        text(r, app.f_body, w.ssid, 48, y + 12, tc);
+        if (w.saved)
+            text(r, app.f_small, tr(T_WIFI_SAVED), W - 128, y + 18, C_GREEN, Align::Right);
+        else if (!w.secure)
+            text(r, app.f_small, tr(T_WIFI_OPEN), W - 128, y + 18, C_DIM, Align::Right);
+        int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3 : w.signal >= -78 ? 2 : 1;
+        for (int b = 0; b < 4; b++) {
+            int h = 6 + b * 5;
+            SDL_Color bc = (b < bars) ? g_accent : SDL_Color{ 60, 68, 96, 160 };
+            fill_rect(r, W - 92 + b * 13, y + 36 - h, 8, h, bc);
+        }
+    }
+    if (n == 0 && !app.wifi_busy)
+        text(r, app.f_body, tr(T_WIFI_NO_NETS), W / 2, top + 2 * rowh + 20,
+             C_DIM, Align::Center);
+
+    std::string st = app.wifi_busy ? tr(T_PROCESSING) : app.wifi_status;
+    if (!st.empty())
+        text(r, app.f_small, st, W / 2, H - 96, C_AMBER, Align::Center);
+    draw_hint(r, tr(T_WIFI_HINT));
+    if (app.wifi_kb) draw_kb(r);
+}
+
 const char* bt_kind_name(const std::string& k)
 {
     if (k == "audio") return tr(T_KIND_AUDIO);
@@ -836,15 +1198,15 @@ void draw_settings(SDL_Renderer* r)
     text(r, app.f_title, tr(T_SETTINGS), 32, 26, C_TEXT);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
-    const char* rows[] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_THEME),
-                           tr(T_LANGUAGE), tr(T_SAVES), tr(T_POWEROFF),
-                           tr(T_REBOOT), tr(T_ABOUT) };
-    const int rowh = 64, top = 120;
-    for (int i = 0; i < 9; i++) {
+    const char* rows[] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
+                           tr(T_THEME), tr(T_LANGUAGE), tr(T_SAVES),
+                           tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT) };
+    const int rowh = 58, top = 104;
+    for (int i = 0; i < 10; i++) {
         int y = top + i * rowh;
         if (i == app.set_sel) {
-            fill_rect(r, 120, y, W - 240, rowh - 10, C_PANEL);
-            fill_rect(r, 120, y, 5, rowh - 10, g_accent);
+            fill_rect(r, 120, y, W - 240, rowh - 8, C_PANEL);
+            fill_rect(r, 120, y, 5, rowh - 8, g_accent);
         }
         SDL_Color tc = (i == app.set_sel) ? C_TEXT : C_DIM;
         text(r, app.f_body, rows[i], 150, y + 14, tc);
@@ -859,10 +1221,16 @@ void draw_settings(SDL_Renderer* r)
             text(r, app.f_body, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED), 860, y + 14,
                  app.bt_on ? C_GREEN : C_DIM, Align::Right);
         } else if (i == 3) {
-            text(r, app.f_body, theme_name(app.settings.theme), 860, y + 14, g_accent, Align::Right);
+            const char* w = app.wifi_state == "NOHW" ? tr(T_WIFI_UNAVAILABLE)
+                          : !app.wifi_link.empty() ? app.wifi_link.c_str()
+                          : tr(T_WIFI_DISCONNECTED);
+            text(r, app.f_body, w, 860, y + 14,
+                 !app.wifi_link.empty() ? C_GREEN : C_DIM, Align::Right);
         } else if (i == 4) {
-            text(r, app.f_body, lang_name(app.settings.language), 860, y + 14, g_accent, Align::Right);
+            text(r, app.f_body, theme_name(app.settings.theme), 860, y + 14, g_accent, Align::Right);
         } else if (i == 5) {
+            text(r, app.f_body, lang_name(app.settings.language), 860, y + 14, g_accent, Align::Right);
+        } else if (i == 6) {
             char b[32];
             snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size());
             text(r, app.f_body, b, 860, y + 14, tc, Align::Right);
@@ -1100,6 +1468,10 @@ void go_back()
     case Screen::Msg:
         app.screen = Screen::Home;
         break;
+    case Screen::Wifi:
+        if (app.wifi_kb) { app.wifi_kb = false; break; }
+        app.screen = Screen::Settings;
+        break;
     case Screen::Saves:
         app.screen = Screen::Settings;
         break;
@@ -1128,18 +1500,23 @@ void confirm_btn()
         break;
     case Screen::Settings:
         if (app.set_sel == 2) bt_enter();
-        else if (app.set_sel == 3) cycle_theme();
-        else if (app.set_sel == 4) cycle_lang();
-        else if (app.set_sel == 5) {
+        else if (app.set_sel == 3) wifi_enter();
+        else if (app.set_sel == 4) cycle_theme();
+        else if (app.set_sel == 5) cycle_lang();
+        else if (app.set_sel == 6) {
             app.saves = scan_saves();
             app.save_sel = 0;
             app.save_scroll = 0;
             app.screen = Screen::Saves;
         }
-        else if (app.set_sel == 6) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 7) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 8)
+        else if (app.set_sel == 7) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 8) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 9)
             show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
+        break;
+    case Screen::Wifi:
+        if (app.wifi_kb) kb_press();
+        else if (!app.wifi_busy) wifi_press_net();
         break;
     case Screen::Bluetooth:
         if (app.bt_busy) break;
@@ -1185,6 +1562,7 @@ void start_btn()
     if (app.screen == Screen::Home) {
         sound_play(SND_CONFIRM);
         app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+        wifi_refresh_status();   // fills in the WiFi row before it is drawn
         app.screen = Screen::Settings;
         app.set_sel = 0;
     }
@@ -1211,7 +1589,7 @@ void navigate(int dx, int dy)
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 8);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 9);
         if (dx) {
             if (app.set_sel == 0) {
                 app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
@@ -1221,11 +1599,25 @@ void navigate(int dx, int dy)
                 app.settings.volume = std::clamp(app.settings.volume + dx * 5, 0, 100);
                 apply_volume(app.settings.volume);
                 save_settings(app.settings);
-            } else if (app.set_sel == 3) {
-                cycle_theme(dx);
             } else if (app.set_sel == 4) {
+                cycle_theme(dx);
+            } else if (app.set_sel == 5) {
                 cycle_lang(dx);
             }
+        }
+        break;
+    case Screen::Wifi:
+        if (app.wifi_kb) {
+            const auto& rows = kb_rows();
+            if (dy) {
+                app.kb_r = std::clamp(app.kb_r + dy, 0, (int)rows.size() - 1);
+                app.kb_c = std::min(app.kb_c, (int)rows[app.kb_r].size() - 1);
+            }
+            if (dx) app.kb_c = std::clamp(app.kb_c + dx, 0,
+                                          (int)rows[app.kb_r].size() - 1);
+        } else if (dy && !app.wifi_nets.empty()) {
+            app.wifi_sel = std::clamp(app.wifi_sel + dy, 0,
+                                      (int)app.wifi_nets.size() - 1);
         }
         break;
     case Screen::Bluetooth:
@@ -1254,7 +1646,13 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_X:   // physical Y (left)
         if (app.screen == Screen::Bluetooth) {
             if (app.bt_on && !app.bt_busy) { sound_play(SND_SWITCH); app.bt_status = tr(T_SCANNING); bt_start("scan"); }
-        } else refresh_games();
+        } else if (app.screen == Screen::Wifi) {
+            if (!app.wifi_busy && !app.wifi_kb && app.wifi_state != "NOHW") {
+                sound_play(SND_SWITCH);
+                app.wifi_status = tr(T_WIFI_SCANNING);
+                wifi_start("scan");
+            }
+        } else if (app.screen != Screen::Wifi) refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
         if (app.screen == Screen::Bluetooth) {
@@ -1265,6 +1663,11 @@ void handle_button(SDL_ControllerButtonEvent& b)
                     app.bt_status = tr(T_FORGETTING);
                     bt_start("forget", d.mac);
                 }
+            }
+        } else if (app.screen == Screen::Wifi) {
+            if (!app.wifi_busy && !app.wifi_kb) {
+                sound_play(SND_BACK);
+                wifi_forget_net();
             }
         } else toggle_fav();
         break;
@@ -1291,6 +1694,12 @@ void handle_key(SDL_KeyboardEvent& k)
     case SDLK_r:
         if (app.screen == Screen::Bluetooth) {
             if (app.bt_on && !app.bt_busy) { sound_play(SND_SWITCH); app.bt_status = tr(T_SCANNING); bt_start("scan"); }
+        } else if (app.screen == Screen::Wifi) {
+            if (!app.wifi_busy && !app.wifi_kb && app.wifi_state != "NOHW") {
+                sound_play(SND_SWITCH);
+                app.wifi_status = tr(T_WIFI_SCANNING);
+                wifi_start("scan");
+            }
         } else refresh_games();
         break;
     case SDLK_f:
@@ -1302,6 +1711,11 @@ void handle_key(SDL_KeyboardEvent& k)
                     app.bt_status = tr(T_FORGETTING);
                     bt_start("forget", d.mac);
                 }
+            }
+        } else if (app.screen == Screen::Wifi) {
+            if (!app.wifi_busy && !app.wifi_kb) {
+                sound_play(SND_BACK);
+                wifi_forget_net();
             }
         } else toggle_fav();
         break;
@@ -1438,12 +1852,14 @@ int main(int, char**)
 
         poll_repeat();
         bt_poll();
+        wifi_poll();
 
         SDL_Renderer* r = app.ren_top;
         switch (app.screen) {
         case Screen::Home:      draw_home(r); break;
         case Screen::List:      draw_list(r); break;
         case Screen::Settings:  draw_settings(r); break;
+        case Screen::Wifi:      draw_wifi(r); break;
         case Screen::Bluetooth: draw_bluetooth(r); break;
         case Screen::Saves:     draw_saves(r); break;
         case Screen::Msg:       draw_msg(r); break;

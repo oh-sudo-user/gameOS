@@ -54,6 +54,12 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "为 Anbernic RG DS Plus 打造",
+        // wifi
+        "无线网络", "↑↓ 选择  ←→ 切换  Ⓐ 连接  Ⓨ 搜索  Ⓧ 忘记  Ⓑ 返回",
+        "没有搜索到网络 — 按 Ⓨ 重新搜索", "正在搜索附近的 WiFi…",
+        "输入 WiFi 密码", "正在连接…", "已连接 · %s", "连接失败",
+        "未连接", "没有检测到 WiFi 硬件", "已保存", "开放网络", "已忘记该网络",
+        "空格", "删除", "确定", "取消",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -97,6 +103,12 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "為 Anbernic RG DS Plus 打造",
+        // wifi
+        "無線網路", "↑↓ 選擇  ←→ 切換  Ⓐ 連線  Ⓨ 搜尋  Ⓧ 忘記  Ⓑ 返回",
+        "沒有搜尋到網路 — 按 Ⓨ 重新搜尋", "正在搜尋附近的 WiFi…",
+        "輸入 WiFi 密碼", "正在連線…", "已連線 · %s", "連線失敗",
+        "未連線", "沒有偵測到 WiFi 硬體", "已儲存", "開放網路", "已忘記該網路",
+        "空格", "刪除", "確定", "取消",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -145,6 +157,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "Anbernic RG DS Plusのために",
+        // wifi
+        "無線ネットワーク", "↑↓ 選択  ←→ 切替  Ⓐ 接続  Ⓨ 再検索  Ⓧ 削除  Ⓑ 戻る",
+        "ネットワークが見つかりません — Ⓨ で再検索", "周辺の WiFi を検索中…",
+        "WiFi パスワードを入力", "接続中…", "接続済み · %s", "接続に失敗しました",
+        "未接続", "WiFi ハードウェアが見つかりません", "保存済み",
+        "オープンネットワーク", "ネットワークを削除しました",
+        "スペース", "削除", "OK", "キャンセル",
     },
     // ------------------------------------------------------------------ en
     {
@@ -192,6 +211,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "Built for the Anbernic RG DS Plus",
+        // wifi
+        "Wireless network", "↑↓ select  ←→ switch  Ⓐ connect  Ⓨ rescan  Ⓧ forget  Ⓑ back",
+        "No networks found — press Ⓨ to rescan", "Scanning for nearby WiFi…",
+        "Enter WiFi password", "Connecting…", "Connected · %s", "Connection failed",
+        "Not connected", "No WiFi hardware detected", "Saved", "Open network",
+        "Network forgotten",
+        "Space", "Delete", "OK", "Cancel",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -239,6 +265,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "Создано для Anbernic RG DS Plus",
+        // wifi
+        "Беспроводная сеть", "↑↓ выбор  ←→ переключить  Ⓐ подключить  Ⓨ поиск  Ⓧ забыть  Ⓑ назад",
+        "Сети не найдены — нажмите Ⓨ для поиска", "Поиск сетей WiFi…",
+        "Введите пароль WiFi", "Подключение…", "Подключено · %s", "Не удалось подключиться",
+        "Не подключено", "WiFi-адаптер не найден", "Сохранено", "Открытая сеть",
+        "Сеть удалена",
+        "Пробел", "Удалить", "ОК", "Отмена",
     },
     // ------------------------------------------------------------------ es
     {
@@ -287,6 +320,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "Hecho para Anbernic RG DS Plus",
+        // wifi
+        "Red inalámbrica", "↑↓ elegir  ←→ cambiar  Ⓐ conectar  Ⓨ buscar  Ⓧ olvidar  Ⓑ atrás",
+        "No se encontraron redes — pulsa Ⓨ para buscar", "Buscando WiFi cercano…",
+        "Introduce la contraseña WiFi", "Conectando…", "Conectado · %s", "Error de conexión",
+        "Sin conexión", "No se detecta hardware WiFi", "Guardada", "Red abierta",
+        "Red olvidada",
+        "Espacio", "Borrar", "OK", "Cancelar",
     },
     // ------------------------------------------------------------------ ko
     {
@@ -334,6 +374,13 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "github.com/oh-sudo-user/gameOS",
         // ambient
         "Anbernic RG DS Plus를 위해 제작",
+        // wifi
+        "무선 네트워크", "↑↓ 선택  ←→ 전환  Ⓐ 연결  Ⓨ 다시 검색  Ⓧ 잊기  Ⓑ 뒤로",
+        "네트워크를 찾지 못했습니다 — Ⓨ 로 다시 검색", "주변 WiFi 검색 중…",
+        "WiFi 비밀번호 입력", "연결 중…", "연결됨 · %s", "연결 실패",
+        "연결 안 됨", "WiFi 하드웨어를 찾지 못했습니다", "저장됨", "개방 네트워크",
+        "네트워크를 잊었습니다",
+        "공백", "삭제", "확인", "취소",
     },
 };
 

@@ -1,0 +1,311 @@
+#!/bin/sh
+# gameOS WiFi: RTL8821CS (rtw88_8821cs over SDIO) + wpa_supplicant (nl80211)
+# + udhcpc. The UI drives everything through this helper so a 20 s association
+# never blocks the render loop; settings survive reboots on the exFAT data
+# partition.
+#
+#   gameos-wifi status          key=value lines (state, ssid, ip, iface)
+#   gameos-wifi scan            SIGNAL <tab> SECURE <tab> SSID, strongest first
+#   gameos-wifi connect         reads /run/gameos/wifi-arg: line 1 = SSID,
+#                               line 2 = passphrase (empty = open / saved)
+#                               last line "OK <ip>" or "ERROR <why>"
+#   gameos-wifi disconnect      drop the link, kill DHCP lease
+#   gameos-wifi forget          reads wifi-arg line 1 = SSID, drop it from disk
+#   gameos-wifi known           one saved SSID per line
+#   gameos-wifi up | down       bring the supplicant up/down (S30wifi)
+#
+# Saved networks: /userdata/system/wifi/nets/<md5>.net holds the SSID on line 1
+# and the passphrase on line 2. wpa_supplicant.conf is regenerated from them
+# after every change so there is exactly one source of truth.
+
+RUN=/run/gameos
+WIFI_DIR=/userdata/system/wifi
+NETS=$WIFI_DIR/nets
+CONF=$WIFI_DIR/wpa_supplicant.conf
+ARG=$RUN/wifi-arg
+SOCK=/run/wpa_supplicant
+IFACE=${WIFI_IFACE:-}
+WPA="wpa_cli -p $SOCK"
+ACTION=/etc/gameos/wpa_action.sh
+
+mkdir -p "$RUN"
+
+# one operation at a time; the UI runs these in the background
+case $1 in
+up|down|connect|disconnect|forget|scan) exec 9>"$RUN/wifi.lock"; flock 9 ;;
+esac
+
+log() { echo "[gameos-wifi] $*"; }
+
+iface() {
+    [ -n "$IFACE" ] && { echo "$IFACE"; return; }
+    for n in /sys/class/net/wlan*; do
+        [ -e "$n" ] || continue
+        IFACE=${n##*/}
+        break
+    done
+    echo "$IFACE"
+}
+
+wpa_ok() { command -v wpa_cli >/dev/null 2>&1; }
+
+# wpa_cli prints "FAIL" on an unresponsive socket; treat that as empty
+w() { $WPA -i "$(iface)" "$@" 2>/dev/null | tr -d '\r'; }
+
+state() { w status | sed -n 's/^wpa_state=//p'; }
+link_ssid() { w status | sed -n 's/^ssid=//p'; }
+link_ip() {
+    ip -4 addr show "$(iface)" 2>/dev/null \
+        | sed -n 's/^ *inet \([0-9.]*\)\/.*/\1/p' | head -n 1
+}
+
+supplicant_pid() { cat /run/wpa_supplicant."$(iface)".pid 2>/dev/null; }
+supplicant_running() {
+    p=$(supplicant_pid)
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+start_supplicant() {
+    [ -f "$CONF" ] || return 0
+    supplicant_running && return 0
+    enc=$(iface)
+    [ -n "$enc" ] || return 1
+    ip link set "$enc" up 2>/dev/null
+    mkdir -p "$SOCK"
+    wpa_supplicant -B -D nl80211 -i "$enc" -c "$CONF" \
+        -P "/run/wpa_supplicant.$enc.pid" -a "$ACTION" >/dev/null 2>&1 || return 1
+    # give the control socket a moment
+    i=0
+    while [ $i -lt 20 ]; do
+        [ "$(state)" = "" ] || return 0
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 0
+}
+
+stop_supplicant() {
+    p=$(supplicant_pid)
+    [ -n "$p" ] && kill "$p" 2>/dev/null
+    rm -f "/run/wpa_supplicant.$(iface).pid"
+    kill_lease
+    ip link set "$(iface)" down 2>/dev/null
+}
+
+# --- saved-network store ---------------------------------------------------
+net_id() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+net_file() { echo "$NETS/$(net_id "$1").net"; }
+
+save_net() {   # $1 ssid, $2 psk ("" = open)
+    mkdir -p "$NETS"
+    f=$(net_file "$1")
+    { printf '%s\n' "$1"; printf '%s\n' "$2"; } > "$f.tmp" && mv -f "$f.tmp" "$f"
+}
+
+drop_net() { rm -f "$(net_file "$1")"; }
+
+saved_psk() {  # empty if unknown
+    f=$(net_file "$1")
+    [ -f "$f" ] || return 0
+    sed -n '2p' "$f"
+}
+
+known_nets() {
+    [ -d "$NETS" ] || return 0
+    for f in "$NETS"/*.net; do
+        [ -f "$f" ] || continue
+        sed -n '1p' "$f"
+    done
+}
+
+conf_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+regen_conf() { # $1 = SSID to prefer (optional)
+    mkdir -p "$WIFI_DIR"
+    {
+        printf 'ctrl_interface=%s\n' "$SOCK"
+        printf 'update_config=0\n'
+        printf 'country=CN\n'
+        printf 'ap_scan=1\n'
+        printf 'bgscan="simple:30:-70:3600"\n'
+        printf '\n'
+        known_nets | while IFS= read -r ssid; do
+            [ -n "$ssid" ] || continue
+            psk=$(saved_psk "$ssid")
+            printf 'network={\n'
+            printf '\tssid="%s"\n' "$(conf_escape "$ssid")"
+            if [ -n "$psk" ]; then
+                printf '\tpsk="%s"\n' "$(conf_escape "$psk")"
+                printf '\tscan_ssid=1\n'
+            else
+                printf '\tkey_mgmt=NONE\n'
+            fi
+            [ "$ssid" = "$1" ] && printf '\tpriority=10\n' || printf '\tpriority=1\n'
+            printf '}\n\n'
+        done
+    } > "$CONF.tmp" && mv -f "$CONF.tmp" "$CONF"
+    chmod 600 "$CONF" 2>/dev/null
+}
+
+lease() {
+    enc=$(iface)
+    [ -n "$enc" ] || return 0
+    kill_lease
+    udhcpc -i "$enc" -b -R -p "/run/udhcpc.$enc.pid" >/dev/null 2>&1
+}
+
+kill_lease() {
+    enc=$(iface)
+    [ -n "$enc" ] || return 0
+    p=$(cat "/run/udhcpc.$enc.pid" 2>/dev/null)
+    [ -n "$p" ] && kill "$p" 2>/dev/null
+    rm -f "/run/udhcpc.$enc.pid"
+}
+
+# --- operations ------------------------------------------------------------
+do_up() {
+    [ -n "$(iface)" ] || { echo "ERROR no-wifi-hardware"; return 1; }
+    regen_conf
+    [ -s "$CONF" ] || return 0
+    start_supplicant || { echo "ERROR supplicant-failed"; return 1; }
+    # connect now if a saved network is in range; the action script leases
+    i=0
+    while [ $i -lt 15 ]; do
+        [ "$(state)" = COMPLETED ] && { lease; break; }
+        sleep 1
+        i=$((i + 1))
+    done
+    echo OK
+}
+
+do_down() {
+    stop_supplicant
+    echo OK
+}
+
+do_status() {
+    enc=$(iface)
+    echo "iface=$enc"
+    if [ -z "$enc" ]; then
+        echo "state=NOHW"
+        echo "ssid="
+        echo "ip="
+        return 0
+    fi
+    st=$(state)
+    echo "state=${st:-INACTIVE}"
+    echo "ssid=$(link_ssid)"
+    echo "ip=$(link_ip)"
+}
+
+do_scan() {
+    enc=$(iface)
+    [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
+    [ "$(state)" = "" ] && start_supplicant
+    w scan >/dev/null 2>&1
+    # wpa_cli scan returns at once; poll until results change (max 12 s)
+    prev=""
+    i=0
+    while [ $i -lt 24 ]; do
+        sleep 0.5
+        cur=$(w scan_results)
+        case "$cur" in *FAIL*|"") ;; *) [ -n "$cur" ] && [ "$cur" != "$prev" ] && break ;; esac
+        prev=$cur
+        i=$((i + 1))
+    done
+    [ $i -ge 24 ] && sleep 1
+    w scan_results | awk -F'\t' '
+        NR == 1 { next }                       # header
+        $5 == "" { next }                      # hidden SSID
+        {
+            sec = ($4 ~ /WPA|RSN|WEP/) ? 1 : 0
+            gsub(/^ +| +$/, "", $5)
+            k = $5
+            if (!(k in seen) || $3 + 0 > sig[k]) {
+                seen[k] = 1; sig[k] = $3 + 0; secs[k] = sec
+            }
+        }
+        END {
+            for (k in seen) printf "%s\t%d\t%s\n", sig[k], secs[k], k
+        }' | sort -t'	' -k1,1nr
+}
+
+read_arg() { sed -n '1p' "$ARG" 2>/dev/null; }
+read_psk_arg() { sed -n '2p' "$ARG" 2>/dev/null; }
+
+do_connect() {
+    ssid=$(read_arg)
+    psk=$(read_psk_arg)
+    [ -n "$ssid" ] || { echo "ERROR no-ssid"; return 1; }
+    enc=$(iface)
+    [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
+
+    # an empty passphrase means "use the saved one" (reconnect from the list)
+    if [ -z "$psk" ] && [ -n "$(saved_psk "$ssid")" ]; then
+        psk=$(saved_psk "$ssid")
+    fi
+    save_net "$ssid" "$psk"
+    regen_conf "$ssid"
+
+    if supplicant_running; then
+        cur=$(link_ssid)
+        [ -n "$cur" ] && [ "$cur" != "$ssid" ] && w disconnect >/dev/null 2>&1
+        w reconfigure >/dev/null 2>&1
+    else
+        start_supplicant || { echo "ERROR supplicant-failed"; return 1; }
+    fi
+
+    i=0
+    while [ $i -lt 25 ]; do
+        [ "$(state)" = COMPLETED ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+    st=$(state)
+    if [ "$st" != COMPLETED ]; then
+        echo "ERROR association-failed ($st)"
+        return 1
+    fi
+    lease
+    i=0
+    while [ $i -lt 15 ]; do
+        ip=$(link_ip)
+        [ -n "$ip" ] && { echo "OK $ip"; return 0; }
+        sleep 1
+        i=$((i + 1))
+    done
+    echo "ERROR no-dhcp-lease"
+    return 1
+}
+
+do_disconnect() {
+    w disconnect >/dev/null 2>&1
+    kill_lease
+    echo OK
+}
+
+do_forget() {
+    ssid=$(read_arg)
+    [ -n "$ssid" ] || { echo "ERROR no-ssid"; return 1; }
+    drop_net "$ssid"
+    regen_conf
+    if supplicant_running; then
+        w reconfigure >/dev/null 2>&1
+        [ "$(link_ssid)" = "$ssid" ] && w disconnect >/dev/null 2>&1
+    fi
+    echo OK
+}
+
+do_known() { known_nets; }
+
+case ${1:-status} in
+up)         do_up ;;
+down)       do_down ;;
+status)     do_status ;;
+scan)       do_scan ;;
+connect)    do_connect ;;
+disconnect) do_disconnect ;;
+forget)     do_forget ;;
+known)      do_known ;;
+*)          echo "Usage: $0 {up|down|status|scan|connect|disconnect|forget|known}"; exit 1 ;;
+esac

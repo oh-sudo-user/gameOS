@@ -11,6 +11,8 @@ pre)
     ;;
 post)
     modprobe rtw88_8821cs 2>/dev/null
+    # the module reload destroys the supplicant's nl80211 handle; bring it back
+    [ -x /etc/init.d/S30wifi ] && /etc/init.d/S30wifi start >/dev/null 2>&1 &
     ;;
 esac
 exit 0

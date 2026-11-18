@@ -1,0 +1,29 @@
+#!/bin/sh
+# Bring WiFi up on saved networks once the data partition is mounted. The
+# module itself is loaded by S25wireless; this only runs wpa_supplicant so the
+# UI opens with the link already up when a known network is in range. With no
+# saved network the supplicant stays down and Settings > WiFi drives it.
+case "$1" in
+    start)
+        # /userdata is mounted by S20gameos; wait briefly if it is still busy
+        i=0
+        while ! mountpoint -q /userdata && [ $i -lt 50 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        mountpoint -q /userdata || exit 0
+        [ -s /userdata/system/wifi/wpa_supplicant.conf ] || exit 0
+        gameos-wifi up >/dev/null 2>&1 &
+        ;;
+    stop)
+        gameos-wifi down >/dev/null 2>&1
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
