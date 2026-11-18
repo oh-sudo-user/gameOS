@@ -11,6 +11,9 @@ GAMEOS_PPSSPP_GIT_SUBMODULES = YES
 GAMEOS_PPSSPP_LICENSE = GPL-2.0+
 GAMEOS_PPSSPP_LICENSE_FILES = LICENSE.TXT
 GAMEOS_PPSSPP_DEPENDENCIES = sdl2 mesa3d zlib libpng freetype host-pkgconf
+# Executable, not a library: skip the cmake staging install; the custom
+# INSTALL_TARGET_CMDS below place the binary + assets into the rootfs.
+GAMEOS_PPSSPP_INSTALL_STAGING = NO
 
 # USE_SYSTEM_FREETYPE=ON: PPSSPP's bundled ext/freetype submodule trips
 # freetype's "In-source builds are not permitted" CMake check under
