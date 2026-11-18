@@ -10,8 +10,13 @@ GAMEOS_PPSSPP_SITE_METHOD = git
 GAMEOS_PPSSPP_GIT_SUBMODULES = YES
 GAMEOS_PPSSPP_LICENSE = GPL-2.0+
 GAMEOS_PPSSPP_LICENSE_FILES = LICENSE.TXT
-GAMEOS_PPSSPP_DEPENDENCIES = sdl2 mesa3d zlib libpng host-pkgconf
+GAMEOS_PPSSPP_DEPENDENCIES = sdl2 mesa3d zlib libpng freetype host-pkgconf
 
+# USE_SYSTEM_FREETYPE=ON: PPSSPP's bundled ext/freetype submodule trips
+# freetype's "In-source builds are not permitted" CMake check under
+# Buildroot (run 10). freetype is only linked by the AtlasTool font
+# generator (ATLAS_TOOL=OFF here), so skipping the bundled copy via the
+# system-freetype option is safe and avoids configuring it at all.
 GAMEOS_PPSSPP_CONF_OPTS = \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DUSING_GLES2=ON \
@@ -24,6 +29,7 @@ GAMEOS_PPSSPP_CONF_OPTS = \
 	-DUSE_VULKAN=OFF \
 	-DUSE_FFMPEG=ON \
 	-DUSE_SYSTEM_FFMPEG=OFF \
+	-DUSE_SYSTEM_FREETYPE=ON \
 	-DUSE_SYSTEM_LIBSDL2=ON \
 	-DUSE_DISCORD=OFF \
 	-DUSE_MINIUPNPC=OFF \
