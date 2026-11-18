@@ -6,6 +6,6 @@
 # external.mk is included after package/*/*.mk, so the download step has
 # already been decided by then.
 #
-# Rockchip firmware blobs: the exact rkbin revision ROCKNIX uses for RK3566
+# Rockchip firmware blobs: the rkbin revision proven on this SoC
 # (DDR v1.26 + BL31 v1.46), fetched into vendor/rkbin by scripts/fetch-vendor.sh.
 ROCKCHIP_RKBIN_OVERRIDE_SRCDIR = $(BR2_EXTERNAL_GAMEOS_PATH)/../vendor/rkbin

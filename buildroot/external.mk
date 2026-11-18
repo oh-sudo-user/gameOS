@@ -7,7 +7,7 @@ include $(sort $(wildcard $(BR2_EXTERNAL_GAMEOS_PATH)/package/*/*.mk))
 # included after the package recipes are evaluated, too late for overrides.
 
 # ---------------------------------------------------------------------------
-# Apply the vendored kernel patch stack exactly like ROCKNIX does:
+# Apply the vendored kernel patch stack in its pinned order:
 # series order (default -> RK3566 device) and plain `patch -p1` semantics
 # (fuzz 2) on mainline 7.2.11. Buildroot's built-in patch step uses -F0
 # (zero fuzz) and rejects upstream patches that need fuzz, so the patch
@@ -24,8 +24,7 @@ endef
 LINUX_POST_EXTRACT_HOOKS += GAMEOS_LINUX_APPLY_PATCHES
 
 # ---------------------------------------------------------------------------
-# RG DS / RG DS Plus kernel integration, mirroring ROCKNIX's proven order
-# (projects/ROCKNIX/packages/linux/package.mk post_patch):
+# RG DS / RG DS Plus kernel integration, in the order proven on this SoC:
 #   1. all kernel patches are applied first (GAMEOS_LINUX_APPLY_PATCHES,
 #      ordered by kernel-patches/series: default -> RK3566 device)
 #   2. THEN the vendored device trees are copied over the in-tree ones

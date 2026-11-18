@@ -1,8 +1,8 @@
 # gameOS for Anbernic RG DS Plus (Rockchip RK3568, dual 1024x768 DSI)
 #
-# Boot chain note (avoids BananaOS issue #183):
+# Boot chain note:
 #   U-Boot v2026.01 on the quartz64-a-rk3566 base (no Anbernic board
-#   detection code that crashes with mainline ATF) PLUS the two ROCKNIX
+#   detection code that crashes with mainline ATF) PLUS two
 #   RG DS Plus fixes (RK8XX boot-on-power-key, SD-card-first SPL boot
 #   order) PLUS gameOS' own SPL_MMC=y (quartz64 SPL is SPI-only and this
 #   device has no SPI flash). The kernel DTB is selected explicitly
@@ -34,13 +34,13 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/rootfs-ov
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-image.sh"
 
-# --- Kernel: mainline 7.2.11 (same version ROCKNIX ships for RK3566) ---
+# --- Kernel: mainline 7.2.11 (matches the vendored RK3566 patch set) ---
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://www.kernel.org/pub/linux/kernel/v7.x/linux-7.2.11.tar.xz"
 # Kernel patches are applied by GAMEOS_LINUX_APPLY_PATCHES (external.mk) in
-# the same order and with the same fuzz as ROCKNIX; Buildroot's own patch
-# step (-F0, zero fuzz) would reject five upstream patches that need fuzz.
+# the order pinned by kernel-patches/series, with fuzz 2; Buildroot's own
+# patch step (-F0, zero fuzz) would reject five upstream patches that need fuzz.
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/linux.config"
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/linux-fragment.config"
@@ -133,7 +133,7 @@ BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_RTW88=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX_BT=y
 # regulatory.db: without it cfg80211 falls back to the usermode firmware
-# helper and stalls boot ~60s (BananaOS rcS pitfall).
+# helper and stalls boot ~60s.
 BR2_PACKAGE_WIRELESS_REGDB=y
 
 # --- gameOS components ---

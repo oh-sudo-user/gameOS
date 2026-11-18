@@ -1,6 +1,6 @@
 // gameos-sleepd — suspend-to-RAM when the lid closes.
 //
-// Model proven on this SoC by BananaOS' bananad: pause the emulator's
+// The order matters on this SoC: pause the emulator's
 // process group first (a dynarec must not run while clocks drop), run the
 // pre-sleep hooks (Wi-Fi driver out — rtw88 never resumes otherwise), sync,
 // then echo mem. On wake: panels on, game continued, post hooks in the
