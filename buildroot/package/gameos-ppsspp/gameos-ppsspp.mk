@@ -52,7 +52,13 @@ GAMEOS_PPSSPP_INSTALL_STAGING = NO
 #   SDL2's KMSDRM driver backs with GBM+EGL — the correct path on this device.
 #   The patch lives in the package ROOT (not patches/): Buildroot only auto-globs
 #   package/<pkg>/*.patch, never a patches/ subdirectory.
+# CMAKE_POLICY_VERSION_MINIMUM=3.5: host cmake 4.4 removed < 3.5 compat.
+# PPSSPP's own minimum is modern, but the bundled ext/* subprojects
+# (libpng17, zstd, ffmpeg, snappy, ...) each declare their own old
+# cmake_minimum_required and are add_subdirectory'd into the same
+# configure; the policy floor guards them so generate does not abort.
 GAMEOS_PPSSPP_CONF_OPTS = \
+	-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DUSING_GLES2=ON \
 	-DUSING_EGL=ON \

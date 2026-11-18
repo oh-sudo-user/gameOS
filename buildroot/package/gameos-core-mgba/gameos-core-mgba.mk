@@ -19,7 +19,14 @@ GAMEOS_CORE_MGBA_INSTALL_STAGING = NO
 # CMake target. LIBMGBA_ONLY builds the minimal static core with no
 # external dependencies (bundled sources), exactly what a libretro
 # core needs; BUILD_LIBRETRO then produces mgba_libretro.so.
+#
+# CMAKE_POLICY_VERSION_MINIMUM=3.5: mgba 0.10.5 declares
+# cmake_minimum_required(VERSION 3.1); Buildroot 2026.08 ships host
+# cmake 4.4, which removed compatibility with < 3.5 and aborts configure
+# (local run: "Compatibility with CMake < 3.5 has been removed"). The
+# policy floor lets the old project configure under cmake 4.x.
 GAMEOS_CORE_MGBA_CONF_OPTS = \
+	-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 	-DLIBMGBA_ONLY=ON \
 	-DBUILD_LIBRETRO=ON \
 	-DM_CORE_GBA=ON \
