@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gameos.hpp"
 #include "i18n.hpp"
+#include "sound.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -405,6 +406,7 @@ bool init_gfx()
     app.icon_settings = load_tex(app.ren_top, assets + "/icon_settings.png");
 
     open_controller();
+    sound_init("/usr/share/gameos/sounds");   // silent fallback if audio fails
     return true;
 }
 
@@ -412,6 +414,7 @@ void clear_cover_cache();   // defined with the cover helpers below
 
 void shutdown_gfx()
 {
+    sound_quit();          // release ALSA before the emulator takes over
     clear_text_cache();  // text textures belong to the renderers destroyed below
     clear_cover_cache();
     if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
@@ -996,12 +999,14 @@ static void toggle_fav()
 {
     if (app.screen != Screen::List || app.games.empty()) return;
     fav_toggle(consoles()[app.carousel].id, app.games[app.sel].title);
+    sound_play(SND_FAV);
     if (app.fav_only) rebuild_list();
 }
 
 static void toggle_fav_only()
 {
     if (app.screen != Screen::List) return;
+    sound_play(SND_SWITCH);
     app.fav_only = !app.fav_only;
     rebuild_list();
 }
@@ -1040,6 +1045,7 @@ void enter_selection()
 // up the invalidated cache.
 static void refresh_games()
 {
+    sound_play(SND_ADJUST);
     invalidate_games(app.carousel);
     if (app.screen == Screen::List) rebuild_list();
 }
@@ -1053,11 +1059,13 @@ void do_launch()
     if (c.dual && !nds_bios_ok()) {
         char m[128];
         snprintf(m, sizeof(m), tr(T_BIOS_MISSING_FMT), bios_missing_list().c_str());
+        sound_play(SND_ERROR);
         show_msg(tr(T_BIOS_TITLE), std::string(m) + "\n" + tr(T_BIOS_BODY));
         return;
     }
     const Game& g = app.games[app.sel];
 
+    SDL_Delay(230);                    // let the launch chime ring out
     shutdown_gfx();                    // release DRM master
     int rc = launch_game(c, g);
     if (!init_gfx()) {                 // emulator exited — take panels back
@@ -1068,9 +1076,10 @@ void do_launch()
         app.exit_code = 1;
         return;
     }
-    if (rc == 127)
+    if (rc == 127) {
+        sound_play(SND_ERROR);
         show_msg(tr(T_EMU_FAIL), tr(T_EMU_FAIL_BODY));
-    else if (rc != 0)
+    } else if (rc != 0)
         fprintf(stderr, "gameos-ui: emulator exited with %d\n", rc);
 
     // Back from the emulator: refresh the cached list and keep selection in
@@ -1081,6 +1090,8 @@ void do_launch()
 
 void go_back()
 {
+    if (app.screen == Screen::Home) return;
+    sound_play(SND_BACK);
     switch (app.screen) {
     case Screen::List:
         app.screen = Screen::Home;
@@ -1107,6 +1118,7 @@ void go_back()
 
 void confirm_btn()
 {
+    sound_play(SND_CONFIRM);
     switch (app.screen) {
     case Screen::Home:
         enter_selection();
@@ -1160,6 +1172,7 @@ void confirm_btn()
         } else {
             app.exit_code = (app.confirm == ConfirmAct::PowerOff) ? 90 : 91;
             app.running = false;
+            SDL_Delay(250);            // let the chime finish before teardown
         }
         break;
     default:
@@ -1170,16 +1183,25 @@ void confirm_btn()
 void start_btn()
 {
     if (app.screen == Screen::Home) {
+        sound_play(SND_CONFIRM);
         app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
         app.screen = Screen::Settings;
         app.set_sel = 0;
     }
-    else if (app.screen != Screen::Confirm) app.screen = Screen::Home;
+    else if (app.screen != Screen::Confirm) {
+        sound_play(SND_BACK);
+        app.screen = Screen::Home;
+    }
 }
 
 // horizontal / vertical navigation with key repeat
 void navigate(int dx, int dy)
 {
+    if (dx || dy) {
+        if (app.screen == Screen::Home && dx)          sound_play(SND_SWITCH);
+        else if (app.screen == Screen::Settings && dx) sound_play(SND_ADJUST);
+        else                                           sound_play(SND_MOVE);
+    }
     switch (app.screen) {
     case Screen::Home:
         if (dx) app.carousel = (app.carousel + dx + 6) % 6;
@@ -1231,7 +1253,7 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_START: start_btn(); break;
     case SDL_CONTROLLER_BUTTON_X:   // physical Y (left)
         if (app.screen == Screen::Bluetooth) {
-            if (app.bt_on && !app.bt_busy) { app.bt_status = tr(T_SCANNING); bt_start("scan"); }
+            if (app.bt_on && !app.bt_busy) { sound_play(SND_SWITCH); app.bt_status = tr(T_SCANNING); bt_start("scan"); }
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -1239,6 +1261,7 @@ void handle_button(SDL_ControllerButtonEvent& b)
             if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
                 const BtDev& d = app.bt_devs[app.bt_sel - 1];
                 if (d.paired && bt_mac_valid(d.mac)) {
+                    sound_play(SND_BACK);
                     app.bt_status = tr(T_FORGETTING);
                     bt_start("forget", d.mac);
                 }
@@ -1267,7 +1290,7 @@ void handle_key(SDL_KeyboardEvent& k)
     case SDLK_s: start_btn(); break;
     case SDLK_r:
         if (app.screen == Screen::Bluetooth) {
-            if (app.bt_on && !app.bt_busy) { app.bt_status = tr(T_SCANNING); bt_start("scan"); }
+            if (app.bt_on && !app.bt_busy) { sound_play(SND_SWITCH); app.bt_status = tr(T_SCANNING); bt_start("scan"); }
         } else refresh_games();
         break;
     case SDLK_f:
@@ -1275,6 +1298,7 @@ void handle_key(SDL_KeyboardEvent& k)
             if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
                 const BtDev& d = app.bt_devs[app.bt_sel - 1];
                 if (d.paired && bt_mac_valid(d.mac)) {
+                    sound_play(SND_BACK);
                     app.bt_status = tr(T_FORGETTING);
                     bt_start("forget", d.mac);
                 }
