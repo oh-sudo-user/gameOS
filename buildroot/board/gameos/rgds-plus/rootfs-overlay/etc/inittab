@@ -1,4 +1,11 @@
 # gameOS inittab — appliance-style boot, no login console.
+# Mount virtual filesystems BEFORE rcS: udev, the data-partition setup and
+# mesa all need /proc and /sys. Without them udevd cannot run, GAMEOS-DATA
+# is never created and EGL fails to enumerate the GPU (UI boot loop).
+::sysinit:/bin/mount -o remount,rw /
+::sysinit:/bin/mkdir -p /dev/pts
+::sysinit:/bin/mkdir -p /dev/shm
+::sysinit:/bin/mount -a
 ::sysinit:/etc/init.d/rcS
 ::respawn:/usr/bin/gameos-session
 ::ctrlaltdel:/sbin/reboot
