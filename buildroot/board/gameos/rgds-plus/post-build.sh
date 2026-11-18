@@ -9,6 +9,8 @@ chmod +x "$TARGET_DIR/etc/init.d/"S* 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-session" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/ppsspp-run" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-bt" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-wifi" 2>/dev/null || true
+chmod +x "$TARGET_DIR/etc/gameos/wpa_action.sh" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/sleep.d/"* 2>/dev/null || true
 
 # Bluetooth is off by default: gameos-bt starts bluetoothd on demand, so the
