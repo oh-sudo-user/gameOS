@@ -25,8 +25,13 @@ GAMEOS_CORE_MGBA_CONF_OPTS = \
 	-DM_CORE_GBA=ON \
 	-DM_CORE_GB=ON
 
+# cmake-package defaults to IN-SOURCE build (pkg-cmake.mk:
+# SUPPORTS_IN_SOURCE_BUILD ?= YES -> BUILDDIR = $(@D)); buildroot-build
+# is only used when that is set to NO (like llvm). Run 12 confirmed
+# "Build files have been written to: .../gameos-core-mgba-0.10.5" and the
+# core links at the source root, so install from $(@D), NOT buildroot-build.
 define GAMEOS_CORE_MGBA_INSTALL_TARGET_CMDS
-	$(INSTALL) -D -m 0755 $(@D)/buildroot-build/mgba_libretro.so \
+	$(INSTALL) -D -m 0755 $(@D)/mgba_libretro.so \
 		$(TARGET_DIR)/usr/lib/libretro/mgba_libretro.so
 endef
 

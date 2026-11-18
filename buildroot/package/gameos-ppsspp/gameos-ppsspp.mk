@@ -40,10 +40,11 @@ GAMEOS_PPSSPP_CONF_OPTS = \
 
 # PPSSPP locates its assets relative to the working directory; the
 # ppsspp-run wrapper (rootfs overlay) cd's into /usr/share/ppsspp.
-# cmake-package builds out-of-tree in $(@D)/buildroot-build, so the
-# binary is there, not in the source root.
+# cmake-package defaults to IN-SOURCE build (SUPPORTS_IN_SOURCE_BUILD ?=
+# YES -> BUILDDIR = $(@D)); PPSSPPSDL has no custom output dir, so the
+# binary lands at the source root $(@D)/PPSSPPSDL, NOT buildroot-build.
 define GAMEOS_PPSSPP_INSTALL_TARGET_CMDS
-	$(INSTALL) -D -m 0755 $(@D)/buildroot-build/PPSSPPSDL $(TARGET_DIR)/usr/bin/PPSSPPSDL
+	$(INSTALL) -D -m 0755 $(@D)/PPSSPPSDL $(TARGET_DIR)/usr/bin/PPSSPPSDL
 	mkdir -p $(TARGET_DIR)/usr/share/ppsspp
 	cp -dpfr $(@D)/assets $(TARGET_DIR)/usr/share/ppsspp/
 	cp -dpfr $(@D)/lang $(TARGET_DIR)/usr/share/ppsspp/
