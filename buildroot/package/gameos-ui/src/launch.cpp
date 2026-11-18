@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -22,6 +23,9 @@ int launch_game(const Console& c, const Game& g)
 
     if (pid == 0) {
         // ---- child ----
+        // Own process group: gameos-sleepd SIGSTOPs the emulator group on
+        // lid close; sharing the UI's group would freeze the front-end too.
+        setpgid(0, 0);
         setenv("SDL_VIDEODRIVER", "kmsdrm", 1);
         setenv("XDG_RUNTIME_DIR", "/tmp/gameos-runtime", 1);
 
@@ -51,10 +55,17 @@ int launch_game(const Console& c, const Game& g)
     }
 
     // ---- parent ----
+    // Publish the emulator pid for gameos-sleepd (lid-close pause/resume).
+    mkdir("/run/gameos", 0755);
+    write_file("/run/gameos/game.pid", std::to_string(pid));
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) return -1;
+        if (errno != EINTR) {
+            unlink("/run/gameos/game.pid");
+            return -1;
+        }
     }
+    unlink("/run/gameos/game.pid");
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return -1;
 }

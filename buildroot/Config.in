@@ -1,4 +1,5 @@
 source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-inputd/Config.in"
+source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-sleepd/Config.in"
 source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-ui/Config.in"
 source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-retroarch/Config.in"
 source "$BR2_EXTERNAL_GAMEOS_PATH/package/gameos-core-melonds/Config.in"

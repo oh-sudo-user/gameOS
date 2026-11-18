@@ -1,0 +1,9 @@
+config BR2_PACKAGE_GAMEOS_SLEEPD
+	bool "gameos-sleepd (lid-close suspend)"
+	help
+	  Lid-close suspend-to-RAM daemon: pauses the emulator, runs the
+	  sleep.d hooks (Wi-Fi driver out and back), suspends with a
+	  deep/s2idle fallback ladder, and stays dark-and-awake while
+	  charging so the charging LED survives.
+
+	  Part of gameOS for the Anbernic RG DS Plus.

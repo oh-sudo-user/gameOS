@@ -1,0 +1,16 @@
+#!/bin/sh
+# rtw88 (RTL8821CS on SDIO) never comes back from suspend by itself: unload
+# before, load after. The lock serialises a lid shut again within a second of
+# a wake against the previous wake's background post (BananaOS pitfall).
+exec 8>/run/gameos/wifi-hook.lock
+flock -w 10 8 || :
+case $1 in
+pre)
+    [ -d /sys/module/rtw88_8821cs ] || exit 0
+    modprobe -r rtw88_8821cs 2>/dev/null
+    ;;
+post)
+    modprobe rtw88_8821cs 2>/dev/null
+    ;;
+esac
+exit 0

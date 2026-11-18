@@ -1,0 +1,18 @@
+#!/bin/sh
+# Lid-close suspend daemon. Starts after S25wireless/S26audio so the hooks
+# and the mixer exist; it waits for the hall-switch input device itself.
+PIDFILE=/var/run/gameos-sleepd.pid
+case "$1" in
+    start)
+        mkdir -p /run/gameos
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x /usr/bin/gameos-sleepd
+        ;;
+    stop)
+        start-stop-daemon -K -p "$PIDFILE"
+        rm -f "$PIDFILE"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
