@@ -1,0 +1,20 @@
+#!/bin/sh
+# Bluetooth through a sleep: off before (chip unpowered, daemons gone, pairings
+# saved), on again after only if it was on. Headphones playing at sleep: audio
+# stays held silent until they are called back (gameos-bt down sleep / bt-hold).
+# One at a time: a wake's background up may still be running when the lid shuts
+# again; pre waits for it (at most 10 s). The daemons get the lock fd closed.
+exec 8>/run/gameos/bt-hook.lock
+flock -w 10 8 || :
+[ -f /run/gameos/bluetoothd.pid ] || [ -f /run/gameos/bt-was-up ] || exit 0
+case $1 in
+pre)
+    touch /run/gameos/bt-was-up
+    /usr/bin/gameos-bt down sleep 8>&-
+    ;;
+post)
+    rm -f /run/gameos/bt-was-up
+    ( /usr/bin/gameos-bt up 8>&- >/dev/null 2>&1; exit 0 ) &
+    ;;
+esac
+exit 0

@@ -1,0 +1,252 @@
+#!/bin/sh
+# gameOS Bluetooth: the RTL8821CS's BT half on uart1 (hci_uart H5 serdev, firmware
+# rtl_bt/rtl8821cs_fw.bin + rtl8821cs_config.bin), BlueZ for pairing/controllers,
+# bluez-alsa for headphones. OFF by default: while off the modules are not loaded
+# (hci_uart's remove drops BT_REG_ON, so the chip's BT is unpowered) and no daemon
+# runs. Settings > 蓝牙 turns it on; sleep.d/20-bluetooth takes it through suspend.
+#
+#   gameos-bt up | down            start/stop everything; down saves the pairings
+#   gameos-bt down sleep           same, but holds audio silent if headphones were
+#                                  playing (they are called back after the wake)
+#   gameos-bt scan                 10 s search, then the device list
+#   gameos-bt devices              MAC <tab> paired 0|1 <tab> connected 0|1 <tab> kind <tab> name
+#   gameos-bt pair|connect|disconnect|forget <MAC>    last line "OK" or "ERROR <why>"
+#   gameos-bt volume <0-100>       the connected headphones' own volume
+#   gameos-bt status               on | off
+#
+# Pairings live in /run/gameos/bluetooth (tmpfs) because /userdata is exFAT and
+# cannot hold BlueZ's AA:BB:CC:... directory names; they are kept on the card as
+# /userdata/system/bluetooth.tar, unpacked at up and written after each change.
+# While headphones play, "route" writes their MAC to /run/gameos/bt-audio and
+# S26audio points the ALSA default at bluealsa's PCM; /run/gameos/bt-hold means
+# "headphones being called back": S26audio then plays through the jack-only codec
+# (silent with nothing plugged in, but a real device clock so games keep pace).
+
+RUN=/run/gameos
+STORE=/userdata/system/bluetooth.tar
+LAST=/userdata/system/bt-last
+CTL="timeout 45 bluetoothctl"
+
+# one at a time (the UI runs these in the background); daemons get the lock fd
+# closed (9>&-). down waits at most 3 s: a sleep must not wait out a pairing.
+case $1 in
+up|pair|connect|disconnect|forget|scan) exec 9>"$RUN/bt.lock"; flock 9 ;;
+down) exec 9>"$RUN/bt.lock"; flock -w 3 9 || : ;;
+esac
+
+stop() { [ -f "$1" ] || return 0; p=$(cat "$1"); [ -n "$p" ] && [ -d "/proc/$p" ] && kill "$p" 2>/dev/null; rm -f "$1"; }
+running() { [ -f "$RUN/bluetoothd.pid" ] && kill -0 "$(cat "$RUN/bluetoothd.pid")" 2>/dev/null; }
+ESC=$(printf '\033')
+ctl() { $CTL "$@" 2>/dev/null | tr -d '\r' | sed "s/$ESC\[[0-9;]*m//g"; }
+mac_ok() { echo "$1" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'; }
+
+save() {
+    [ -d "$RUN/bluetooth" ] || return 0
+    mkdir -p "$RUN/bluealsa"
+    tar -C "$RUN" -cf "$STORE.new" bluetooth bluealsa 2>/dev/null && mv -f "$STORE.new" "$STORE"
+    rm -f "$STORE.new"
+}
+
+route() {
+    p=$(bluealsa-cli list-pcms 2>/dev/null | grep '/a2dpsrc/sink$' | tail -n 1)
+    if [ -n "$p" ]; then
+        mac=$(echo "$p" | sed -n 's#.*/dev_\([0-9A-Fa-f_]*\)/.*#\1#p' | tr _ :)
+        echo "$mac $p" > "$RUN/bt-audio.new" && mv -f "$RUN/bt-audio.new" "$RUN/bt-audio"
+        [ "$(cat "$LAST" 2>/dev/null)" = "$mac" ] || echo "$mac" > "$LAST"
+    else
+        rm -f "$RUN/bt-audio"
+    fi
+}
+
+call_back() {
+    $CTL --timeout 15 connect "$1" >/dev/null 2>&1
+    i=0
+    while [ $i -lt 20 ]; do
+        bluealsa-cli list-pcms 2>/dev/null | grep -q '/a2dpsrc/sink$' && break
+        sleep 0.3; i=$((i + 1))
+    done
+    route
+    rm -f "$RUN/bt-hold"
+}
+
+up() {
+    running && return 0
+    mkdir -p "$RUN"
+    modprobe -a hci_uart hidp 2>/dev/null
+    # hci0 appears once hci_uart binds the uart1 serdev node
+    i=0
+    while [ $i -lt 20 ]; do [ -d /sys/class/bluetooth/hci0 ] && break; sleep 0.25; i=$((i + 1)); done
+    if [ ! -d /sys/class/bluetooth/hci0 ]; then
+        echo "no Bluetooth controller (hci0)" >&2
+        modprobe -r hci_uart 2>/dev/null
+        return 1
+    fi
+    if [ ! -d "$RUN/bluetooth" ]; then
+        mkdir -p "$RUN/bluetooth" "$RUN/bluealsa"
+        [ -f "$STORE" ] && tar -C "$RUN" -xf "$STORE" 2>/dev/null
+        chmod 700 "$RUN/bluetooth"
+    fi
+    # BlueZ and bluez-alsa keep their state under these tmpfs dirs (exFAT pairings)
+    [ -L /var/lib/bluetooth ] || { rmdir /var/lib/bluetooth 2>/dev/null; ln -sfn "$RUN/bluetooth" /var/lib/bluetooth; }
+    [ -L /var/lib/bluealsa ] || { rmdir /var/lib/bluealsa 2>/dev/null; ln -sfn "$RUN/bluealsa" /var/lib/bluealsa; }
+    # the system bus normally comes from S30dbus-daemon at boot
+    if [ ! -S /run/dbus/system_bus_socket ]; then
+        mkdir -p /run/dbus /tmp/dbus
+        dbus-uuidgen --ensure 2>/dev/null
+        dbus-daemon --system 9>&- || return 1
+    fi
+    /usr/libexec/bluetooth/bluetoothd -n 9>&- </dev/null >/dev/null 2>&1 &
+    echo $! > "$RUN/bluetoothd.pid"
+    # AutoEnable powers the adapter; the firmware download takes a second or two
+    i=0
+    while [ $i -lt 20 ]; do timeout 2 bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && break; sleep 0.25; i=$((i + 1)); done
+    ctl power on >/dev/null
+    # A2DP source: the handheld plays, the headphones listen. aptX/aptX HD when
+    # both sides have them, else SBC at high quality; 3 s keep-alive so a game
+    # opening right after the menu closed does not renegotiate; I/O threads above
+    # the emulators' audio threads so a busy game cannot starve the encoder.
+    bluealsa -S -p a2dp-source --keep-alive=3 --initial-volume=50 --io-rt-priority=25 \
+        --sbc-quality=high 9>&- </dev/null >/dev/null 2>&1 &
+    echo $! > "$RUN/bluealsa.pid"
+    ( bluealsa-cli monitor 2>/dev/null | while read -r ev rest; do
+        case $ev in PCMAdded|PCMRemoved|ServiceRunning|ServiceStopped) route ;; esac
+    done ) 9>&- </dev/null >/dev/null 2>&1 &
+    echo $! > "$RUN/bt-watch.pid"
+    # call the last headphones back; with a hold (sleep began on headphones) the
+    # sound stays silent until they are back, otherwise the speakers play meanwhile
+    last=$(cat "$LAST" 2>/dev/null)
+    if mac_ok "$last"; then
+        if [ -f "$RUN/bt-hold" ]; then
+            call_back "$last"
+        else
+            ( call_back "$last" ) 9>&- </dev/null >/dev/null 2>&1 &
+        fi
+    else
+        rm -f "$RUN/bt-hold"
+    fi
+    return 0
+}
+
+down() {
+    save
+    playing=0; [ -f "$RUN/bt-audio" ] && playing=1
+    if [ "$1" = sleep ] && [ $playing = 1 ]; then
+        touch "$RUN/bt-hold"
+    else
+        rm -f "$RUN/bt-hold"
+    fi
+    rm -f "$RUN/bt-audio"
+    stop "$RUN/bt-watch.pid"
+    killall bluealsa-cli 2>/dev/null
+    stop "$RUN/bluealsa.pid"
+    stop "$RUN/bluetoothd.pid"
+    i=0
+    while [ $i -lt 10 ]; do pidof bluetoothd bluealsa >/dev/null || break; sleep 0.1; i=$((i + 1)); done
+    killall -9 bluetoothd bluealsa 2>/dev/null
+    # the chip's BT off (hci_uart's remove drops BT_REG_ON) and the stack out of memory
+    modprobe -r hci_uart hidp 2>/dev/null
+    modprobe -r btrtl bluetooth 2>/dev/null
+    return 0
+}
+
+kind() {
+    case $1 in
+    audio-*) echo audio ;;
+    input-gaming) echo gamepad ;;
+    input-keyboard) echo keyboard ;;
+    input-mouse|input-tablet) echo mouse ;;
+    *) echo other ;;
+    esac
+}
+
+devices() {
+    running || return 0
+    paired=$(ctl devices Paired | sed -n 's/^Device \([0-9A-Fa-f:]*\) .*/\1/p')
+    conn=$(ctl devices Connected | sed -n 's/^Device \([0-9A-Fa-f:]*\) .*/\1/p')
+    ctl devices | while read -r w mac name; do
+        [ "$w" = Device ] && mac_ok "$mac" || continue
+        p=0; c=0; k=other
+        echo "$paired" | grep -qix "$mac" && p=1
+        echo "$conn" | grep -qix "$mac" && c=1
+        # nameless devices show their address with dashes: only list them if paired
+        [ "$name" = "$(echo "$mac" | tr : -)" ] && { [ $p = 1 ] || continue; }
+        if [ $p = 1 ]; then
+            i=$(ctl info "$mac")
+            k=$(kind "$(echo "$i" | sed -n 's/^[[:space:]]*Icon: //p' | head -n 1)")
+            [ "$k" = other ] && echo "$i" | grep -q 'Audio Sink' && k=audio
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "$mac" "$p" "$c" "$k" "$name"
+    done
+}
+
+why() { sed -n 's/.*\(Failed to [a-z]*\|Device [0-9A-F:]* not available\)\(.*\)/\1\2/p' | tail -n 1 | sed 's/org\.bluez\.Error\.//'; }
+
+case $1 in
+up) up || { rm -f "$RUN/bt-audio" "$RUN/bt-hold"; exit 1; } ;;
+down) down "$2" ;;
+scan)
+    running || { echo "ERROR Bluetooth is off"; exit 1; }
+    ctl --timeout 10 scan on >/dev/null
+    devices
+    ;;
+devices) devices ;;
+pair|connect|disconnect|forget)
+    mac=$2
+    mac_ok "$mac" || { echo "ERROR not an address: $mac"; exit 1; }
+    running || { echo "ERROR Bluetooth is off"; exit 1; }
+    case $1 in
+    pair)
+        # a device found longer ago than TemporaryTimeout is gone: search briefly first
+        ctl info "$mac" | grep -q 'Name\|Alias' || ctl --timeout 6 scan on >/dev/null
+        info=$(ctl info "$mac")
+        audio=0
+        echo "$info" | grep -q 'Icon: audio-\|Audio Sink' && audio=1
+        # headphones refuse the first tries while they get ready: retry up to 40 s
+        t0=$(cut -d. -f1 /proc/uptime); out=
+        while :; do
+            out=$($CTL --timeout 30 pair "$mac" 2>&1)
+            echo "$out" | grep -q 'Pairing successful\|AlreadyExists' && break
+            [ $(( $(cut -d. -f1 /proc/uptime) - t0 )) -ge 40 ] && { echo "ERROR $(echo "$out" | why)"; exit 1; }
+            sleep 2
+        done
+        ctl trust "$mac" >/dev/null
+        # an audio device paired only over LE has no BR/EDR link key: A2DP would be
+        # refused. Drop it and ask for pairing mode again instead of keeping a dud.
+        if [ $audio = 1 ] && ! grep -q '^\[LinkKey\]' "$RUN/bluetooth"/*/"$mac"/info 2>/dev/null; then
+            $CTL --timeout 10 remove "$mac" >/dev/null 2>&1
+            echo "ERROR Failed to pair: no audio key kept (put it in pairing mode again, then retry)"
+            exit 1
+        fi
+        out=$($CTL --timeout 20 connect "$mac" 2>&1)
+        save
+        grep -q '^\[LinkKey\]\|^\[LongTermKey\]' "$RUN/bluetooth"/*/"$mac"/info 2>/dev/null ||
+            { echo "ERROR Failed to pair: no key was kept (put it in pairing mode again, then retry)"; exit 1; }
+        echo "$out" | grep -q 'Connection successful' || { echo "ERROR paired, but $(echo "$out" | why)"; exit 1; }
+        ;;
+    connect)
+        out=$($CTL --timeout 20 connect "$mac" 2>&1)
+        echo "$out" | grep -q 'Connection successful' || { echo "ERROR $(echo "$out" | why)"; exit 1; }
+        save
+        ;;
+    disconnect)
+        $CTL --timeout 10 disconnect "$mac" >/dev/null 2>&1
+        [ "$(cat "$LAST" 2>/dev/null)" = "$mac" ] && rm -f "$LAST"
+        save
+        ;;
+    forget)
+        $CTL --timeout 10 remove "$mac" >/dev/null 2>&1
+        [ "$(cat "$LAST" 2>/dev/null)" = "$mac" ] && rm -f "$LAST"
+        save
+        ;;
+    esac
+    echo OK
+    ;;
+volume)
+    running || exit 0
+    c=$(amixer -D bluealsa controls 2>/dev/null | sed -n "s/.*'\(.*A2DP\)'.*/\1/p" | head -n 1)
+    [ -n "$c" ] && amixer -D bluealsa sset "$c" "$2%" >/dev/null 2>&1
+    ;;
+status) running && echo on || echo off ;;
+*) echo "usage: gameos-bt up|down [sleep]|scan|devices|pair|connect|disconnect|forget <MAC>|volume <pct>|status" >&2; exit 1 ;;
+esac
+exit 0

@@ -45,6 +45,7 @@ struct Settings {
     int volume = 70;
     int last_console = 0;
     int theme = 0;
+    int bluetooth = 0;   // 1 = stack was on; restored at session start
 };
 
 Settings load_settings();

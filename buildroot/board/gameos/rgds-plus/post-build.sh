@@ -8,7 +8,12 @@ TARGET_DIR="$1"
 chmod +x "$TARGET_DIR/etc/init.d/"S* 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-session" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/ppsspp-run" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-bt" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/sleep.d/"* 2>/dev/null || true
+
+# Bluetooth is off by default: gameos-bt starts bluetoothd on demand, so the
+# package's boot-time init script must not run it behind our back.
+rm -f "$TARGET_DIR/etc/init.d/S40bluetoothd"
 
 # Machine-id for a stable identity
 [ -f "$TARGET_DIR/etc/machine-id" ] || echo "gameos-rgdsplus-0001" > "$TARGET_DIR/etc/machine-id"

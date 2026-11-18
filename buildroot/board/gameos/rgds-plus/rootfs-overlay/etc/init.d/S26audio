@@ -13,6 +13,12 @@
 # Cards are found by name, not index: probe order swaps rk817 (jack) and
 # aw88166 (speakers) between boots. Headphone jack state is polled so the
 # route follows the plug; a running emulator re-reads ALSA on next launch.
+#
+# Bluetooth headphones (gameos-bt) take over playback via bluealsa's PCM while
+# /run/gameos/bt-audio holds their MAC. /run/gameos/bt-hold means they are being
+# called back after a sleep: playback then goes to the rk817, which on the Plus
+# drives only the jack — silent with nothing plugged in, but a real device clock
+# so a woken game keeps its pace instead of blasting the speakers.
 
 PIDFILE=/var/run/gameos-audio.pid
 
@@ -31,20 +37,40 @@ route_once()
         [ "$j" = "on" ] && jack=on
     fi
 
-    if [ "$jack" = "on" ]; then play=$codec; else play=${spk:-$codec}; fi
+    btmac=
+    [ -r /run/gameos/bt-audio ] && btmac=$(awk '{ print $1; exit }' /run/gameos/bt-audio)
+    if [ -n "$btmac" ]; then
+        play=bt
+    elif [ -f /run/gameos/bt-hold ]; then
+        play=$codec
+    elif [ "$jack" = "on" ]; then
+        play=$codec
+    else
+        play=${spk:-$codec}
+    fi
 
     cap='"null"'
     [ -n "$codec" ] && cap="{ type plug route_policy copy slave { pcm \"hw:$codec\" format S16_LE channels 2 rate 48000 } }"
 
+    # plug converts to whatever bluealsa negotiated (no 48 kHz pin: the codec's
+    # own rate, usually 44.1 kHz SBC); the hw paths stay pinned for the aw88166
+    if [ "$play" = bt ]; then
+        playpcm="{ type bluealsa device \"$btmac\" profile \"a2dp\" }"
+        playline="    playback.pcm { type plug slave.pcm $playpcm }"
+    else
+        playline="    playback.pcm { type plug slave { pcm \"hw:$play\" format S16_LE channels 2 rate 48000 } }"
+    fi
+    ctlcard=${codec:-$spk}
+
     tmp=/etc/asound.conf.tmp
     {
-        echo "# gameos-audio: play=$play jack=$jack"
+        echo "# gameos-audio: play=$play jack=$jack bt=$btmac"
         echo "pcm.!default {"
         echo "    type asym"
-        echo "    playback.pcm { type plug slave { pcm \"hw:$play\" format S16_LE channels 2 rate 48000 } }"
+        echo "$playline"
         echo "    capture.pcm $cap"
         echo "}"
-        echo "ctl.!default { type hw card $play }"
+        [ -n "$ctlcard" ] && echo "ctl.!default { type hw card $ctlcard }"
     } > "$tmp"
     if cmp -s "$tmp" /etc/asound.conf; then
         rm -f "$tmp"

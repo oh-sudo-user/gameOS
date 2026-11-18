@@ -103,6 +103,15 @@ BR2_PACKAGE_ALSA_LIB=y
 BR2_PACKAGE_ALSA_UTILS=y
 BR2_PACKAGE_ALSA_UTILS_AMIXER=y
 
+# --- Bluetooth (off by default; gameos-bt starts the stack on demand) ---
+# bluez-alsa selects bluez5-utils + its audio plugin, dbus, libglib2 and sbc;
+# HID/HOG plugins serve classic and LE controllers. libopenaptx adds aptX/HD.
+BR2_PACKAGE_BLUEZ5_UTILS=y
+BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
+BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID=y
+BR2_PACKAGE_BLUEZ_ALSA=y
+BR2_PACKAGE_LIBOPENAPTX=y
+
 # --- Input / system utilities ---
 BR2_PACKAGE_EUDEV=y
 BR2_PACKAGE_PARTED=y

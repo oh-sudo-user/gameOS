@@ -12,13 +12,16 @@
 #include "gameos.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <map>
+#include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace gameos;
@@ -37,8 +40,13 @@ const SDL_Color C_BG     = {  11,  16,  32, 255 };
 const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
 
-enum class Screen { Home, List, Settings, Saves, Msg, Confirm };
+enum class Screen { Home, List, Settings, Bluetooth, Saves, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave };
+
+struct BtDev {
+    std::string mac, name, kind;
+    bool paired = false, connected = false;
+};
 
 struct App {
     SDL_Window*   win_top = nullptr;
@@ -73,6 +81,17 @@ struct App {
     int save_del_idx = -1;
     std::string msg_title, msg_body;
     ConfirmAct confirm = ConfirmAct::None;
+
+    // Bluetooth screen state (ops run via gameos-bt in the background)
+    bool bt_on = false;
+    bool bt_busy = false;
+    std::string bt_op;                 // what the running op is: up/down/scan/devices/pair/...
+    std::string bt_status;             // one-line feedback under the list
+    std::vector<BtDev> bt_devs;
+    int bt_sel = 0;                    // 0 = on/off row, 1..N = devices
+    int bt_scroll = 0;
+    Uint32 bt_poll_at = 0;
+    Uint32 bt_op_at = 0;               // when the running op started (timeout)
 
     bool running = true;
     int exit_code = 0;
@@ -576,6 +595,190 @@ void draw_list(SDL_Renderer* r)
     draw_hint(r, "↑↓ 选择  Ⓐ 启动  Ⓑ 返回  Ⓧ 收藏  Ⓨ 刷新  Ⓡ 只看收藏");
 }
 
+// ---------------------------------------------------------------------------
+// Bluetooth: gameos-bt ops run in the background; results arrive as files
+// (/run/gameos/bt-op.out + bt-op.rc) polled from the main loop, so a 40 s
+// pairing never freezes the UI.
+// ---------------------------------------------------------------------------
+bool bt_mac_valid(const std::string& m)
+{
+    if (m.size() != 17) return false;
+    for (int i = 0; i < 17; i++) {
+        char c = m[i];
+        if (i % 3 == 2) { if (c != ':') return false; }
+        else if (!isxdigit((unsigned char)c)) return false;
+    }
+    return true;
+}
+
+void bt_start(const std::string& op, const std::string& arg = "")
+{
+    unlink("/run/gameos/bt-op.rc");
+    std::string cmd = "mkdir -p /run/gameos; gameos-bt " + op;
+    if (!arg.empty()) cmd += " " + arg;
+    cmd += " > /run/gameos/bt-op.out 2>&1; echo $? > /run/gameos/bt-op.rc &";
+    if (system(cmd.c_str()) != 0) { /* ignore */ }
+    app.bt_op = op;
+    app.bt_busy = true;
+    app.bt_op_at = SDL_GetTicks();
+}
+
+void bt_parse_devs(const std::string& out)
+{
+    app.bt_devs.clear();
+    std::istringstream ss(out);
+    std::string line;
+    while (std::getline(ss, line)) {
+        // MAC \t paired \t connected \t kind \t name
+        size_t t1 = line.find('\t');
+        if (t1 == std::string::npos) continue;
+        size_t t2 = line.find('\t', t1 + 1);
+        if (t2 == std::string::npos) continue;
+        size_t t3 = line.find('\t', t2 + 1);
+        if (t3 == std::string::npos) continue;
+        size_t t4 = line.find('\t', t3 + 1);
+        if (t4 == std::string::npos) continue;
+        BtDev d;
+        d.mac = line.substr(0, t1);
+        if (!bt_mac_valid(d.mac)) continue;
+        d.paired = line[t1 + 1] == '1';
+        d.connected = line[t2 + 1] == '1';
+        d.kind = line.substr(t3 + 1, t4 - t3 - 1);
+        d.name = line.substr(t4 + 1);
+        if (!d.name.empty() && d.name.back() == '\r') d.name.pop_back();
+        app.bt_devs.push_back(d);
+    }
+    app.bt_sel = std::clamp(app.bt_sel, 0, (int)app.bt_devs.size());
+}
+
+void bt_poll()
+{
+    if (!app.bt_busy) return;
+    Uint32 now = SDL_GetTicks();
+    if (now - app.bt_op_at > 90000) {   // a stuck op must not lock the screen
+        app.bt_busy = false;
+        app.bt_op.clear();
+        app.bt_status = "操作超时";
+        return;
+    }
+    if (now - app.bt_poll_at < 150) return;
+    app.bt_poll_at = now;
+    FILE* f = fopen("/run/gameos/bt-op.rc", "r");
+    if (!f) return;
+    int rc = 1;
+    if (fscanf(f, "%d", &rc) != 1) rc = 1;
+    fclose(f);
+    app.bt_busy = false;
+    std::string out = read_file("/run/gameos/bt-op.out");
+    std::string op = app.bt_op;
+    app.bt_op.clear();
+    if (op == "devices" || op == "scan") {
+        bt_parse_devs(out);
+        if (op == "scan") app.bt_status = "搜索完成";
+    } else if (op == "up") {
+        app.bt_on = (rc == 0);
+        app.settings.bluetooth = app.bt_on ? 1 : 0;
+        save_settings(app.settings);
+        app.bt_status = app.bt_on ? "蓝牙已开启" : "开启失败：未找到蓝牙芯片";
+        if (app.bt_on) bt_start("devices");
+    } else if (op == "down") {
+        app.bt_on = false;
+        app.settings.bluetooth = 0;
+        save_settings(app.settings);
+        app.bt_devs.clear();
+        app.bt_sel = 0;
+        app.bt_status = "蓝牙已关闭";
+    } else {
+        // pair / connect / disconnect / forget: last line "OK" or "ERROR <why>"
+        std::string last;
+        std::istringstream ss(out);
+        std::string line;
+        while (std::getline(ss, line))
+            if (!line.empty() && line != "\r") last = line;
+        if (rc == 0) {
+            if (op == "pair") app.bt_status = "配对成功";
+            else if (op == "connect") app.bt_status = "已连接";
+            else if (op == "disconnect") app.bt_status = "已断开";
+            else app.bt_status = "已忽略该设备";
+        } else {
+            app.bt_status = last.empty() ? "操作失败" : last;
+        }
+        bt_start("devices");
+    }
+}
+
+void bt_enter()
+{
+    app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+    app.bt_sel = 0;
+    app.bt_scroll = 0;
+    app.bt_status.clear();
+    app.bt_devs.clear();
+    if (app.bt_on && !app.bt_busy) bt_start("devices");
+    app.screen = Screen::Bluetooth;
+}
+
+const char* bt_kind_cn(const std::string& k)
+{
+    if (k == "audio") return "音频";
+    if (k == "gamepad") return "手柄";
+    if (k == "keyboard") return "键盘";
+    if (k == "mouse") return "鼠标";
+    return "设备";
+}
+
+void draw_bluetooth(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    text(r, app.f_title, "蓝牙", 32, 26, C_TEXT);
+    text(r, app.f_body, app.bt_on ? "已开启" : "已关闭", W - 32, 34,
+         app.bt_on ? C_GREEN : C_DIM, Align::Right);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+
+    const int rowh = 62, top = 116;
+    if (app.bt_sel == 0) {
+        fill_rect(r, 24, top, W - 48, rowh - 6, C_PANEL);
+        fill_rect(r, 24, top, 5, rowh - 6, g_accent);
+    }
+    text(r, app.f_body, "蓝牙开关", 48, top + 12, app.bt_sel == 0 ? C_TEXT : C_DIM);
+    text(r, app.f_body, app.bt_on ? "开" : "关", W - 48, top + 12,
+         app.bt_on ? g_accent : C_DIM, Align::Right);
+
+    if (app.bt_on) {
+        const int vis = 8;
+        int n = (int)app.bt_devs.size();
+        if (app.bt_sel - 1 < app.bt_scroll) app.bt_scroll = app.bt_sel - 1;
+        if (app.bt_sel - 1 >= app.bt_scroll + vis) app.bt_scroll = app.bt_sel - vis;
+        if (app.bt_scroll < 0) app.bt_scroll = 0;
+        for (int i = 0; i < vis; i++) {
+            int idx = app.bt_scroll + i;
+            if (idx >= n) break;
+            int y = top + (i + 1) * rowh;
+            const BtDev& d = app.bt_devs[idx];
+            if (app.bt_sel == idx + 1) {
+                fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
+                fill_rect(r, 24, y, 5, rowh - 6, g_accent);
+            }
+            SDL_Color tc = (app.bt_sel == idx + 1) ? C_TEXT : C_DIM;
+            text(r, app.f_body, d.name.empty() ? d.mac : d.name, 48, y + 12, tc);
+            std::string right = bt_kind_cn(d.kind);
+            if (d.connected) right += " · 已连接";
+            else if (d.paired) right += " · 已配对";
+            text(r, app.f_small, right, W - 48, y + 16,
+                 d.connected ? C_GREEN : C_DIM, Align::Right);
+        }
+        if (n == 0 && !app.bt_busy)
+            text(r, app.f_body, "还没有设备 — 按 Ⓧ 搜索附近的设备",
+                 W / 2, top + 2 * rowh + 20, C_DIM, Align::Center);
+    }
+
+    std::string st = app.bt_busy ? "正在处理…" : app.bt_status;
+    if (!st.empty())
+        text(r, app.f_small, st, W / 2, H - 96, C_AMBER, Align::Center);
+    draw_hint(r, "Ⓐ 开关/配对/连接  Ⓧ 搜索  Ⓨ 忽略  Ⓑ 返回");
+}
+
 void draw_settings(SDL_Renderer* r)
 {
     draw_background(r);
@@ -583,9 +786,9 @@ void draw_settings(SDL_Renderer* r)
     text(r, app.f_title, "系统设置", 32, 26, C_TEXT);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
-    const char* rows[] = { "屏幕亮度", "音量", "主题", "存档管理", "关机", "重启", "关于 gameOS" };
+    const char* rows[] = { "屏幕亮度", "音量", "蓝牙", "主题", "存档管理", "关机", "重启", "关于 gameOS" };
     const int rowh = 72, top = 120;
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
         int y = top + i * rowh;
         if (i == app.set_sel) {
             fill_rect(r, 120, y, W - 240, rowh - 10, C_PANEL);
@@ -601,8 +804,11 @@ void draw_settings(SDL_Renderer* r)
             snprintf(b, sizeof(b), "%d%%", v);
             text(r, app.f_body, b, 860, y + 10, tc, Align::Right);
         } else if (i == 2) {
-            text(r, app.f_body, THEME_NAMES[app.settings.theme], 860, y + 14, g_accent, Align::Right);
+            text(r, app.f_body, app.bt_on ? "已开启" : "已关闭", 860, y + 14,
+                 app.bt_on ? C_GREEN : C_DIM, Align::Right);
         } else if (i == 3) {
+            text(r, app.f_body, THEME_NAMES[app.settings.theme], 860, y + 14, g_accent, Align::Right);
+        } else if (i == 4) {
             char b[32];
             snprintf(b, sizeof(b), "%zu 个", app.saves.size());
             text(r, app.f_body, b, 860, y + 14, tc, Align::Right);
@@ -830,6 +1036,9 @@ void go_back()
     case Screen::Saves:
         app.screen = Screen::Settings;
         break;
+    case Screen::Bluetooth:
+        app.screen = Screen::Settings;
+        break;
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
                                                            : Screen::Settings;
@@ -850,21 +1059,35 @@ void confirm_btn()
         do_launch();
         break;
     case Screen::Settings:
-        if (app.set_sel == 2) cycle_theme();
-        else if (app.set_sel == 3) {
+        if (app.set_sel == 2) bt_enter();
+        else if (app.set_sel == 3) cycle_theme();
+        else if (app.set_sel == 4) {
             app.saves = scan_saves();
             app.save_sel = 0;
             app.save_scroll = 0;
             app.screen = Screen::Saves;
         }
-        else if (app.set_sel == 4) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 5) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
-        else if (app.set_sel == 6)
+        else if (app.set_sel == 5) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 6) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
+        else if (app.set_sel == 7)
             show_msg("关于 gameOS",
                      "gameOS 1.0\n"
                      "为 Anbernic RG DS Plus 全新打造的开源游戏系统。\n"
                      "NDS · GBA · GBC · PS1 · PSP\n"
                      "github.com/oh-sudo-user/gameOS");
+        break;
+    case Screen::Bluetooth:
+        if (app.bt_busy) break;
+        if (app.bt_sel == 0) {
+            app.bt_status = app.bt_on ? "正在关闭…" : "正在开启…";
+            bt_start(app.bt_on ? "down" : "up");
+        } else if (app.bt_sel <= (int)app.bt_devs.size()) {
+            const BtDev& d = app.bt_devs[app.bt_sel - 1];
+            if (!bt_mac_valid(d.mac)) break;
+            if (!d.paired) { app.bt_status = "正在配对…（最长 40 秒）"; bt_start("pair", d.mac); }
+            else if (!d.connected) { app.bt_status = "正在连接…"; bt_start("connect", d.mac); }
+            else { app.bt_status = "正在断开…"; bt_start("disconnect", d.mac); }
+        }
         break;
     case Screen::Saves:
         if (!app.saves.empty()) {
@@ -893,7 +1116,11 @@ void confirm_btn()
 
 void start_btn()
 {
-    if (app.screen == Screen::Home) { app.screen = Screen::Settings; app.set_sel = 0; }
+    if (app.screen == Screen::Home) {
+        app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+        app.screen = Screen::Settings;
+        app.set_sel = 0;
+    }
     else if (app.screen != Screen::Confirm) app.screen = Screen::Home;
 }
 
@@ -909,7 +1136,7 @@ void navigate(int dx, int dy)
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 6);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 7);
         if (dx) {
             if (app.set_sel == 0) {
                 app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
@@ -919,10 +1146,14 @@ void navigate(int dx, int dy)
                 app.settings.volume = std::clamp(app.settings.volume + dx * 5, 0, 100);
                 apply_volume(app.settings.volume);
                 save_settings(app.settings);
-            } else if (app.set_sel == 2) {
+            } else if (app.set_sel == 3) {
                 cycle_theme(dx);
             }
         }
+        break;
+    case Screen::Bluetooth:
+        if (dy) app.bt_sel = std::clamp(app.bt_sel + dy, 0,
+                                        app.bt_on ? (int)app.bt_devs.size() : 0);
         break;
     case Screen::Saves:
         if (dy && !app.saves.empty())
@@ -943,8 +1174,22 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_B: confirm_btn(); break;   // physical A (right)
     case SDL_CONTROLLER_BUTTON_A: go_back(); break;       // physical B (bottom)
     case SDL_CONTROLLER_BUTTON_START: start_btn(); break;
-    case SDL_CONTROLLER_BUTTON_X: refresh_games(); break;  // physical Y (left)
-    case SDL_CONTROLLER_BUTTON_Y: toggle_fav(); break;     // physical X (top)
+    case SDL_CONTROLLER_BUTTON_X:   // physical Y (left)
+        if (app.screen == Screen::Bluetooth) {
+            if (app.bt_on && !app.bt_busy) { app.bt_status = "正在搜索…"; bt_start("scan"); }
+        } else refresh_games();
+        break;
+    case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
+        if (app.screen == Screen::Bluetooth) {
+            if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
+                const BtDev& d = app.bt_devs[app.bt_sel - 1];
+                if (d.paired && bt_mac_valid(d.mac)) {
+                    app.bt_status = "正在忽略…";
+                    bt_start("forget", d.mac);
+                }
+            }
+        } else toggle_fav();
+        break;
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: toggle_fav_only(); break; // physical R
     case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
     case SDL_CONTROLLER_BUTTON_GUIDE:  // physical MENU (BTN_MODE)
@@ -965,8 +1210,22 @@ void handle_key(SDL_KeyboardEvent& k)
     case SDLK_RETURN: case SDLK_z: confirm_btn(); break;
     case SDLK_ESCAPE: case SDLK_x: go_back(); break;
     case SDLK_s: start_btn(); break;
-    case SDLK_r: refresh_games(); break;
-    case SDLK_f: toggle_fav(); break;
+    case SDLK_r:
+        if (app.screen == Screen::Bluetooth) {
+            if (app.bt_on && !app.bt_busy) { app.bt_status = "正在搜索…"; bt_start("scan"); }
+        } else refresh_games();
+        break;
+    case SDLK_f:
+        if (app.screen == Screen::Bluetooth) {
+            if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
+                const BtDev& d = app.bt_devs[app.bt_sel - 1];
+                if (d.paired && bt_mac_valid(d.mac)) {
+                    app.bt_status = "正在忽略…";
+                    bt_start("forget", d.mac);
+                }
+            }
+        } else toggle_fav();
+        break;
     case SDLK_TAB: toggle_fav_only(); break;
     case SDLK_UP:    navigate(0, -1); break;
     case SDLK_DOWN:  navigate(0, 1); break;
@@ -1030,6 +1289,9 @@ int main(int, char**)
     // sets a first-boot default, so without this the mixer would stay at the
     // hardware default and ignore the saved setting.
     apply_volume(app.settings.volume);
+    // Bluetooth was on when the session last ended: bring the stack back up
+    // (idempotent — gameos-bt up returns at once if it is already running).
+    if (app.settings.bluetooth) bt_start("up");
 
     if (!init_gfx()) {
         shutdown_gfx();   // release any partial resources / DRM master
@@ -1062,15 +1324,17 @@ int main(int, char**)
         }
 
         poll_repeat();
+        bt_poll();
 
         SDL_Renderer* r = app.ren_top;
         switch (app.screen) {
-        case Screen::Home:     draw_home(r); break;
-        case Screen::List:     draw_list(r); break;
-        case Screen::Settings: draw_settings(r); break;
-        case Screen::Saves:    draw_saves(r); break;
-        case Screen::Msg:      draw_msg(r); break;
-        case Screen::Confirm:  draw_confirm(r); break;
+        case Screen::Home:      draw_home(r); break;
+        case Screen::List:      draw_list(r); break;
+        case Screen::Settings:  draw_settings(r); break;
+        case Screen::Bluetooth: draw_bluetooth(r); break;
+        case Screen::Saves:     draw_saves(r); break;
+        case Screen::Msg:       draw_msg(r); break;
+        case Screen::Confirm:   draw_confirm(r); break;
         }
         SDL_RenderPresent(r);
         draw_ambient();

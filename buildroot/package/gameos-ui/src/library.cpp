@@ -13,6 +13,7 @@
 #include <set>
 #include <sstream>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace gameos {
 
@@ -280,6 +281,7 @@ Settings load_settings()
         else if (k == "volume") s.volume = std::clamp(n, 0, 100);
         else if (k == "last_console") s.last_console = std::clamp(n, 0, 4);
         else if (k == "theme") s.theme = std::clamp(n, 0, 3);
+        else if (k == "bluetooth") s.bluetooth = std::clamp(n, 0, 1);
     }
     return s;
 }
@@ -290,7 +292,8 @@ void save_settings(const Settings& s)
     ss << "brightness=" << s.brightness << "\n"
        << "volume=" << s.volume << "\n"
        << "last_console=" << s.last_console << "\n"
-       << "theme=" << s.theme << "\n";
+       << "theme=" << s.theme << "\n"
+       << "bluetooth=" << s.bluetooth << "\n";
     write_file(SETTINGS_PATH, ss.str());
 }
 
@@ -328,6 +331,13 @@ void apply_volume(int pct)
              "{ amixer -c 1 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 1 sset 'Right PCM' %d%% >/dev/null 2>&1; }",
              pct, pct, pct, pct, pct, pct, pct, pct);
     if (system(cmd) != 0) { /* ignore */ }
+    // Bluetooth headphones have their own volume (bluealsa per-device control);
+    // the hw mixers above do not touch the A2DP stream.
+    if (access("/run/gameos/bt-audio", F_OK) == 0) {
+        char bt[96];
+        snprintf(bt, sizeof(bt), "gameos-bt volume %d >/dev/null 2>&1", pct);
+        if (system(bt) != 0) { /* ignore */ }
+    }
 }
 
 // ---------------------------------------------------------------------------
