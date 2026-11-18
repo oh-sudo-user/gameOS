@@ -2,6 +2,7 @@
 # Mount virtual filesystems BEFORE rcS: udev, the data-partition setup and
 # mesa all need /proc and /sys. Without them udevd cannot run, GAMEOS-DATA
 # is never created and EGL fails to enumerate the GPU (UI boot loop).
+::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -o remount,rw /
 ::sysinit:/bin/mkdir -p /dev/pts
 ::sysinit:/bin/mkdir -p /dev/shm

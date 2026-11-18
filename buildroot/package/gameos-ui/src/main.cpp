@@ -255,13 +255,26 @@ SDL_Texture* load_tex(SDL_Renderer* r, const std::string& path)
     return t; // nullptr is fine — fallbacks are drawn
 }
 
+// Tiny persistent debug log: also kept on the data partition so input
+// problems can be diagnosed by reading the card on a PC after a reboot.
+void ui_dbg(const char* s)
+{
+    fputs(s, stderr);
+    FILE* f = fopen("/userdata/system/ui.log", "a");
+    if (!f) f = fopen("/boot/ui.log", "a");
+    if (f) { fputs(s, f); fclose(f); }
+}
+
 void open_controller()
 {
+    char dbg[512];
     int n = SDL_NumJoysticks();
+    snprintf(dbg, sizeof(dbg), "gameos-ui: open_controller: %d joystick(s)\n", n);
+    ui_dbg(dbg);
     for (int i = 0; i < n; i++) {
+        const char* name = SDL_JoystickNameForIndex(i);
         if (!SDL_IsGameController(i)) {
             // Register our virtual gamepad with SDL on the fly.
-            const char* name = SDL_JoystickNameForIndex(i);
             if (name && strcmp(name, "gameOS Gamepad") == 0) {
                 char guid[64];
                 SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i),
@@ -277,11 +290,20 @@ void open_controller()
                     "leftstick:b11,rightstick:b12,"
                     "dpup:b13,dpdown:b14,dpleft:b15,dpright:b16,"
                     "leftx:a0,lefty:a1,";
-                SDL_GameControllerAddMapping(map.c_str());
+                int mr = SDL_GameControllerAddMapping(map.c_str());
+                snprintf(dbg, sizeof(dbg), "gameos-ui: mapping %s -> %d (%s)\n",
+                         guid, mr, mr < 0 ? SDL_GetError() : "ok");
+                ui_dbg(dbg);
             }
         }
+        snprintf(dbg, sizeof(dbg), "gameos-ui: joy %d name=%s isgc=%d\n",
+                 i, name ? name : "?", (int)SDL_IsGameController(i));
+        ui_dbg(dbg);
         if (SDL_IsGameController(i)) {
             app.pad = SDL_GameControllerOpen(i);
+            snprintf(dbg, sizeof(dbg), "gameos-ui: controller open %s (%s)\n",
+                     app.pad ? "ok" : "FAILED", app.pad ? "pad" : SDL_GetError());
+            ui_dbg(dbg);
             if (app.pad) break;
         }
     }
@@ -973,14 +995,6 @@ void enter_selection()
         return;
     }
     const Console& c = consoles()[app.carousel];
-    if (c.dual && !nds_bios_ok()) {
-        show_msg("需要 NDS BIOS 文件",
-                 "缺少：" + bios_missing_list() + "\n"
-                 "请把你自己的 NDS BIOS 文件复制到 TF 卡的\n"
-                 "bios 文件夹（GAMEOS 盘符 → bios）。\n"
-                 "需要 bios7.bin、bios9.bin、firmware.bin 三个文件。");
-        return;
-    }
     invalidate_games(app.carousel);   // entering a console: force a fresh scan
     app.sel = 0;
     rebuild_list();
@@ -1000,6 +1014,16 @@ void do_launch()
 {
     if (app.games.empty()) return;
     const Console& c = consoles()[app.carousel];
+    // BIOS is only needed to actually run a game; gate launching, not list
+    // entry, so an empty NDS library looks like every other empty console.
+    if (c.dual && !nds_bios_ok()) {
+        show_msg("需要 NDS BIOS 文件",
+                 "缺少：" + bios_missing_list() + "\n"
+                 "请把你自己的 NDS BIOS 文件复制到 TF 卡的\n"
+                 "bios 文件夹（GAMEOS 盘符 → bios）。\n"
+                 "需要 bios7.bin、bios9.bin、firmware.bin 三个文件。");
+        return;
+    }
     const Game& g = app.games[app.sel];
 
     shutdown_gfx();                    // release DRM master
@@ -1314,12 +1338,29 @@ int main(int, char**)
             case SDL_CONTROLLERDEVICEADDED:
                 if (!app.pad) open_controller();
                 break;
+            case SDL_JOYDEVICEADDED:
+                // Unmapped joysticks (our virtual pad before its mapping is
+                // registered) only emit JOYDEVICEADDED, never the controller
+                // variant — retry opening here too.
+                if (!app.pad) open_controller();
+                break;
             case SDL_CONTROLLERDEVICEREMOVED:
                 if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
                 open_controller();
                 break;
             default:
                 break;
+            }
+        }
+
+        // Belt-and-braces: if the pad was missed at startup (inputd may create
+        // it after SDL_Init), retry once a second until it shows up.
+        if (!app.pad) {
+            static Uint32 last_pad_try = 0;
+            Uint32 now = SDL_GetTicks();
+            if (now - last_pad_try >= 1000) {
+                last_pad_try = now;
+                open_controller();
             }
         }
 

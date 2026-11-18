@@ -121,6 +121,10 @@ BR2_PACKAGE_EXFATPROGS=y
 BR2_PACKAGE_GPTFDISK=y
 BR2_PACKAGE_GPTFDISK_SGDISK=y
 BR2_PACKAGE_EVTEST=y
+# partx -a registers the freshly created data partition with the kernel on
+# first boot (blockdev --rereadpt refuses while root is mounted from p2).
+BR2_PACKAGE_UTIL_LINUX=y
+BR2_PACKAGE_UTIL_LINUX_PARTX=y
 BR2_PACKAGE_LINUX_FIRMWARE=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_87XX=y
 BR2_PACKAGE_LINUX_FIRMWARE_RTL_88XX=y

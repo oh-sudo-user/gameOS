@@ -36,6 +36,14 @@ if [ -z "$DEV" ] || [ ! -b "$DEV" ]; then
 fi
 log "boot disk = $DEV (root source '$root_src')"
 
+# --- mount the boot partition: persistent log fallback ----------------------
+# /userdata may be unavailable (first boot, format failure); /boot always
+# exists so diagnostics (ui.log) survive reboots either way.
+mkdir -p /boot
+if ! mountpoint -q /boot; then
+  mount -t vfat ${DEV}p1 /boot 2>>"$LOG" || log "WARN: could not mount /boot"
+fi
+
 # --- wait for the disk node (already present since we booted from it) ------
 i=0
 while [ ! -b "$DEV" ] && [ $i -lt 100 ]; do
@@ -75,11 +83,25 @@ if [ -f /etc/gameos-firstboot ]; then
         log "WARN: sgdisk missing; relying on parted to fix the GPT"
       fi
       # p1 ends at 272MiB, p2 (1200MiB) ends at 1472MiB; start data at 1536MiB
-      parted -s "$DEV" mkpart GAMEOS-DATA exfat 1536MiB 100% >>"$LOG" 2>&1 \
-        || log "ERROR: parted mkpart failed"
+      # parted has no exfat fs-type token ("invalid token: exfat"), so create
+      # the partition with sgdisk instead: 0700 = Microsoft basic data, which
+      # both Linux and Windows recognise for the exFAT data partition.
+      if command -v sgdisk >/dev/null 2>&1; then
+        sgdisk -n 3:1536MiB:0 -t 3:0700 -c 3:GAMEOS-DATA "$DEV" >>"$LOG" 2>&1 \
+          || log "ERROR: sgdisk mkpart failed"
+      else
+        parted -s "$DEV" mkpart GAMEOS-DATA 1536MiB 100% >>"$LOG" 2>&1 \
+          || log "ERROR: parted mkpart failed"
+      fi
       # give the kernel a moment to re-read the partition table
       sleep 1
       blockdev --rereadpt "$DEV" 2>/dev/null || true
+      # BLKRRPART refuses while root is mounted from p2, so the new node may
+      # not appear until reboot; partx adds just p3 via BLKPG, which works
+      # even with the other partitions in use.
+      if command -v partx >/dev/null 2>&1; then
+        partx -a -n 3 "$DEV" >>"$LOG" 2>&1 || true
+      fi
       j=0
       while [ ! -b ${DEV}p3 ] && [ $j -lt 50 ]; do sleep 0.1; j=$((j + 1)); done
     fi
@@ -155,7 +177,8 @@ for b in /sys/class/backlight/*; do
 done
 
 # --- keep the console from blanking over the UI ------------------------------
-echo 0 > /sys/module/kernel/parameters/consoleblank 2>/dev/null || true
+[ -w /sys/module/kernel/parameters/consoleblank ] && \
+  echo 0 > /sys/module/kernel/parameters/consoleblank
 
 # --- audio: sane default speaker volume ONLY on first boot ------------------
 # On later boots the UI restores the user's saved volume (apply_volume at
