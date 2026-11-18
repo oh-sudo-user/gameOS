@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -125,22 +126,61 @@ void draw_tex(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha = 255)
 
 enum class Align { Left, Center, Right };
 
+// text() runs many times per frame (clock, titles, labels) with mostly-static
+// strings. Re-rendering the TTF surface and creating/destroying a texture on
+// every call is costly on the Cortex-A55. Cache the rendered texture keyed by
+// (renderer, font, color, string). Textures belong to a renderer, so the cache
+// MUST be cleared before renderers are destroyed — see shutdown_gfx(). Evict
+// all when full to bound memory (clock/battery strings churn once a minute).
+struct TextKey {
+    SDL_Renderer* r;
+    TTF_Font* f;
+    SDL_Color c;
+    std::string s;
+    bool operator<(const TextKey& o) const {
+        if (r != o.r) return r < o.r;
+        if (f != o.f) return f < o.f;
+        if (c.r != o.c.r) return c.r < o.c.r;
+        if (c.g != o.c.g) return c.g < o.c.g;
+        if (c.b != o.c.b) return c.b < o.c.b;
+        if (c.a != o.c.a) return c.a < o.c.a;
+        return s < o.s;
+    }
+};
+std::map<TextKey, SDL_Texture*> g_text_cache;
+
+void clear_text_cache()
+{
+    for (auto& kv : g_text_cache) SDL_DestroyTexture(kv.second);
+    g_text_cache.clear();
+}
+
 void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
           int x, int y, SDL_Color c, Align align = Align::Left)
 {
     if (!f || s.empty()) return;
-    SDL_Surface* surf = TTF_RenderUTF8_Blended(f, s.c_str(), c);
-    if (!surf) return;
-    SDL_Texture* t = SDL_CreateTextureFromSurface(r, surf);
-    int tw = surf->w, th = surf->h;
-    SDL_FreeSurface(surf);
-    if (!t) return;
+    TextKey key{ r, f, c, s };
+    SDL_Texture* t;
+    int tw, th;
+    auto it = g_text_cache.find(key);
+    if (it != g_text_cache.end()) {
+        t = it->second;
+        SDL_QueryTexture(t, nullptr, nullptr, &tw, &th);
+    } else {
+        SDL_Surface* surf = TTF_RenderUTF8_Blended(f, s.c_str(), c);
+        if (!surf) return;
+        t = SDL_CreateTextureFromSurface(r, surf);
+        tw = surf->w; th = surf->h;
+        SDL_FreeSurface(surf);
+        if (!t) return;
+        if (g_text_cache.size() >= 128) clear_text_cache();
+        g_text_cache.emplace(key, t);
+    }
     int dx = x;
     if (align == Align::Center) dx = x - tw / 2;
     else if (align == Align::Right) dx = x - tw;
     SDL_Rect dst = { dx, y, tw, th };
     SDL_RenderCopy(r, t, nullptr, &dst);
-    SDL_DestroyTexture(t);
 }
 
 int text_width(TTF_Font* f, const std::string& s)
@@ -302,6 +342,7 @@ bool init_gfx()
 
 void shutdown_gfx()
 {
+    clear_text_cache();  // text textures belong to the renderers destroyed below
     if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
     for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
