@@ -27,9 +27,27 @@ One thing worth knowing up front: these handhelds have no internal storage, and 
 | Game Boy Advance | mGBA | |
 | Game Boy / Game Boy Color | mGBA | |
 | PlayStation 1 | PCSX-ReARMed (ARM64 dynarec) | Handles .cue / .m3u / .chd properly |
-| PSP | PPSSPP (Mali-G52 via Panfrost) | 2x render resolution by default |
+| PSP | PPSSPP (Mali-G52 via Panfrost) | 1x render resolution by default (see Performance below) |
 
-A word on expectations: NDS, GBA, GBC and PS1 run comfortably on this chip. PSP is the heaviest thing it can do — most games are fine, but demanding titles will stutter. Dropping PPSSPP's render resolution to 1x in its own settings usually helps.
+A word on expectations: NDS, GBA, GBC and PS1 run comfortably on this chip. PSP is the heaviest thing it can do — most games are fine, but demanding titles will stutter. PPSSPP now ships at 1x internal resolution, which removes three quarters of the pixels it has to draw and read back every frame; if you want the sharper look back, raise it to 2x in PPSSPP's own graphics settings.
+
+### Performance
+
+1.1.0 is mostly a performance release, so here is what it changes and what to expect. Numbers are labelled **measured** when we actually ran them, **calculated** when they are arithmetic, and **expected** when they follow from what the change does on this class of chip. An on-device benchmark table is next on the list and will be added here once it exists.
+
+| Area | What 1.1.0 changes | Effect |
+|---|---|---|
+| PSP · resolution | 1x internal resolution by default (2x before) | **calculated:** 4x fewer pixels per frame — 960×544 (522,240 px) → 480×272 (130,560 px) |
+| PSP · readback | the GPU→CPU frame copy is skipped | **calculated:** ~522 KB per frame, ~31 MB/s at 60 fps, no longer copied; **expected:** the 1–3 ms sync stall per frame goes away with it |
+| PSP · emulation headroom | the same 1x setting | **measured** (host, not device): real gameplay — DOOM shareware — rendered at ~80 fps on a software rasteriser, so the core itself clears 60 fps with room to spare |
+| NDS · rendering | threaded renderer beside the ARM64 JIT; inert OpenGL options removed | **expected:** up to ~2x on render-bound scenes, typically 1.2–1.6x across the four Cortex-A55 cores |
+| NDS · boot | `game nds` DS-mode fix for DSi-enhanced carts | **measured:** boots and plays under an ARM64 emulator; the black screen that quit back to the menu is gone |
+| GBA · CPU | known idle loops removed (`mgba_idle_optimization=Remove Known`) | **expected:** 1.1–1.5x on titles that idle a lot, unchanged on ones that don't |
+| GBA · pacing | frame skipping off | no skipped frames; costs some CPU, which is what the idle-loop removal pays for |
+| Front-end | eased transitions and a cheaper per-frame animation path | **expected:** ~0.2–0.5 ms of animation work per frame — a small fraction of the 16.7 ms budget |
+| Wi-Fi / Bluetooth | busy-waits and long timeouts removed | **measured:** a Wi-Fi scan no longer sits idle for ~13 s; Bluetooth actions no longer stall for 5 s when the radio is off |
+
+**Reading the table.** On PSP the change is the difference between "draw 522,240 pixels and copy them back every frame" and "draw 130,560 and leave them on the GPU". On NDS and GBA the gains are game-dependent by nature: a scene that isn't render-bound, or a game that never idles, will see little change. The front-end figures are a worst-case frame cost, not a claim about overall responsiveness.
 
 NDS works out of the box: the melonDS core ships FreeBIOS, an open-source BIOS replacement, so no files are needed to play. For maximum compatibility you can still drop your own console dumps (`bios7.bin`, `bios9.bin`, `firmware.bin`) into the `bios/` folder — they take priority when present. A game card in the TF2 slot (Plus) can supply them automatically.
 
@@ -43,7 +61,7 @@ Every other system runs on the top screen with the bottom one dark, which is exa
 
 The first power-on runs a short setup wizard, and the boot animation shows what stage it is at instead of a wall of console text:
 
-1. **Language** — seven to choose from.
+1. **Language** — six to choose from.
 2. **Wi-Fi** — pick a network, type the passphrase with the gamepad keyboard; a four-stage connectivity test (link / route / DNS / internet) tells you it really works.
 3. **Timezone** — a curated list, applied immediately.
 4. **Device name** — what the device calls itself on the network.
@@ -196,9 +214,27 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机。开机直接�
 | GBA | mGBA | |
 | GB / GBC | mGBA | |
 | PS1 | PCSX-ReARMed（ARM64 动态编译） | 完整支持 .cue / .m3u / .chd |
-| PSP | PPSSPP（Panfrost 驱动 Mali-G52） | 默认 2 倍渲染分辨率 |
+| PSP | PPSSPP（Panfrost 驱动 Mali-G52） | 默认 1 倍渲染分辨率（见下方"性能"） |
 
-说句实话：NDS、GBA、GBC、PS1 在这颗芯片上都很从容。PSP 是它能干的最大的活——大部分游戏没问题，但重负载作品会掉帧。进 PPSSPP 自己的设置把渲染分辨率降到 1 倍，通常就顺了。
+说句实话：NDS、GBA、GBC、PS1 在这颗芯片上都很从容。PSP 是它能干的最大的活——大部分游戏没问题，但重负载作品会掉帧。现在 PPSSPP 默认就是 1 倍内部分辨率，每帧要画的像素少了四分之三；想要更锐利的画面，可以在 PPSSPP 自己的图形设置里调回 2 倍。
+
+### 性能
+
+1.1.0 主要是一次性能版本。这一节列出它改了什么、预期带来多少变化。数字分三类：**实测**是真机或带测试工具跑出来的；**算出**是纯算术；**预期**是按这项改动在这类芯片上的作用推算的。完整的手持机实测表是下一步计划，做出来后补进这里。
+
+| 环节 | 1.1.0 的改动 | 效果 |
+|---|---|---|
+| PSP · 分辨率 | 默认 1 倍内部分辨率（此前 2 倍） | **算出：**每帧像素少 4 倍——960×544（522,240 像素）→ 480×272（130,560 像素） |
+| PSP · 回读 | 跳过 GPU→CPU 的整帧回读 | **算出：**每帧约 522 KB、60 帧/秒下约 31 MB/s 不再搬运；**预期：**每帧 1–3 ms 的同步等待一并消失 |
+| PSP · 模拟余量 | 就是上面这个 1 倍设置 | **实测**（电脑上，非掌机）：真实游戏画面——DOOM 共享版——用软件渲染跑到约 80 帧/秒，模拟核心本身远超 60 帧 |
+| NDS · 渲染 | ARM64 JIT 旁边加线程化渲染器；删掉不起作用的 OpenGL 选项 | **预期：**渲染吃紧的场景最高约 2 倍，四颗 Cortex-A55 上典型 1.2–1.6 倍 |
+| NDS · 启动 | `game nds` 对 DSi 增强卡带的 DS 模式修复 | **实测：**在 ARM64 模拟器里能启动、能玩；之前黑屏后退回菜单的路径没有了 |
+| GBA · CPU | 去掉已知的空转循环（`mgba_idle_optimization=Remove Known`） | **预期：**空转多的游戏 1.1–1.5 倍，空转少的游戏基本不变 |
+| GBA · 节奏 | 关闭跳帧 | 不再丢帧；代价是一点 CPU，正好用空转优化补回来 |
+| 前端 | 过渡动画放缓、每帧动画开销更省 | **预期：**每帧约 0.2–0.5 ms 的动画开销——只占 16.7 ms 预算的一小部分 |
+| Wi-Fi / 蓝牙 | 去掉忙等和过长的超时 | **实测：**Wi-Fi 扫描不再空等约 13 秒；蓝牙关闭时操作不再卡 5 秒 |
+
+**怎么读这张表。** PSP 那一栏的差别，是"每帧画 522,240 个像素再把它们拷回来"和"画 130,560 个、留在 GPU 上"的区别。NDS 和 GBA 的收益天然看游戏：渲染不吃紧的场景、或者从不空转的游戏，变化很小。前端数字是单帧最坏开销，不是对整体流畅度的承诺。
 
 NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现），不放任何文件也能玩。想要最佳兼容性，仍可把自己主机导出的 `bios7.bin`、`bios9.bin`、`firmware.bin` 放进 `bios/` 文件夹——存在时优先使用。Plus 的 TF2 游戏卡里若有这些文件，会自动拷过来。
 
@@ -212,7 +248,7 @@ NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现�
 
 第一次开机会走一个简短的设置向导，开机动画会显示当前进行到哪一步，而不是满屏滚动的启动文字：
 
-1. **语言**——七种可选。
+1. **语言**——六种可选。
 2. **Wi-Fi**——选网络、用手柄键盘输密码；四段连通性测试（链路 / 路由 / DNS / 外网）告诉你是不是真的通了。
 3. **时区**——精选列表，立即生效。
 4. **机器名**——设备在网络上的名字。
