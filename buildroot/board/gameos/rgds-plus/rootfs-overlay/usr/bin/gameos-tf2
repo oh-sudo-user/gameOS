@@ -26,6 +26,9 @@ MNT=/mnt/tf2
 RUN=/run/gameos
 STATE=$RUN/tf2
 LOG=/tmp/gameos-tf2.log
+# once the data partition is up, keep the log on the card so a failed mount
+# can be diagnosed from the card alone (tmpfs loses it at power-off)
+[ -d /userdata/system ] && LOG=/userdata/system/tf2.log
 
 mkdir -p "$RUN" "$MNT"
 case $1 in
@@ -145,6 +148,7 @@ part_size() {  # part_size /dev/mmcblk2p1 -> bytes (sysfs, 512B sectors)
 do_auto() {
     bd=$(boot_disk)
     src=$(mounted_src)
+    log "auto: boot=$bd mounted=$src"
     # Already mounted and the node is still there: udev emits many change
     # events per insert, so do nothing rather than unmount/remount each time.
     # The boot disk is never a valid TF2 source — if the card we are now
@@ -175,9 +179,13 @@ do_auto() {
         for p in $parts; do
             sz=$(part_size "$p")
             do_umount
-            try_mount "$p" || continue   # unformatted / unknown -> not a candidate
+            if ! try_mount "$p"; then   # unformatted / unknown -> not a candidate
+                log "skip $p: no mountable filesystem"
+                continue
+            fi
             fs=$FOUND_FS
             g=0; has_games "$MNT" && g=1
+            log "candidate $p fs=$fs games=$g size=$sz"
             # A partition that actually holds roms wins over a bigger empty
             # one; among equals the largest wins.
             if [ "$g" -gt "$bestgames" ] ||

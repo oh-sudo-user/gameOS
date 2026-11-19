@@ -111,6 +111,12 @@ case "$1" in
                 echo "== wifi"; gameos-wifi status 2>/dev/null
                 echo "== links"; ip link 2>/dev/null
                 echo "== bt"; gameos-bt status 2>/dev/null
+                echo "== tf2"; gameos-tf2 status 2>/dev/null
+                echo "== mounts"; grep -E "tf2|userdata|mmcblk" /proc/self/mounts
+                echo "== tf2dir"; ls /mnt/tf2 2>/dev/null | head -20
+                echo "== tf2roms"; ls /mnt/tf2/roms 2>/dev/null | head -20
+                echo "== blocks"; ls /sys/block 2>/dev/null
+                echo "== tf2log"; tail -20 /userdata/system/tf2.log 2>/dev/null || tail -20 /tmp/gameos-tf2.log 2>/dev/null
                 echo "== ui.log"; tail -30 /userdata/system/ui.log 2>/dev/null || tail -30 /boot/ui.log 2>/dev/null
             } > "$out" 2>&1
         ) 9>&- </dev/null >/dev/null 2>&1 &

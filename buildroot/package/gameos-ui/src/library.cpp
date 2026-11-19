@@ -207,13 +207,20 @@ static void scan_dir(const std::string& dir, const Console& c,
 // then the second microSD slot, which gameos-tf2 mounts read-only at /mnt/tf2.
 // Both the "roms/<system>" layout and console folders straight at the card
 // root are accepted, so a card prepared for another firmware works as-is.
-// exFAT/FAT lookups are case-insensitive; the ROMS variant covers ext4 cards.
+// exFAT/FAT lookups are case-insensitive; the ROMS/upper-case variants cover
+// ext4/NTFS cards, and the bare roms/ roots catch dumps with no subfolders.
 static std::vector<std::string> rom_roots(const Console& c)
 {
     std::vector<std::string> roots;
     roots.push_back(std::string("/userdata/roms/") + c.id);
-    for (const char* base : { "/mnt/tf2/roms/", "/mnt/tf2/ROMS/", "/mnt/tf2/" })
+    std::string up = c.id;
+    for (char& ch : up) if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
+    for (const char* base : { "/mnt/tf2/roms/", "/mnt/tf2/ROMS/", "/mnt/tf2/" }) {
         roots.push_back(std::string(base) + c.id);
+        if (up != c.id) roots.push_back(std::string(base) + up);
+    }
+    roots.push_back("/mnt/tf2/roms/");
+    roots.push_back("/mnt/tf2/ROMS/");
     return roots;
 }
 
