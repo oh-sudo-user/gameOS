@@ -32,7 +32,15 @@ start)
         done
         [ -f /run/gameos/ui-ok ] || exit 0
         confirm
-        sleep 3
+        # WiFi may still be associating/DHCP-ing when the UI comes up; give the
+        # link up to 60 s before asking for a manifest, otherwise the boot-time
+        # check would silently do nothing on every cold boot.
+        i=0
+        while [ $i -lt 12 ]; do
+            ip -4 route 2>/dev/null | grep -q '^default ' && break
+            sleep 5
+            i=$((i + 1))
+        done
         gameos-update autocheck >/dev/null 2>&1
     ) &
     ;;
