@@ -108,8 +108,21 @@ jobs:
             output/images/gameOS-boot.tar.gz
           compression-level: 0
 
-      - name: Publish release (tags only)
+      # A release published by hand from a verified local build must not be
+      # replaced by the cloud build of the same tag (different bytes, and the
+      # hand-written flashing/backup notes would be lost). Only publish when
+      # the release does not have assets yet.
+      - name: Check release assets
+        id: rel
         if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release (tags only, when still empty)
+        if: startsWith(github.ref, 'refs/tags/v') && steps.rel.outputs.count == '0'
         uses: softprops/action-gh-release@v2
         with:
           files: |
