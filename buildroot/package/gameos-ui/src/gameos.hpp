@@ -41,10 +41,6 @@ std::vector<Game> scan_games(const Console& c);
 // is mounted there is tracked by the UI from /run/gameos/tf2 (see tf2_poll).
 bool on_tf2(const std::string& path);
 
-// NDS needs bios7.bin / bios9.bin / firmware.bin in /userdata/bios.
-bool nds_bios_ok();
-std::string bios_missing_list();
-
 // ---------------------------------------------------------------------------
 // Settings & system state
 // ---------------------------------------------------------------------------

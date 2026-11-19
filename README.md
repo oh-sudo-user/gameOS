@@ -31,7 +31,7 @@ One thing worth knowing up front: these handhelds have no internal storage, and 
 
 A word on expectations: NDS, GBA, GBC and PS1 run comfortably on this chip. PSP is the heaviest thing it can do — most games are fine, but demanding titles will stutter. Dropping PPSSPP's render resolution to 1x in its own settings usually helps.
 
-NDS games need three BIOS files dumped from your own console: `bios7.bin`, `bios9.bin` and `firmware.bin`. They are copyrighted, so they are not included. If any are missing, the front-end tells you exactly which ones when you try to launch a DS game — nothing cryptic. A game card in the TF2 slot (Plus) can supply them automatically.
+NDS works out of the box: the melonDS core ships FreeBIOS, an open-source BIOS replacement, so no files are needed to play. For maximum compatibility you can still drop your own console dumps (`bios7.bin`, `bios9.bin`, `firmware.bin`) into the `bios/` folder — they take priority when present. A game card in the TF2 slot (Plus) can supply them automatically.
 
 ### Two screens, used properly
 
@@ -101,7 +101,7 @@ GAMEOS-DATA/
 │   ├── gbc/     .gb  .gbc  .sgb
 │   ├── ps1/     .cue  .m3u  .chd  .pbp  .iso  .bin
 │   └── psp/     .iso  .cso  .pbp  .elf
-├── bios/        bios7.bin  bios9.bin  firmware.bin   (NDS, your own dumps)
+├── bios/        bios7.bin  bios9.bin  firmware.bin   (optional, own dumps)
 ├── covers/      <system>/<game name>.png or .jpg      (optional box art)
 ├── saves/       emulator saves — browse/delete in Settings
 └── system/      settings and emulator configuration
@@ -170,7 +170,7 @@ All upstream components are pinned to exact versions or commits, so the same com
 ### License
 
 - gameOS' own code — front-end, input/sleep daemons, build glue, device patches — is **GPL-3.0-or-later**.
-- Integrated components keep their own licenses: Linux (GPL-2.0), U-Boot (GPL-2.0+), melonDS (GPL-3.0), RetroArch (GPL-3.0), PPSSPP (GPL-2.0+), mGBA (MPL-2.0), Noto and Orbitron fonts (OFL).
+- Integrated components keep their own licenses: Linux (GPL-2.0), U-Boot (GPL-2.0+), melonDS (GPL-3.0; its bundled Drastic FreeBIOS carries a BSD-style notice, reproduced in docs/TROUBLESHOOTING.md), RetroArch (GPL-3.0), PPSSPP (GPL-2.0+), mGBA (MPL-2.0), Noto and Orbitron fonts (OFL).
 - The Rockchip DDR/BL31 firmware blobs are proprietary binaries, redistributed under the rkbin repository's license.
 
 ---
@@ -199,7 +199,7 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机。开机直接�
 
 说句实话：NDS、GBA、GBC、PS1 在这颗芯片上都很从容。PSP 是它能干的最大的活——大部分游戏没问题，但重负载作品会掉帧。进 PPSSPP 自己的设置把渲染分辨率降到 1 倍，通常就顺了。
 
-NDS 游戏需要三个从你自己的主机上导出的 BIOS 文件：`bios7.bin`、`bios9.bin`、`firmware.bin`。它们有版权，所以不内置。缺哪个，启动 DS 游戏时界面会明明白白告诉你缺哪个，不绕弯子。Plus 的 TF2 游戏卡里若有这些文件，会自动拷过来。
+NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现），不放任何文件也能玩。想要最佳兼容性，仍可把自己主机导出的 `bios7.bin`、`bios9.bin`、`firmware.bin` 放进 `bios/` 文件夹——存在时优先使用。Plus 的 TF2 游戏卡里若有这些文件，会自动拷过来。
 
 ### 双屏，用在刀刃上
 
@@ -269,7 +269,7 @@ GAMEOS-DATA/
 │   ├── gbc/     .gb  .gbc  .sgb
 │   ├── ps1/     .cue  .m3u  .chd  .pbp  .iso  .bin
 │   └── psp/     .iso  .cso  .pbp  .elf
-├── bios/        bios7.bin  bios9.bin  firmware.bin   (NDS 用，自己导出)
+├── bios/        bios7.bin  bios9.bin  firmware.bin   (可选，自己导出)
 ├── covers/      <平台>/<游戏名>.png 或 .jpg           (可选封面)
 ├── saves/       模拟器存档——设置里可浏览/删除
 └── system/      设置与模拟器配置
@@ -338,5 +338,5 @@ make -j$(nproc)
 ### 许可证
 
 - gameOS 自研代码——前端、输入/休眠守护进程、构建脚本、设备补丁——采用 **GPL-3.0-or-later**。
-- 集成的上游组件各自遵循其许可证：Linux（GPL-2.0）、U-Boot（GPL-2.0+）、melonDS（GPL-3.0）、RetroArch（GPL-3.0）、PPSSPP（GPL-2.0+）、mGBA（MPL-2.0）、Noto 与 Orbitron 字体（OFL）。
+- 集成的上游组件各自遵循其许可证：Linux（GPL-2.0）、U-Boot（GPL-2.0+）、melonDS（GPL-3.0；其内置的 Drastic FreeBIOS 为 BSD 风格许可，声明全文见 docs/TROUBLESHOOTING.md）、RetroArch（GPL-3.0）、PPSSPP（GPL-2.0+）、mGBA（MPL-2.0）、Noto 与 Orbitron 字体（OFL）。
 - Rockchip DDR/BL31 固件是专有二进制，按 rkbin 仓库的许可分发。

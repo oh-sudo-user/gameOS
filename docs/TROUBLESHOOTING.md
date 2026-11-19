@@ -23,11 +23,37 @@
 - `evtest` 查看 "gameOS Gamepad" 是否有事件。
 - 若只有分裂的原始设备：udev 规则未生效，重启一次。
 
-## 4. NDS 启动报错 / 提示缺 BIOS
+## 4. NDS 兼容性 / 想用自己的 BIOS
 
-NDS 需要你自己的 BIOS 文件（版权原因不内置）：
-`bios/bios7.bin`、`bios/bios9.bin`、`bios/firmware.bin`。
-主界面会列出缺少的文件名。放好后重新进入游戏列表即可。
+NDS 开箱即玩：melonDS 核心内置 FreeBIOS（开源替代实现，非 Nintendo 文件）。
+个别游戏若表现异常，可把自己主机导出的 `bios/bios7.bin`、`bios/bios9.bin`、
+`bios/firmware.bin` 放进 GAMEOS 盘的 `bios/` 文件夹，存在时优先使用。
+
+FreeBIOS 许可（Drastic BIOS replacement，随 melonDS 核心二进制分发）：
+
+    Copyright (c) 2013, Gilead Kutnick
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    1) Redistributions of source code must retain the above copyright notice,
+       this list of conditions and the following disclaimer.
+    2) Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimer in the documentation
+       and/or other materials provided with the distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+    SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
 
 ## 5. 触摸位置不对（NDS）
 

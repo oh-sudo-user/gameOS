@@ -34,13 +34,13 @@ GAMEOS/
 │   ├── gbc/    ← .gb / .gbc 游戏
 │   ├── ps1/    ← .bin/.cue / .chd / .pbp
 │   └── psp/    ← .iso / .cso
-├── bios/       ← NDS 需要：bios7.bin、bios9.bin、firmware.bin
+├── bios/       ← 可选：自己的 NDS BIOS（不放也能玩）
 ├── saves/      ← 存档（自动）
 └── screenshots/
 ```
 
-- **NDS 必须放 BIOS**：把你自己的 NDS BIOS 三个文件放进 `bios/` 文件夹，
-  否则主界面会提示缺少哪些文件（出于版权原因系统不内置 BIOS）。
+- **NDS 开箱即玩**：核心自带开源 FreeBIOS，不放 BIOS 也能玩；把自己导出的
+  三个文件放进 `bios/` 可获得最佳兼容性（存在时优先使用）。
 - PS1 推荐 `.chd` 或 `.pbp` 格式（单文件、省空间）；`.bin/.cue` 也可。
 - PSP 游戏无需 BIOS。
 

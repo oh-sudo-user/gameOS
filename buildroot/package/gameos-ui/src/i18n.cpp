@@ -44,10 +44,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ 返回", "确认关机？", "确认重启？", "确认删除该存档？",
         "Ⓐ 确认        Ⓑ 取消",
-        "需要 NDS BIOS 文件", "缺少：%s",
-        "请把你自己的 NDS BIOS 文件复制到 TF 卡的\n"
-        "bios 文件夹（GAMEOS 盘符 → bios）。\n"
-        "需要 bios7.bin、bios9.bin、firmware.bin 三个文件。",
         "无法启动模拟器", "模拟器程序缺失或损坏，请重新刷写系统。",
         "gameOS 1.0\n"
         "为 Anbernic RG DS Plus 全新打造的开源游戏系统。\n"
@@ -145,10 +141,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ 返回", "確認關機？", "確認重新啟動？", "確認刪除該存檔？",
         "Ⓐ 確認        Ⓑ 取消",
-        "需要 NDS BIOS 檔案", "缺少：%s",
-        "請把你自己的 NDS BIOS 檔案複製到 TF 卡的\n"
-        "bios 資料夾（GAMEOS 磁碟機 → bios）。\n"
-        "需要 bios7.bin、bios9.bin、firmware.bin 三個檔案。",
         "無法啟動模擬器", "模擬器程式遺失或損毀，請重新刷寫系統。",
         "gameOS 1.0\n"
         "為 Anbernic RG DS Plus 全新打造的開源遊戲系統。\n"
@@ -250,10 +242,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ 戻る", "電源をオフにしますか？", "再起動しますか？",
         "このセーブデータを削除しますか？", "Ⓐ 決定        Ⓑ キャンセル",
-        "NDS BIOSファイルが必要です", "不足：%s",
-        "自分のNDS BIOSファイルをTFカードの\n"
-        "biosフォルダ（GAMEOSドライブ → bios）にコピーしてください。\n"
-        "bios7.bin、bios9.bin、firmware.bin の3つが必要です。",
         "エミュレータを起動できません",
         "エミュレータが見つからないか破損しています。システムを書き直してください。",
         "gameOS 1.0\n"
@@ -361,10 +349,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ Back", "Power off?", "Reboot?", "Delete this save?",
         "Ⓐ Confirm        Ⓑ Cancel",
-        "NDS BIOS files required", "Missing: %s",
-        "Copy your own NDS BIOS files to the bios folder\n"
-        "on the TF card (GAMEOS drive → bios).\n"
-        "Needed: bios7.bin, bios9.bin, firmware.bin.",
         "Cannot start emulator",
         "The emulator is missing or corrupted. Please reflash the system.",
         "gameOS 1.0\n"
@@ -476,10 +460,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ Назад", "Выключить?", "Перезагрузить?", "Удалить это сохранение?",
         "Ⓐ Подтвердить        Ⓑ Отмена",
-        "Нужны файлы BIOS NDS", "Отсутствуют: %s",
-        "Скопируйте свои файлы BIOS NDS в папку bios\n"
-        "на TF-карте (диск GAMEOS → bios).\n"
-        "Нужны: bios7.bin, bios9.bin, firmware.bin.",
         "Не удалось запустить эмулятор",
         "Эмулятор отсутствует или повреждён. Перепрошейте систему.",
         "gameOS 1.0\n"
@@ -594,10 +574,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ Volver", "¿Apagar?", "¿Reiniciar?", "¿Borrar esta partida?",
         "Ⓐ Confirmar        Ⓑ Cancelar",
-        "Se necesitan archivos BIOS de NDS", "Faltan: %s",
-        "Copia tus propios archivos BIOS de NDS en la carpeta bios\n"
-        "de la tarjeta TF (unidad GAMEOS → bios).\n"
-        "Se necesitan: bios7.bin, bios9.bin, firmware.bin.",
         "No se pudo iniciar el emulador",
         "Falta el emulador o está dañado. Vuelve a flashear el sistema.",
         "gameOS 1.0\n"
@@ -716,10 +692,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // dialogs
         "Ⓑ 뒤로", "전원을 끌까요?", "다시 시작할까요?", "이 저장 데이터를 삭제할까요?",
         "Ⓐ 확인        Ⓑ 취소",
-        "NDS BIOS 파일이 필요합니다", "누락: %s",
-        "자신의 NDS BIOS 파일을 TF 카드의 bios 폴더에 복사하세요\n"
-        "(GAMEOS 드라이브 → bios).\n"
-        "bios7.bin, bios9.bin, firmware.bin 세 파일이 필요합니다.",
         "에뮬레이터를 시작할 수 없습니다",
         "에뮬레이터가 없거나 손상되었습니다. 시스템을 다시 플래시하세요.",
         "gameOS 1.0\n"

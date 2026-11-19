@@ -3033,16 +3033,6 @@ static void tf2_poll()
 // recommendation). Records the session; the caller refreshes its own list.
 static void launch_one(const Console& c, const Game& g)
 {
-    // BIOS is only needed to actually run a game; gate launching, not list
-    // entry, so an empty NDS library looks like every other empty console.
-    if (c.dual && !nds_bios_ok()) {
-        char m[128];
-        snprintf(m, sizeof(m), tr(T_BIOS_MISSING_FMT), bios_missing_list().c_str());
-        sound_play(SND_ERROR);
-        show_msg(tr(T_BIOS_TITLE), std::string(m) + "\n" + tr(T_BIOS_BODY));
-        return;
-    }
-
     long long wall_start = (long long)time(nullptr);
     SDL_Delay(230);                    // let the launch chime ring out
     shutdown_gfx();                    // release DRM master

@@ -286,30 +286,6 @@ std::vector<Game> scan_games(const Console& c)
     return uniq;
 }
 
-bool nds_bios_ok()
-{
-    for (const char* f : { "bios7.bin", "bios9.bin", "firmware.bin" }) {
-        std::string p = std::string("/userdata/bios/") + f;
-        struct stat st;
-        if (stat(p.c_str(), &st) < 0 || st.st_size == 0) return false;
-    }
-    return true;
-}
-
-std::string bios_missing_list()
-{
-    std::string out;
-    for (const char* f : { "bios7.bin", "bios9.bin", "firmware.bin" }) {
-        std::string p = std::string("/userdata/bios/") + f;
-        struct stat st;
-        if (stat(p.c_str(), &st) < 0 || st.st_size == 0) {
-            if (!out.empty()) out += "、";
-            out += f;
-        }
-    }
-    return out;
-}
-
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
