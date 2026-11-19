@@ -204,7 +204,14 @@ do_status() {
 do_scan() {
     enc=$(iface)
     [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
-    [ "$(state)" = "" ] && start_supplicant
+    if [ "$(state)" = "" ]; then
+        # first scan ever: no saved networks means no conf file yet, and
+        # start_supplicant refuses to run without one. Write the (empty)
+        # conf so the supplicant comes up and can actually scan.
+        [ -f "$CONF" ] || regen_conf
+        start_supplicant
+        [ "$(state)" = "" ] && { echo "ERROR supplicant-failed"; return 1; }
+    fi
     w scan >/dev/null 2>&1
     # wpa_cli scan returns at once; poll until results change (max 12 s)
     prev=""
@@ -282,9 +289,9 @@ do_connect() {
 }
 
 # --- connectivity test -----------------------------------------------------
-# The target has no timeout(1), so curl's own --connect-timeout/--max-time are
-# the watchdog. DNS is inferred from curl exit 6 (could not resolve host)
-# instead of a separate nslookup, which cannot be time-limited here.
+# curl's own --connect-timeout/--max-time are the watchdog. DNS is inferred
+# from curl exit 6 (could not resolve host) instead of a separate nslookup,
+# which cannot be time-limited here.
 # Three endpoints, first success wins: the first two are reachable from CN
 # without a proxy, the last one also proves TLS + the CA bundle work.
 probe() { # $1 url -> P_CODE (http status), P_RC (curl exit)

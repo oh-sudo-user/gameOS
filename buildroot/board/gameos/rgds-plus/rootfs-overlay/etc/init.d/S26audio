@@ -90,6 +90,30 @@ case "$1" in
             done
         ) &
         echo $! > "$PIDFILE"
+        # Field black box: retry the firmware-dependent modules once while
+        # probes settle, then snapshot the audio/wireless state to the data
+        # partition so a silent device can be diagnosed from the card alone.
+        (
+            sleep 10
+            modprobe snd-soc-aw88166 2>/dev/null
+            modprobe rtw88_8821cs 2>/dev/null
+            sleep 35
+            out=/userdata/system/diag.txt
+            [ -d /userdata/system ] || out=/boot/diag.txt
+            {
+                echo "== uptime $(cut -d' ' -f1 /proc/uptime)"
+                echo "== cards"; cat /proc/asound/cards 2>/dev/null
+                echo "== lsmod"; lsmod
+                echo "== asound.conf"; cat /etc/asound.conf 2>/dev/null
+                echo "== amixer0"; amixer -c 0 scontents 2>/dev/null | head -30
+                echo "== amixer1"; amixer -c 1 scontents 2>/dev/null | head -30
+                echo "== dmesg"; dmesg | grep -iE 'aw88166|rk817|rtw88|8821|asoc|snd|firmware|hci|blue' | tail -60
+                echo "== wifi"; gameos-wifi status 2>/dev/null
+                echo "== links"; ip link 2>/dev/null
+                echo "== bt"; gameos-bt status 2>/dev/null
+                echo "== ui.log"; tail -30 /userdata/system/ui.log 2>/dev/null || tail -30 /boot/ui.log 2>/dev/null
+            } > "$out" 2>&1
+        ) 9>&- </dev/null >/dev/null 2>&1 &
         ;;
     stop)
         [ -r "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
