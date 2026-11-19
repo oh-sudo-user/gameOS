@@ -301,8 +301,10 @@ enum class Align { Left, Center, Right };
 // strings. Re-rendering the TTF surface and creating/destroying a texture on
 // every call is costly on the Cortex-A55. Cache the rendered texture keyed by
 // (renderer, font, color, string). Textures belong to a renderer, so the cache
-// MUST be cleared before renderers are destroyed — see shutdown_gfx(). Evict
-// all when full to bound memory (clock/battery strings churn once a minute).
+// MUST be cleared before renderers are destroyed — see shutdown_gfx(). When
+// full, evict the least recently used half: wiping everything would re-render
+// every visible string in a single frame, which reads as a hitch (clock and
+// battery strings churn, and switching language adds a whole second set).
 struct TextKey {
     SDL_Renderer* r;
     TTF_Font* f;
@@ -318,11 +320,16 @@ struct TextKey {
         return s < o.s;
     }
 };
-std::map<TextKey, SDL_Texture*> g_text_cache;
+struct CachedText {
+    SDL_Texture* t;
+    Uint32 used;      // g_text_tick at the last draw, for least-recent eviction
+};
+std::map<TextKey, CachedText> g_text_cache;
+Uint32 g_text_tick = 0;
 
 void clear_text_cache()
 {
-    for (auto& kv : g_text_cache) SDL_DestroyTexture(kv.second);
+    for (auto& kv : g_text_cache) SDL_DestroyTexture(kv.second.t);
     g_text_cache.clear();
 }
 
@@ -335,7 +342,8 @@ void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
     int tw, th;
     auto it = g_text_cache.find(key);
     if (it != g_text_cache.end()) {
-        t = it->second;
+        t = it->second.t;
+        it->second.used = ++g_text_tick;
         SDL_QueryTexture(t, nullptr, nullptr, &tw, &th);
     } else {
         SDL_Surface* surf = TTF_RenderUTF8_Blended(f, s.c_str(), c);
@@ -344,8 +352,22 @@ void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
         tw = surf->w; th = surf->h;
         SDL_FreeSurface(surf);
         if (!t) return;
-        if (g_text_cache.size() >= 128) clear_text_cache();
-        g_text_cache.emplace(key, t);
+        if (g_text_cache.size() >= 128) {
+            std::vector<std::pair<Uint32, const TextKey*>> order;
+            order.reserve(g_text_cache.size());
+            for (auto& kv : g_text_cache) order.push_back({ kv.second.used, &kv.first });
+            std::sort(order.begin(), order.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            size_t drop = std::max<size_t>(8, order.size() / 4);
+            for (size_t i = 0; i < drop; i++) {
+                auto hit = g_text_cache.find(*order[i].second);
+                if (hit != g_text_cache.end()) {
+                    SDL_DestroyTexture(hit->second.t);
+                    g_text_cache.erase(hit);
+                }
+            }
+        }
+        g_text_cache.emplace(key, CachedText{ t, ++g_text_tick });
     }
     int dx = x;
     if (align == Align::Center) dx = x - tw / 2;
@@ -1658,7 +1680,8 @@ void setup_activate()
         app.settings.language = app.setup_sel;
         g_lang = (Lang)app.setup_sel;
         save_settings(app.settings);
-        reload_fonts();
+        // no font reload: every language shares NotoSansSC, and reopening it
+        // here was the stall felt on the wizard's first choice
         setup_next();
         break;
     case 1: {                                      // wifi + connectivity test
@@ -3177,10 +3200,12 @@ static void cycle_theme(int dir = 1)
 
 static void cycle_lang(int dir = 1)
 {
+    // All shipped languages are drawn with the same font file, so a switch
+    // only changes what tr() returns. Reopening the 8 MB font (three sizes)
+    // and wiping the text cache here cost a visible stall on the handheld.
     app.settings.language = (app.settings.language + dir + LANG_COUNT) % LANG_COUNT;
     g_lang = (Lang)app.settings.language;
     save_settings(app.settings);
-    reload_fonts();   // also drops the text cache of the previous language
 }
 
 void enter_selection()
