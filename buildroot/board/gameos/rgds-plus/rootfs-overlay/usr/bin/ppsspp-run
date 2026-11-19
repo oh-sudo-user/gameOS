@@ -4,5 +4,22 @@
 export HOME=/userdata/system/ppsspp
 export SDL_VIDEODRIVER=kmsdrm
 mkdir -p "$HOME"
+
+# game psp: one-time performance seed. Plus panels are 1024px wide, so PPSSPP's
+# auto resolution picks 2x (4x the pixels) on a weak SoC; pin 1x and skip safe
+# GPU readbacks. Key names match Core/Config.cpp.
+INI="$HOME/.config/ppsspp/PSP/SYSTEM/ppsspp.ini"
+mkdir -p "$HOME/.config/ppsspp/PSP/SYSTEM"
+if ! grep -q "InternalResolution" "$INI" 2>/dev/null; then
+	cat >> "$INI" <<'EOF'
+[Graphics]
+InternalResolution = 1
+SkipGPUReadbackMode = 1
+AutoFrameSkip = True
+AnisotropyLevel = 0
+TexScalingLevel = 1
+EOF
+fi
+
 cd /usr/share/ppsspp || exit 1
 exec /usr/bin/PPSSPPSDL "$@"
