@@ -146,6 +146,7 @@ A few decisions worth noting:
 - **Both panels ready at boot.** The dual-DSI panel driver is built into the kernel, not loaded as a module — no probe race, no flicker. The top panel is selected by connector name on both models, so single-screen games land on the lid screen where they belong.
 - **A/B boot with rollback.** The card carries two rootfs slots; updates write the idle one and the boot script tries it, falling back to the previous slot after four unconfirmed boots.
 - **Performance governors by default.** The chip runs at full clock; heat is the limit, not policy.
+- **game nds / game gba / game psp.** Each console gets its own subsystem layer around the emulation engine: launch pipeline, per-console tuning, save/BIOS placement, performance tier and a persistent emulator log (`/userdata/system/emu.log`, plus RetroArch's own log). The NDS layer adds a DS-mode boot fix for DSi-enhanced carts and a threaded software renderer running beside the aarch64 JIT.
 
 Deeper details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · flashing guide: [docs/FLASHING.md](docs/FLASHING.md) · problems: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
@@ -314,6 +315,7 @@ BootROM → idbloader（RK3568 DDR 固件 + SPL）
 - **双屏开机即就绪。** 双 DSI 面板驱动直接编进内核（不是模块），没有探测竞态，不会闪。两种机型都按连接器名字选中上屏，单屏游戏也落在盖子上那块屏该在的位置。
 - **A/B 启动与回滚。** 卡上有两个根文件系统槽；更新写空闲槽，引导脚本尝试新槽，四次未确认启动后自动回到旧槽。
 - **默认性能模式。** CPU/GPU 满频跑，限制是散热，不是策略。
+- **game nds / game gba / game psp。** 每个机种在模拟引擎外面包一层自研子系统：启动流程、按机种调优、存档/BIOS 归置、性能档位，以及常驻的模拟器日志（`/userdata/system/emu.log`，另有 RetroArch 自己的日志）。NDS 层还包含 DSi 增强卡带在 DS 模式下的启动修复，以及与 aarch64 JIT 并行运行的线程化软件渲染器。
 
 更多细节：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 刷机教程：[docs/FLASHING.md](docs/FLASHING.md) · 遇到问题：[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 

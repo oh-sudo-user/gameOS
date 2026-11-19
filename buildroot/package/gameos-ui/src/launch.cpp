@@ -9,6 +9,7 @@
 #include "i18n.hpp"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -75,6 +76,15 @@ static const char* perf_profile(const Console& c)
     return "light";                             // GBA / GBC
 }
 
+// Subsystem identity: our own launch/tuning layer around each engine.
+static const char* subsystem_name(const Console& c)
+{
+    if (c.dual) return "game nds";
+    if (strcmp(c.id, "gba") == 0) return "game gba";
+    if (strcmp(c.id, "psp") == 0) return "game psp";
+    return "gameos";
+}
+
 // Best-effort governor switch. A failure here is logged by gameos-perf and
 // must never block game launch, so the return value is deliberately ignored.
 // The profile argument is a fixed literal, not user input.
@@ -103,6 +113,17 @@ int launch_game(const Console& c, const Game& g)
         setenv("SDL_VIDEODRIVER", "kmsdrm", 1);
         setenv("XDG_RUNTIME_DIR", "/tmp/gameos-runtime", 1);
 
+        // Emulator output (core printf, exec errors) lands in one log on
+        // /userdata so a failed launch can be diagnosed after the fact.
+        mkdir("/userdata/system", 0755);
+        const char* logmode = "a";
+        struct stat st;
+        if (stat("/userdata/system/emu.log", &st) == 0 && st.st_size > (1 << 20))
+            logmode = "w";
+        freopen("/userdata/system/emu.log", logmode, stdout);
+        freopen("/userdata/system/emu.log", logmode, stderr);
+        dprintf(1, "%s: launch %s\n", subsystem_name(c), g.path.c_str());
+
         if (c.dual) {
             // NDS: span both panels, map bottom-panel touch to y+panel_h.
             const std::string ph = std::to_string(panel_height());
@@ -120,7 +141,9 @@ int launch_game(const Console& c, const Game& g)
             std::string cfg =
                 std::string("/usr/share/gameos/retroarch/") + c.appendcfg;
             std::vector<const char*> av = {
-                "retroarch", "-L", core.c_str(),
+                "retroarch",
+                "--log-file", "/userdata/system/retroarch.log",
+                "-L", core.c_str(),
                 "--appendconfig", cfg.c_str(),
                 "--appendconfig", "/tmp/gameos-ra-lang.cfg",
             };
@@ -137,6 +160,7 @@ int launch_game(const Console& c, const Game& g)
         } else {
             execlp("ppsspp-run", "ppsspp-run", g.path.c_str(), (char*)nullptr);
         }
+        dprintf(2, "%s: exec failed (errno %d)\n", subsystem_name(c), errno);
         _exit(127); // exec failed
     }
 
