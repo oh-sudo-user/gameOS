@@ -1,6 +1,7 @@
 #!/bin/sh
-# gameOS session supervisor: keeps the UI AND the input daemon alive, handles
-# power requests. UI exit codes: 90 = poweroff, 91 = reboot, else = restart.
+# gameOS session supervisor: keeps the UI alive and delegates input-daemon
+# supervision to an independent process, handles power requests.
+# UI exit codes: 90 = poweroff, 91 = reboot, else = restart.
 
 export SDL_VIDEODRIVER=kmsdrm
 export SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0
@@ -11,38 +12,41 @@ mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 SLOG=/tmp/gameos-session.log
+SUP_PID=
 
-# input merger daemon (virtual gamepad from split evdev devices). Supervised:
-# respawned below whenever it dies, so a crash never leaves the UI without
-# input (which would make the device unusable).
-start_inputd() {
-  /usr/bin/gameos-inputd &
-  INPUTD_PID=$!
-  echo "[gameos-session] inputd started pid $INPUTD_PID" >> "$SLOG"
+# inputd is kept alive by gameos-inputd-supervisor, which runs independently of
+# the blocking foreground UI (so a crash mid-game still respawns input within
+# ~1s). The supervisor is a child of this shell and shares its process group --
+# the UI's group, NOT the emulator's private group -- so lid-close SIGSTOP of the
+# emulator never freezes input.
+stop_inputd_supervisor() {
+  [ -n "$SUP_PID" ] || return 0
+  # SIGTERM triggers the supervisor's cleanup: it terminates inputd, waits for
+  # it to exit, and removes both pid files. Waiting on the supervisor therefore
+  # also guarantees inputd is gone before we proceed to poweroff/reboot.
+  kill "$SUP_PID" 2>/dev/null
+  wait "$SUP_PID" 2>/dev/null
+  SUP_PID=
 }
 
-# True only if inputd is running and not a zombie (a dead child not yet reaped
-# still answers kill -0, so check the process state too). The state letter is
-# the field after the closing paren of comm, robust to spaces in the name.
-inputd_alive() {
-  [ -n "$INPUTD_PID" ] || return 1
-  kill -0 "$INPUTD_PID" 2>/dev/null || return 1
-  state=$(sed -n 's/.*) \([A-Za-z]\).*/\1/p' "/proc/$INPUTD_PID/stat" 2>/dev/null)
-  [ "$state" != Z ]
+start_inputd_supervisor() {
+  # Never leave two supervisors behind on a crash-restart.
+  stop_inputd_supervisor
+  /usr/bin/gameos-inputd-supervisor &
+  SUP_PID=$!
+  echo "[gameos-session] inputd supervisor started pid $SUP_PID" >> "$SLOG"
 }
 
-start_inputd
+# Restore the UI performance profile on every (re)start: a previous UI may have
+# crashed mid-game and left a heavy/light governor behind.
+[ -x /usr/bin/gameos-perf ] && /usr/bin/gameos-perf ui >>"$SLOG" 2>&1
+
+start_inputd_supervisor
 /usr/bin/gameos-bootstage 92 input
 
 fails=0
 /usr/bin/gameos-bootstage 98 ready
 while true; do
-  # respawn the input daemon if it exited/crashed since the last iteration
-  if ! inputd_alive; then
-    echo "[gameos-session] inputd not running; respawning" >> "$SLOG"
-    start_inputd
-  fi
-
   start=$(date +%s)
   /usr/bin/gameos-ui
   rc=$?
@@ -51,24 +55,24 @@ while true; do
 
   case $rc in
     90)
-      kill "$INPUTD_PID" 2>/dev/null
+      stop_inputd_supervisor
       # -f is deliberate: the UI and emulator are already gone and data is
       # synced. A normal poweroff waits on init's shutdown scripts and can
       # hang the device. sync flushes file data first; the exFAT dirty flag
-      # an unclean unmount leaves is only warned about at the next mount —
+      # an unclean unmount leaves is only warned about at the next mount --
       # the kernel does not repair it (that needs fsck.exfat).
       sync
       /sbin/poweroff -f
       ;;
     91)
-      kill "$INPUTD_PID" 2>/dev/null
+      stop_inputd_supervisor
       sync
       /sbin/reboot -f
       ;;
     *)
       # A clean exit (rc 0) after a normal session (>= 3s uptime) resets the
-      # fail counter. But ANY exit after < 3s — including rc 0, which the UI
-      # returns when graphics re-init fails after an emulator launch — is a
+      # fail counter. But ANY exit after < 3s -- including rc 0, which the UI
+      # returns when graphics re-init fails after an emulator launch -- is a
       # startup failure. Treat it as a crash and back off so we never spin in
       # a tight restart loop; the device stays reachable via SSH/serial.
       if [ "$rc" = 0 ] && [ "$uptime" -ge 3 ]; then
@@ -78,6 +82,14 @@ while true; do
         fails=$((fails + 1))
         echo "[gameos-session] UI exited rc=$rc after ${uptime}s (fail #$fails)" >> "$SLOG"
         if [ "$fails" -ge 5 ]; then sleep 5; else sleep 1; fi
+      fi
+      # The supervisor kept inputd alive across the UI's downtime; only restart
+      # it if it is truly gone (a zombie can no longer respawn inputd), so there
+      # is always exactly one live supervisor and no input gap.
+      sup_state=$(sed -n 's/.*) \([A-Za-z]\).*/\1/p' "/proc/$SUP_PID/stat" 2>/dev/null)
+      if ! kill -0 "$SUP_PID" 2>/dev/null || [ "$sup_state" = Z ]; then
+        echo "[gameos-session] supervisor died; restarting" >> "$SLOG"
+        start_inputd_supervisor
       fi
       ;;
   esac

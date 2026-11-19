@@ -30,9 +30,10 @@ for slot in a b; do
      "$BINARIES_DIR/boot-stage/$slot/"
 done
 
-# Slot state read and rewritten by boot.scr: slot=a|b, n=unconfirmed boots.
-# n>3 means the new slot never reached userspace and U-Boot falls back to A.
-printf 'slot=a\nn=0\n' > "$BINARIES_DIR/boot-stage/state"
+# Slot state read and rewritten by boot.scr: slot=a|b, fallback=a|b (last
+# confirmed-good slot), n=unconfirmed boots. n>3 means the tried slot never
+# reached userspace and U-Boot rolls back to the fallback slot.
+printf 'slot=a\nfallback=a\nn=0\n' > "$BINARIES_DIR/boot-stage/state"
 
 # Slot B starts empty; the OTA writes a full rootfs into it later.
 echo "==> gameOS: zeroing slot B (1200 MiB)"
@@ -59,10 +60,9 @@ LABEL gameOS
   APPEND root=PARTLABEL=GAMEOS-ROOT-A rootwait rw console=ttyS2,1500000n8 loglevel=7 vt.global_cursor_default=0
 EOF
 
-  sed "s/@DTB@/$DTB/g" "$BOARD_DIR/boot.cmd" > "$BINARIES_DIR/boot-$model.cmd"
-  "$HOST_DIR/bin/mkimage" -A arm64 -O linux -T script -C none \
-    -n "gameOS slot selector ($model)" -d "$BINARIES_DIR/boot-$model.cmd" \
-    "$BINARIES_DIR/boot.scr" >/dev/null
+  # boot.scr was generated once in post-build.sh (and shipped in the rootfs);
+  # copy the matching model's script into this boot partition.
+  cp "$TARGET_DIR/usr/share/gameos/boot/boot.scr.$model" "$BINARIES_DIR/boot.scr"
 
   dd if=/dev/zero of="$BINARIES_DIR/boot.vfat" bs=1M count=256 status=none
   "$HOST_DIR/sbin/mkfs.vfat" -n GAMEOS-BOOT "$BINARIES_DIR/boot.vfat" >/dev/null
@@ -112,13 +112,22 @@ done
 # --- OTA release artifacts ---------------------------------------------------
 # The updater downloads these instead of the whole card image: only the idle
 # slot's rootfs and the boot assets are written, never the running system.
-# The boot tar carries both dtbs and no boot.scr, so an OTA keeps the model's
-# flashed slot selector. manifest keys are one-per-line on purpose: the
-# updater is a POSIX sh script and reads them with sed.
+# The boot tar carries both dtbs AND both models' boot.scr so an OTA can also
+# replace the slot selector (/boot/boot.scr) -- the updater installs only the
+# script matching the running model. manifest keys are one-per-line on purpose:
+# the updater is a POSIX sh script and reads them with a strict anchored parse.
 echo "==> gameOS: OTA release artifacts ($VERSION)"
 gzip -9 -c "$BINARIES_DIR/rootfs.ext4" > "$BINARIES_DIR/gameOS-rootfs.ext4.gz"
-tar -czf "$BINARIES_DIR/gameOS-boot.tar.gz" -C "$BINARIES_DIR/boot-stage/a" \
-  Image rk3568-anbernic-rg-ds-plus.dtb rk3568-anbernic-rg-ds.dtb
+mkdir -p "$BINARIES_DIR/ota-boot"
+cp "$BINARIES_DIR/boot-stage/a/Image" \
+   "$BINARIES_DIR/boot-stage/a/rk3568-anbernic-rg-ds-plus.dtb" \
+   "$BINARIES_DIR/boot-stage/a/rk3568-anbernic-rg-ds.dtb" \
+   "$TARGET_DIR/usr/share/gameos/boot/boot.scr.rgds-plus" \
+   "$TARGET_DIR/usr/share/gameos/boot/boot.scr.rgds" \
+   "$BINARIES_DIR/ota-boot/"
+tar -czf "$BINARIES_DIR/gameOS-boot.tar.gz" -C "$BINARIES_DIR/ota-boot" \
+  Image rk3568-anbernic-rg-ds-plus.dtb rk3568-anbernic-rg-ds.dtb \
+  boot.scr.rgds-plus boot.scr.rgds
 
 # images/rootfs.ext4 is a symlink to rootfs.ext2 in this Buildroot, so -L is
 # required: without it stat reports the 11-byte link name and the updater's

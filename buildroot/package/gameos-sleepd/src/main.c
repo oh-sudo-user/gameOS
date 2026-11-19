@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -179,6 +180,33 @@ static pid_t game_pgid(void)
     return pg > 0 ? pg : 0;
 }
 
+// True while any process still belongs to the group. kill(-pg, 0) succeeds for
+// a zombie too (it keeps a pid until reaped), so a stuck group simply times out
+// below rather than blocking the poweroff forever. EPERM means the group exists
+// but is owned by another uid — still "exists" for our purposes.
+static int process_group_exists(pid_t pg)
+{
+    if (pg <= 0) return 0;
+    if (kill(-pg, 0) == 0) return 1;
+    return errno == EPERM;
+}
+
+// Poll on CLOCK_MONOTONIC (immune to wall-clock steps) until the group is gone
+// or timeout_ms elapses. Bounded: never waits indefinitely on a hung emulator.
+static void wait_group_exit(pid_t pg, int timeout_ms)
+{
+    if (pg <= 0) return;
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (process_group_exists(pg)) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed = (now.tv_sec - start.tv_sec) * 1000L
+                     + (now.tv_nsec - start.tv_nsec) / 1000000L;
+        if (elapsed >= timeout_ms) break;
+        usleep(100 * 1000);
+    }
+}
+
 static void backlights(int on)
 {
     DIR* d = opendir("/sys/class/backlight");
@@ -293,12 +321,39 @@ static void suspend_now(void)
         if (pending[0] == 0 || time(NULL) >= alarm_at) {
             int pct = battery_pct();
             if (pct >= 0 && pct <= OFF_PCT) {
+                // Give a lid-paused emulator a chance to close files and flush
+                // already-committed saves: resume it, ask it to exit, then WAIT
+                // for the group to disappear before syncing. SIGTERM is not a
+                // guaranteed in-game save — it only improves the odds that
+                // file closes and writeback finish before power is cut.
                 if (pg > 0) {
-                    kill(-pg, SIGCONT);   // let the emulator write its saves
+                    kill(-pg, SIGCONT);
                     kill(-pg, SIGTERM);
+                    wait_group_exit(pg, 5000);
+                    if (process_group_exists(pg)) {
+                        kill(-pg, SIGKILL);
+                        wait_group_exit(pg, 2000);
+                    }
                 }
                 sync();
-                if (system("poweroff") != 0) { /* init handles it */ }
+                // Direct kernel poweroff (no shell, no uncontrolled wait).
+                // reboot() needs CAP_SYS_BOOT; sleepd runs as root. If it ever
+                // fails, hand off to init's normal poweroff (SIGUSR2 -> rcK
+                // shutdown, kill all, sync, RB_POWER_OFF) so the device never
+                // stays awake on a flat battery. Never exit silently.
+                if (reboot(RB_POWER_OFF) != 0) {
+                    int e = errno;
+                    fprintf(stderr, "[gameos-sleepd] reboot(RB_POWER_OFF) "
+                                    "failed: %s; asking init to power off\n",
+                            strerror(e));
+                    FILE* lf = fopen("/tmp/gameos-sleepd.log", "a");
+                    if (lf) {
+                        fprintf(lf, "reboot(RB_POWER_OFF) failed errno=%d (%s); "
+                                    "sent SIGUSR2 to init\n", e, strerror(e));
+                        fclose(lf);
+                    }
+                    kill(1, SIGUSR2);
+                }
                 exit(0);
             }
             continue;   // battery fine: straight back to sleep

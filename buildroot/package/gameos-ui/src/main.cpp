@@ -632,6 +632,7 @@ bool init_gfx()
 }
 
 void clear_cover_cache();   // defined with the cover helpers below
+bool userdata_mounted();    // defined with the system helpers below
 
 void shutdown_gfx()
 {
@@ -822,16 +823,25 @@ void draw_list(SDL_Renderer* r)
     fill_rect(r, 0, 96, W, 3, g_accent);
 
     if (app.games.empty()) {
-        text(r, app.f_body, app.fav_only ? tr(T_NO_FAV) : tr(T_NO_GAMES),
-             W / 2, 300, C_TEXT, Align::Center);
+        // /userdata not mounted: the data partition could not be read and was
+        // deliberately NOT reformatted. Say so, instead of implying the card
+        // is simply empty, so the user knows their data is preserved.
+        bool data_err = !app.fav_only && !userdata_mounted();
+        const char* head = app.fav_only ? tr(T_NO_FAV)
+                         : data_err     ? tr(T_DATA_ERROR)
+                                        : tr(T_NO_GAMES);
+        text(r, app.f_body, head, W / 2, 300,
+             data_err ? C_AMBER : C_TEXT, Align::Center);
         char p[256];
         if (app.fav_only) {
             snprintf(p, sizeof(p), "%s", tr(T_FAV_HELP));
+        } else if (data_err) {
+            snprintf(p, sizeof(p), "%s", tr(T_DATA_ERROR_HELP));
         } else {
             snprintf(p, sizeof(p), tr(T_COPY_ROMS_FMT), c.id);
         }
         text(r, app.f_small, p, W / 2, 360, C_DIM, Align::Center);
-        if (!app.fav_only)
+        if (!app.fav_only && !data_err)
             text(r, app.f_small, tr(T_TF_HELP),
                  W / 2, 400, C_DIM, Align::Center);
     } else {

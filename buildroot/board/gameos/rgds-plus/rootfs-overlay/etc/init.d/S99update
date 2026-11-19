@@ -1,12 +1,14 @@
 #!/bin/sh
-# gameOS boot confirmation and update check — the last init script.
+# gameOS boot confirmation and update check -- the last init script.
 #
-# boot.scr bumps n in /boot/state on every boot and rolls the slot back to A
-# after four boots that never confirmed. Confirmation means the UI really got
-# on screen: gameos-ui touches /run/gameos/ui-ok after its first seconds of
-# rendering, so a rootfs whose session never starts keeps n climbing and the
-# next power-on returns to the previous slot. Once confirmed we also ask for
-# a release manifest in the background (best effort, needs WiFi).
+# boot.scr bumps n in /boot/state on every boot and rolls the slot back to the
+# fallback slot after four boots that never confirmed. Confirmation means the
+# UI really got on screen: gameos-ui touches /run/gameos/ui-ok after its first
+# seconds of rendering, so a rootfs whose session never starts keeps n climbing
+# and the next power-on returns to the previous slot. Once confirmed we record
+# the current slot as the new fallback, reconcile /boot/boot.scr against the
+# script shipped in this rootfs, and ask for a release manifest in the
+# background (best effort, needs WiFi).
 
 confirm() {
     slot=$(sed -n 's/.*root=PARTLABEL=GAMEOS-ROOT-\([AB]\).*/\1/p' /proc/cmdline | head -n 1)
@@ -16,9 +18,35 @@ confirm() {
         [ -b "$p" ] && mount -t vfat "$p" /boot 2>/dev/null
     fi
     mountpoint -q /boot || return 1
-    printf 'slot=%s\nn=0\n' "$slot" > /boot/state.new || return 1
+    # The confirmed slot becomes the fallback for the next upgrade.
+    printf 'slot=%s\nfallback=%s\nn=0\n' "$slot" "$slot" > /boot/state.new || return 1
+    sync
     mv -f /boot/state.new /boot/state || return 1
     sync
+    return 0
+}
+
+# Replace /boot/boot.scr with this rootfs's model-matched slot selector when it
+# differs. A device upgraded by an OLD updater (which never touched boot.scr)
+# still runs the old script after OTA; reconciling here on the first confirmed
+# boot deploys the fixed rollback logic without a reflash. Atomic tmp+rename,
+# only after the UI is confirmed up, never on a failing slot.
+reconcile_bootscr() {
+    model=rgds
+    if tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null | grep -q 'rg-ds-plus'; then
+        model=rgds-plus
+    fi
+    want="/usr/share/gameos/boot/boot.scr.$model"
+    [ -f "$want" ] || return 0
+    mountpoint -q /boot || return 0
+    a=$(sha256sum "$want" 2>/dev/null | cut -d' ' -f1)
+    b=$(sha256sum /boot/boot.scr 2>/dev/null | cut -d' ' -f1)
+    [ -n "$a" ] && [ "$a" = "$b" ] && return 0
+    cp "$want" /boot/boot.scr.new || return 1
+    sync
+    mv -f /boot/boot.scr.new /boot/boot.scr || return 1
+    sync
+    echo "[gameos] boot.scr reconciled to $model" >> /tmp/gameos-setup.log
     return 0
 }
 
@@ -32,6 +60,7 @@ start)
         done
         [ -f /run/gameos/ui-ok ] || exit 0
         confirm
+        reconcile_bootscr
         # WiFi may still be associating/DHCP-ing when the UI comes up; give the
         # link up to 60 s before asking for a manifest, otherwise the boot-time
         # check would silently do nothing on every cold boot.

@@ -95,6 +95,8 @@ enum TKey {
     T_TAB_FAV, T_TAB_HISTORY, T_QUICK_EMPTY_FAV, T_QUICK_EMPTY_FAV_HELP,
     T_QUICK_EMPTY_HIST, T_QUICK_EMPTY_HIST_HELP, T_QUICK_MISSING, T_QUICK_COUNT_FMT,
     T_ACTIVITY_HINT, T_QUICK_HINT,
+    // data partition could not be mounted (never auto-formatted)
+    T_DATA_ERROR, T_DATA_ERROR_HELP,
     T_COUNT
 };
 

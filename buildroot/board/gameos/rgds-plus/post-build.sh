@@ -15,6 +15,8 @@ chmod +x "$TARGET_DIR/usr/bin/gameos-tf2" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-bootstage" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-setup" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-covers" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-perf" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-inputd-supervisor" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/wpa_action.sh" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/sleep.d/"* 2>/dev/null || true
 
@@ -50,6 +52,28 @@ VERSION_ID="$BASE_VER"
 PRETTY_NAME="gameOS $BASE_VER (RG DS / RG DS Plus)"
 HOME_URL="https://github.com/oh-sudo-user/gameOS"
 EOF
+
+# Boot slot selectors for BOTH models, carried inside the rootfs. A confirmed
+# boot reconciles /boot/boot.scr against these (S99update), so a device upgraded
+# by an OLD updater that never replaced the boot script still gets the fixed
+# slot selector on its first confirmed boot into the new rootfs. post-image.sh
+# copies these same files into each model's boot partition and the OTA boot
+# tar -- one generation point. host-uboot-tools is built before target finalize
+# (uboot depends on it), so mkimage is present here.
+HOST_DIR="$(dirname "$TARGET_DIR")/host"
+BOOTSCR_DIR="$TARGET_DIR/usr/share/gameos/boot"
+mkdir -p "$BOOTSCR_DIR"
+for model in rgds-plus rgds; do
+  case "$model" in
+    rgds-plus) dtb=rk3568-anbernic-rg-ds-plus.dtb ;;
+    *)         dtb=rk3568-anbernic-rg-ds.dtb ;;
+  esac
+  sed "s/@DTB@/$dtb/g" "$BOARD_DIR/boot.cmd" > "$BOOTSCR_DIR/boot.$model.cmd"
+  "$HOST_DIR/bin/mkimage" -A arm64 -O linux -T script -C none \
+    -n "gameOS slot selector ($model)" -d "$BOOTSCR_DIR/boot.$model.cmd" \
+    "$BOOTSCR_DIR/boot.scr.$model" >/dev/null
+  rm -f "$BOOTSCR_DIR/boot.$model.cmd"
+done
 
 # Mark first boot (setup script creates the GAMEOS-DATA partition once)
 touch "$TARGET_DIR/etc/gameos-firstboot"

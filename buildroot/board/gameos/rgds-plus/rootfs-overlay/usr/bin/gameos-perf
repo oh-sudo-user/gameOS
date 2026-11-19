@@ -1,0 +1,187 @@
+#!/bin/sh
+# gameOS CPU/GPU performance profiles.
+#
+#   gameos-perf ui|light|heavy|restore|status
+#
+# Policy preferences come from /etc/gameos/perf.conf. NO fixed frequencies are
+# ever written: each CPU policy's scaling_available_governors is read first and
+# only a governor the kernel actually offers is selected (configured value ->
+# schedutil -> ondemand -> performance). GPU devfreq is left at the driver
+# default (KEEP) until a governor is proven stable on real hardware. The
+# boot-time governor of each policy is saved once to /run/gameos/perf-original
+# so "restore" can put it back. Every failure is logged and never aborts the
+# caller -- boot and game launch must not depend on a governor write succeeding.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+CONF=/etc/gameos/perf.conf
+RUN=/run/gameos
+ORIG="$RUN/perf-original"
+LOG=/tmp/gameos-perf.log
+CPUFREQ=/sys/devices/system/cpu/cpufreq
+DEVFREQ=/sys/class/devfreq
+
+mkdir -p "$RUN" 2>/dev/null
+
+log() { echo "[gameos-perf] $*" >> "$LOG" 2>/dev/null; }
+
+# Defaults; perf.conf overrides them. Keeping defaults here means a missing or
+# unreadable conf still yields a safe schedutil/KEEP policy rather than nothing.
+UI_CPU_GOVERNOR=schedutil
+LIGHT_CPU_GOVERNOR=schedutil
+HEAVY_CPU_GOVERNOR=performance
+UI_GPU_GOVERNOR=KEEP
+LIGHT_GPU_GOVERNOR=KEEP
+HEAVY_GPU_GOVERNOR=KEEP
+[ -r "$CONF" ] && . "$CONF"
+
+# Read a sysfs attribute (empty string if unreadable).
+rd() { cat "$1" 2>/dev/null; }
+
+# True if governor $1 appears in the space-separated list $2.
+has_gov() {
+    case " $2 " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# Echo the first available governor among: wanted, schedutil, ondemand,
+# performance. Echoes nothing (returns 1) when none are available.
+pick_cpu_gov() {
+    pc_want=$1; pc_avail=$2
+    for pc_g in "$pc_want" schedutil ondemand performance; do
+        [ -n "$pc_g" ] || continue
+        if has_gov "$pc_g" "$pc_avail"; then echo "$pc_g"; return 0; fi
+    done
+    return 1
+}
+
+# Record the policy's current governor once. First write wins, so switching
+# profiles repeatedly never clobbers the true boot-time value with an
+# intermediate one.
+save_orig() {
+    so_base=${1##*/}
+    if [ -f "$ORIG" ] && grep -q "^$so_base " "$ORIG" 2>/dev/null; then
+        return 0
+    fi
+    so_cur=$(rd "$1/scaling_governor")
+    [ -n "$so_cur" ] && echo "$so_base $so_cur" >> "$ORIG"
+}
+
+apply_cpu() {
+    ac_want=$1
+    for ac_p in "$CPUFREQ"/policy*; do
+        [ -d "$ac_p" ] || continue
+        ac_avail=$(rd "$ac_p/scaling_available_governors")
+        if [ -z "$ac_avail" ]; then
+            log "$ac_p: no scaling_available_governors; skipping"
+            continue
+        fi
+        ac_gov=$(pick_cpu_gov "$ac_want" "$ac_avail")
+        if [ -z "$ac_gov" ]; then
+            log "$ac_p: no usable governor (available: $ac_avail)"
+            continue
+        fi
+        ac_cur=$(rd "$ac_p/scaling_governor")
+        [ "$ac_cur" = "$ac_gov" ] && continue
+        save_orig "$ac_p"
+        if echo "$ac_gov" > "$ac_p/scaling_governor" 2>>"$LOG"; then
+            log "$ac_p: $ac_cur -> $ac_gov"
+        else
+            log "$ac_p: FAILED to set governor $ac_gov"
+        fi
+    done
+}
+
+# True if devfreq node $1 is a GPU. Never assume the node is named *gpu*: check
+# the devfreq name and the backing device path for the Mali/panfrost GPU.
+is_gpu() {
+    ig_name=$(rd "$1/name")
+    case "$ig_name" in *gpu*|*GPU*|*mali*|*Mali*|*panfrost*) return 0 ;; esac
+    ig_dev=$(readlink -f "$1/device" 2>/dev/null)
+    case "$ig_dev" in *gpu*|*mali*|*panfrost*) return 0 ;; esac
+    return 1
+}
+
+apply_gpu() {
+    ag_want=$1
+    for ag_d in "$DEVFREQ"/*; do
+        [ -d "$ag_d" ] || continue
+        is_gpu "$ag_d" || continue
+        if [ "$ag_want" = KEEP ] || [ -z "$ag_want" ]; then
+            log "GPU $ag_d: KEEP (driver default: $(rd "$ag_d/governor"))"
+            continue
+        fi
+        ag_avail=$(rd "$ag_d/available_governors")
+        if ! has_gov "$ag_want" "$ag_avail"; then
+            log "GPU $ag_d: '$ag_want' unavailable (available: $ag_avail); KEEP"
+            continue
+        fi
+        ag_cur=$(rd "$ag_d/governor")
+        [ "$ag_cur" = "$ag_want" ] && continue
+        if echo "$ag_want" > "$ag_d/governor" 2>>"$LOG"; then
+            log "GPU $ag_d: $ag_cur -> $ag_want"
+        else
+            log "GPU $ag_d: FAILED to set governor $ag_want"
+        fi
+    done
+}
+
+do_restore() {
+    [ -f "$ORIG" ] || return 0
+    while read -r dr_base dr_gov; do
+        [ -n "$dr_base" ] && [ -n "$dr_gov" ] || continue
+        dr_p="$CPUFREQ/$dr_base"
+        [ -d "$dr_p" ] || continue
+        dr_avail=$(rd "$dr_p/scaling_available_governors")
+        if has_gov "$dr_gov" "$dr_avail"; then
+            if echo "$dr_gov" > "$dr_p/scaling_governor" 2>>"$LOG"; then
+                log "restore $dr_p -> $dr_gov"
+            else
+                log "restore $dr_p: FAILED to set $dr_gov"
+            fi
+        else
+            log "restore $dr_p: saved governor '$dr_gov' unavailable; skipping"
+        fi
+    done < "$ORIG"
+    rm -f "$ORIG"
+    # GPU was never modified under KEEP, so there is nothing to restore.
+}
+
+# Benchmark/diagnostic snapshot (audit doc 7.3). Reads only; writes nothing.
+do_status() {
+    echo "=== CPU ==="
+    for st_p in "$CPUFREQ"/policy*; do
+        [ -d "$st_p" ] || continue
+        echo "$st_p"
+        echo "  governor      = $(rd "$st_p/scaling_governor")"
+        echo "  available     = $(rd "$st_p/scaling_available_governors")"
+        echo "  cur_freq      = $(rd "$st_p/scaling_cur_freq")"
+        echo "  scaling min/max = $(rd "$st_p/scaling_min_freq") / $(rd "$st_p/scaling_max_freq")"
+        echo "  cpuinfo min/max = $(rd "$st_p/cpuinfo_min_freq") / $(rd "$st_p/cpuinfo_max_freq")"
+    done
+    echo "=== GPU devfreq ==="
+    for st_d in "$DEVFREQ"/*; do
+        [ -d "$st_d" ] || continue
+        is_gpu "$st_d" || continue
+        echo "$st_d (name=$(rd "$st_d/name"))"
+        echo "  governor      = $(rd "$st_d/governor")"
+        echo "  available     = $(rd "$st_d/available_governors")"
+        echo "  cur_freq      = $(rd "$st_d/cur_freq")"
+        echo "  avail_freq    = $(rd "$st_d/available_frequencies")"
+    done
+    echo "=== thermal ==="
+    for st_t in /sys/class/thermal/thermal_zone*; do
+        [ -d "$st_t" ] || continue
+        echo "  $(rd "$st_t/type") = $(rd "$st_t/temp")"
+    done
+}
+
+case "${1:-ui}" in
+    ui)      apply_cpu "$UI_CPU_GOVERNOR";    apply_gpu "$UI_GPU_GOVERNOR" ;;
+    light)   apply_cpu "$LIGHT_CPU_GOVERNOR"; apply_gpu "$LIGHT_GPU_GOVERNOR" ;;
+    heavy)   apply_cpu "$HEAVY_CPU_GOVERNOR"; apply_gpu "$HEAVY_GPU_GOVERNOR" ;;
+    restore) do_restore ;;
+    status)  do_status ;;
+    *) echo "usage: gameos-perf {ui|light|heavy|restore|status}" >&2; exit 2 ;;
+esac
+exit 0

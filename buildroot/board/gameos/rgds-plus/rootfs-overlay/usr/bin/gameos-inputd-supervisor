@@ -1,0 +1,80 @@
+#!/bin/sh
+# Independent input-merger daemon supervisor.
+#
+# gameos-session blocks on the foreground UI, so it cannot respawn gameos-inputd
+# while the UI (or an emulator) is running. This supervisor runs alongside them
+# and keeps inputd alive at all times: a crash mid-game never leaves the device
+# without input. It is a child of gameos-session and shares that process group
+# (the UI's group), NOT the emulator's private group, so gameos-sleepd's
+# lid-close SIGSTOP of the emulator group never freezes input handling.
+#
+# Consecutive rapid exits escalate the respawn delay (1,2,4,8,15s cap) so a
+# missing device or crash loop never busy-spins. SIGTERM/SIGINT terminate inputd,
+# wait for it, and clean up both pid files before exiting.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+RUN=/run/gameos
+PIDFILE="$RUN/inputd-supervisor.pid"
+INPUTD_PIDFILE="$RUN/inputd.pid"
+INPUTD=/usr/bin/gameos-inputd
+LOG=/tmp/gameos-inputd-supervisor.log
+CHILD=
+
+mkdir -p "$RUN" 2>/dev/null
+log() { echo "[inputd-supervisor] $*" >> "$LOG" 2>/dev/null; }
+
+# Refuse to start a second supervisor. A shell script's /proc comm is the
+# interpreter ("sh"), so validate the pid via its cmdline instead of comm: the
+# pid must be alive, differ from us, and actually be running this script. A
+# stale pid reused by an unrelated process therefore never blocks startup.
+if [ -f "$PIDFILE" ]; then
+    old=$(cat "$PIDFILE" 2>/dev/null)
+    case "$old" in ''|*[!0-9]*) old= ;; esac
+    if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null; then
+        if tr '\0' ' ' < "/proc/$old/cmdline" 2>/dev/null \
+                | grep -q "gameos-inputd-supervisor"; then
+            log "supervisor pid $old already running; exiting"
+            exit 0
+        fi
+    fi
+fi
+echo $$ > "$PIDFILE"
+
+cleanup() {
+    trap - TERM INT
+    if [ -n "$CHILD" ]; then
+        kill "$CHILD" 2>/dev/null
+        wait "$CHILD" 2>/dev/null   # reap inputd so no orphan is left behind
+    fi
+    rm -f "$INPUTD_PIDFILE"
+    # Only remove our own pid file; never clobber a newer supervisor's.
+    if [ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ]; then
+        rm -f "$PIDFILE"
+    fi
+    log "supervisor $$ stopped"
+    exit 0
+}
+trap cleanup TERM INT
+
+backoff=1
+while :; do
+    "$INPUTD" &
+    CHILD=$!
+    echo "$CHILD" > "$INPUTD_PIDFILE"
+    log "inputd started pid $CHILD"
+    start=$(date +%s)
+    wait "$CHILD"
+    rc=$?
+    CHILD=
+    rm -f "$INPUTD_PIDFILE"
+    end=$(date +%s)
+    ran=$((end - start))
+    # A long-lived inputd that finally exits resets the delay; rapid exits keep
+    # escalating it. Even a clean exit waits at least 1s before respawning.
+    [ "$ran" -ge 10 ] && backoff=1
+    log "inputd exited rc=$rc after ${ran}s; respawn in ${backoff}s"
+    sleep "$backoff"
+    backoff=$((backoff * 2))
+    [ "$backoff" -gt 15 ] && backoff=15
+done

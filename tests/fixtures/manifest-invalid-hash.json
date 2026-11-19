@@ -1,0 +1,7 @@
+{
+  "version": "1.0.1",
+  "rootfs": { "file": "gameOS-rootfs.ext4.gz", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg", "size": 1048576, "gz": 524288 },
+  "boot": { "file": "gameOS-boot.tar.gz", "sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", "size": 2048 },
+  "image_rgds_plus": { "file": "gameOS-rgds-plus.img.gz", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "size": 1000000 },
+  "image_rgds": { "file": "gameOS-rgds.img.gz", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "size": 1000000 }
+}

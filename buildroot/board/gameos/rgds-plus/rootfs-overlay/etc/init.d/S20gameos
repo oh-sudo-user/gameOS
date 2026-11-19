@@ -60,86 +60,93 @@ fi
 /usr/bin/gameos-bootstage 30 data
 
 # --- first boot: create the GAMEOS-DATA exFAT partition filling the card ---
-# The firstboot marker is cleared ONLY after the partition exists AND is
-# formatted exFAT, so a failed/interrupted first boot retries on the next boot
-# instead of leaving the device permanently without a data partition.
+# INVARIANT: an EXISTING p4 is NEVER auto-formatted, no matter what. Every
+# rootfs image carries /etc/gameos-firstboot (post-build.sh touches it), so the
+# first boot into a freshly OTA-written slot runs this block with the user's
+# data partition already present. Formatting is permitted ONLY for a partition
+# this boot just created (p4 node was absent and sgdisk/parted succeeded).
+#
+# Do NOT use blkid to detect the filesystem: /sbin/blkid here is busybox, which
+# ignores -o/-s and (CONFIG_FEATURE_BLKID_TYPE unset) never prints TYPE. Detect
+# by actually mounting read-only -- the kernel checks the superblock magic.
 FIRSTBOOT=0
 if [ -f /etc/gameos-firstboot ]; then
   FIRSTBOOT=1
-  # Does p4 already hold a filesystem? Find out by mounting it READ-ONLY.
-  #
-  # Do NOT use blkid for this: /sbin/blkid on this image is busybox, which
-  # ignores -o/-s and (CONFIG_FEATURE_BLKID_TYPE unset) never prints TYPE, so
-  # the old 'fstype = exfat' test was ALWAYS false. Every rootfs image carries
-  # this firstboot marker (post-build.sh touches it), so the first boot into a
-  # freshly OTA-written slot would have run mkfs.exfat over the existing
-  # GAMEOS-DATA partition and erased the user's games and saves.
-  data_fs=""
   if [ -b ${DEV}p4 ]; then
+    # p4 EXISTS: only an exFAT read-only mount counts as our GAMEOS-DATA.
+    # Any other filesystem, corruption or I/O error is preserved untouched
+    # and reported; the marker is kept so a later boot can retry the probe
+    # (e.g. after the user repairs the card on a PC). Never mkfs here.
     probe=/tmp/gameos-data-probe
     mkdir -p "$probe"
-    for t in exfat vfat ext4 ext3 ext2 ntfs3; do
-      [ "$t" = ntfs3 ] && modprobe ntfs3 2>/dev/null
-      if mount -t "$t" -o ro ${DEV}p4 "$probe" 2>/dev/null; then
-        data_fs=$t
-        break
-      fi
-    done
-    if [ -n "$data_fs" ]; then
+    if mount -t exfat -o ro ${DEV}p4 "$probe" 2>>"$LOG"; then
       umount "$probe" 2>/dev/null
+      rm -f /etc/gameos-firstboot
+      log "existing GAMEOS-DATA exFAT detected; preserved"
+    else
+      log "ERROR: existing p4 cannot be mounted exFAT; refusing to format (user data preserved)"
     fi
     rmdir "$probe" 2>/dev/null
-  fi
-  if [ -n "$data_fs" ]; then
-    log "GAMEOS-DATA already holds a filesystem ($data_fs); keeping it, clearing firstboot marker"
-    rm -f /etc/gameos-firstboot
   else
-    # Create p4 only when the partition node is absent; otherwise format it
-    # (it exists but has no mountable filesystem, i.e. nothing to lose).
-    if [ ! -b ${DEV}p4 ]; then
-      log "creating GAMEOS-DATA partition"
+    # p4 ABSENT: create it. Only a partition created successfully THIS boot
+    # may be formatted; every creation step is exit-code gated.
+    created=0
+    if command -v sgdisk >/dev/null 2>&1; then
       # The flashed image is only ~1.5 GiB, so on a larger card the backup
       # GPT header still sits at the end of the SMALL image. Relocate it to
-      # the true end of the disk FIRST (sgdisk -e) so "mkpart ... 100%" is
-      # deterministic instead of relying on parted's version-specific
-      # auto-fix behavior.
-      if command -v sgdisk >/dev/null 2>&1; then
-        sgdisk -e "$DEV" >>"$LOG" 2>&1 \
-          || log "WARN: sgdisk -e (relocate backup GPT) failed"
+      # the true end of the disk FIRST (sgdisk -e) so "0:0" (first available
+      # .. last usable) is deterministic.
+      if sgdisk -e "$DEV" >>"$LOG" 2>&1; then
         blockdev --rereadpt "$DEV" 2>/dev/null || true
+        # 0700 = Microsoft basic data, recognised by Linux and Windows for
+        # the exFAT data partition (parted has no exfat fs-type token).
+        if sgdisk -n 4:0:0 -t 4:0700 -c 4:GAMEOS-DATA "$DEV" >>"$LOG" 2>&1; then
+          created=1
+        else
+          log "ERROR: sgdisk create p4 failed; not formatting"
+        fi
       else
-        log "WARN: sgdisk missing; relying on parted to fix the GPT"
+        log "ERROR: sgdisk -e (relocate backup GPT) failed; not creating p4"
       fi
-      # p1 ends at 272MiB, ROOT-A and ROOT-B are 1200MiB each, so the first
-      # free sector is at 2672MiB. sgdisk's 0 start means "first available",
-      # which stays correct if the slot sizes change.
-      # parted has no exfat fs-type token ("invalid token: exfat"), so create
-      # the partition with sgdisk instead: 0700 = Microsoft basic data, which
-      # both Linux and Windows recognise for the exFAT data partition.
-      if command -v sgdisk >/dev/null 2>&1; then
-        sgdisk -n 4:0:0 -t 4:0700 -c 4:GAMEOS-DATA "$DEV" >>"$LOG" 2>&1 \
-          || log "ERROR: sgdisk mkpart failed"
+    elif command -v parted >/dev/null 2>&1; then
+      if parted -s "$DEV" mkpart GAMEOS-DATA 2688MiB 100% >>"$LOG" 2>&1; then
+        created=1
       else
-        parted -s "$DEV" mkpart GAMEOS-DATA 2688MiB 100% >>"$LOG" 2>&1 \
-          || log "ERROR: parted mkpart failed"
+        log "ERROR: parted create p4 failed; not formatting"
       fi
-      # give the kernel a moment to re-read the partition table
+    else
+      log "ERROR: no sgdisk/parted available; cannot create GAMEOS-DATA"
+    fi
+
+    if [ "$created" = 1 ]; then
+      # Give the kernel a moment to re-read the table. BLKRRPART refuses while
+      # root is mounted from ROOT-A/B, so partx adds just p4 via BLKPG, which
+      # works even with the other partitions in use.
       sleep 1
       blockdev --rereadpt "$DEV" 2>/dev/null || true
-      # BLKRRPART refuses while root is mounted from ROOT-A/ROOT-B, so the new
-      # node may not appear until reboot; partx adds just p4 via BLKPG, which
-      # works even with the other partitions in use.
       if command -v partx >/dev/null 2>&1; then
         partx -a -n 4 "$DEV" >>"$LOG" 2>&1 || true
       fi
       j=0
       while [ ! -b ${DEV}p4 ] && [ $j -lt 50 ]; do sleep 0.1; j=$((j + 1)); done
-    fi
-    if [ -b ${DEV}p4 ] && mkfs.exfat -n GAMEOS ${DEV}p4 >>"$LOG" 2>&1; then
-      log "GAMEOS-DATA formatted exfat"
-      rm -f /etc/gameos-firstboot
-    else
-      log "ERROR: could not create/format GAMEOS-DATA; keeping marker for retry"
+      if [ ! -b ${DEV}p4 ]; then
+        log "ERROR: p4 node never appeared after create; not formatting"
+      elif mkfs.exfat -n GAMEOS ${DEV}p4 >>"$LOG" 2>&1; then
+        # Verify the new filesystem mounts read-only before clearing the
+        # marker; a failed verify keeps the marker for a retry.
+        probe=/tmp/gameos-data-probe
+        mkdir -p "$probe"
+        if mount -t exfat -o ro ${DEV}p4 "$probe" 2>>"$LOG"; then
+          umount "$probe" 2>/dev/null
+          rm -f /etc/gameos-firstboot
+          log "newly-created GAMEOS-DATA formatted exfat and verified"
+        else
+          log "ERROR: new p4 formatted but verify mount failed; keeping marker"
+        fi
+        rmdir "$probe" 2>/dev/null
+      else
+        log "ERROR: mkfs.exfat on newly-created p4 failed; keeping marker"
+      fi
     fi
   fi
 fi
@@ -200,13 +207,14 @@ if [ -x /usr/bin/gameos-tf2 ]; then
 fi
 /usr/bin/gameos-bootstage 60 data
 
-# --- performance: CPU and GPU governors ------------------------------------
-for p in /sys/devices/system/cpu/cpufreq/policy*; do
-  [ -w "$p/scaling_governor" ] && echo performance > "$p/scaling_governor"
-done
-for g in /sys/class/devfreq/*gpu*; do
-  [ -w "$g/governor" ] && echo performance > "$g/governor"
-done
+# --- performance: apply the UI profile via gameos-perf ----------------------
+# gameos-perf reads each policy's scaling_available_governors and only writes
+# governors the kernel actually offers (schedutil -> ondemand -> performance
+# fallback), logging every action. GPU policy comes from /etc/gameos/perf.conf.
+# No fixed frequencies are written. Failures here never block boot.
+if [ -x /usr/bin/gameos-perf ]; then
+  /usr/bin/gameos-perf ui >>"$LOG" 2>&1
+fi
 
 # --- dual DSI panel driver --------------------------------------------------
 # panel-generic-dsi is built INTO the kernel (obj-y, see external.mk), so both

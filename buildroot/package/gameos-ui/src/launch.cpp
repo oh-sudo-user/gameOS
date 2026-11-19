@@ -64,6 +64,26 @@ static int panel_height()
     return c.find("rg-ds-plus") != std::string::npos ? 768 : 480;
 }
 
+// Performance profile by console identity (never guessed from the ROM
+// extension): NDS/PS1/PSP are heavy, GBA/GBC are light. gameos-perf maps these
+// to governor preferences in /etc/gameos/perf.conf.
+static const char* perf_profile(const Console& c)
+{
+    if (c.dual) return "heavy";                 // NDS spans both panels
+    if (strcmp(c.id, "ps1") == 0) return "heavy";
+    if (strcmp(c.id, "psp") == 0) return "heavy";
+    return "light";                             // GBA / GBC
+}
+
+// Best-effort governor switch. A failure here is logged by gameos-perf and
+// must never block game launch, so the return value is deliberately ignored.
+// The profile argument is a fixed literal, not user input.
+static void apply_perf(const char* profile)
+{
+    std::string cmd = std::string("/usr/bin/gameos-perf ") + profile;
+    (void)system(cmd.c_str());
+}
+
 int launch_game(const Console& c, const Game& g)
 {
     // Localise emulator menus to the system language before forking.
@@ -121,6 +141,10 @@ int launch_game(const Console& c, const Game& g)
     }
 
     // ---- parent ----
+    // The parent owns the performance profile switch (never the child): apply
+    // the console's tier now and restore the UI tier on EVERY exit path,
+    // including exec failure (child _exit(127)) and waitpid errors.
+    apply_perf(perf_profile(c));
     // Publish the emulator pid for gameos-sleepd (lid-close pause/resume).
     mkdir("/run/gameos", 0755);
     write_file("/run/gameos/game.pid", std::to_string(pid));
@@ -128,10 +152,12 @@ int launch_game(const Console& c, const Game& g)
     while (waitpid(pid, &status, 0) < 0) {
         if (errno != EINTR) {
             unlink("/run/gameos/game.pid");
+            apply_perf("ui");
             return -1;
         }
     }
     unlink("/run/gameos/game.pid");
+    apply_perf("ui");
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return -1;
 }
