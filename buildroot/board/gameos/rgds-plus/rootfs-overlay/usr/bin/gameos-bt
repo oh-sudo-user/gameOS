@@ -29,6 +29,9 @@ CTL="timeout 45 bluetoothctl"
 
 # one at a time (the UI runs these in the background); daemons get the lock fd
 # closed (9>&-). down waits at most 3 s: a sleep must not wait out a pairing.
+# Create the lock directory first: exec 9> fails silently when /run/gameos is
+# missing (sleep hooks and S26audio call this before the UI has made it).
+mkdir -p "$RUN"
 case $1 in
 up|pair|connect|disconnect|forget|scan) exec 9>"$RUN/bt.lock"; flock 9 ;;
 down) exec 9>"$RUN/bt.lock"; flock -w 3 9 || : ;;

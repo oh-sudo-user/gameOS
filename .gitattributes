@@ -1,0 +1,3 @@
+# Patches must stay LF: they are applied by GNU patch inside the Linux
+# build tree, and CRLF line endings make context matching fail.
+*.patch text eol=lf

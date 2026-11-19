@@ -51,6 +51,17 @@ cp -f "$TMP/src/projects/ROCKNIX/devices/RK3566/linux/dts/rockchip/rk3568-anbern
       "$TMP/src/projects/ROCKNIX/devices/RK3566/linux/dts/rockchip/rk3568-anbernic-rg-ds.dts" \
       "$TMP/src/projects/ROCKNIX/devices/RK3566/linux/dts/rockchip/rk3568-anbernic-rg-ds-plus.dts" \
       "$BOARD/dts/"
+# gameOS fix-ups: the vendor tree is a generated artifact, so keep our
+# device-tree changes as reviewable patches in dts-fixes/. The battery fix
+# replaces a 10A constant-charge-current placeholder with the stock 5V/1.5A
+# supply limit (rk817 would otherwise clamp it to 3.5A).
+for p in "$BOARD"/dts-fixes/*.patch; do
+  [ -e "$p" ] || continue
+  patch -p1 -d "$BOARD" < "$p"
+done
+grep -q 'constant-charge-current-max-microamp = <1500000>;' \
+      "$BOARD/dts/rk3568-anbernic-rg-ds-plus.dts" \
+  || { echo "ERROR: battery charge current patch did not apply"; exit 1; }
 # Dual-DSI panel driver: built into the kernel (obj-y) by the post-patch hook
 # in buildroot/external.mk, so both panels are ready before the DRM driver binds.
 cp -f "$TMP/src/projects/ROCKNIX/packages/linux-drivers/generic-dsi/sources/panel-generic-dsi.c" \

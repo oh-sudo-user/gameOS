@@ -52,6 +52,10 @@ while true; do
   case $rc in
     90)
       kill "$INPUTD_PID" 2>/dev/null
+      # -f is deliberate: the UI and emulator are already gone and data is
+      # synced. A normal poweroff waits on init's shutdown scripts and can
+      # hang the device; at worst exFAT is left with a dirty flag, which the
+      # next mount repairs.
       sync
       /sbin/poweroff -f
       ;;

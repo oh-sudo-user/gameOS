@@ -30,6 +30,7 @@
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 
 #define PROG "gameos-inputd"
 
@@ -179,14 +180,37 @@ static void set_backlight(int percent_of_max)
     closedir(d);
 }
 
-static void handle_volume(int code)
+static void handle_volume(int code, int value)
 {
+    // gpio-keys-volume has "autorepeat" in the DTS, so the kernel emits
+    // value 2 every ~33 ms while the key is held. Throttle repeats to 200 ms
+    // (about 5 steps/s) so a long press ramps instead of flooding the mixer.
+    static struct timespec last;
+    if (value == 2) {
+        struct timespec now, d;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        d.tv_sec  = now.tv_sec  - last.tv_sec;
+        d.tv_nsec = now.tv_nsec - last.tv_nsec;
+        if (d.tv_nsec < 0) { d.tv_sec--; d.tv_nsec += 1000000000L; }
+        if (d.tv_sec == 0 && d.tv_nsec < 200000000L) return;
+        last = now;
+    } else {
+        clock_gettime(CLOCK_MONOTONIC, &last);
+    }
+
     // rk817 headphone = "Master"; aw88166 speakers = "PCM". Card order can
     // swap, so fall back Master->PCM on each card.
     const char *cmd = (code == KEY_VOLUMEUP)
         ? "amixer -c 0 sset Master 5%+ >/dev/null 2>&1 || amixer -c 0 sset PCM 5%+ >/dev/null 2>&1; amixer -c 1 sset Master 5%+ >/dev/null 2>&1 || amixer -c 1 sset PCM 5%+ >/dev/null 2>&1"
         : "amixer -c 0 sset Master 5%- >/dev/null 2>&1 || amixer -c 0 sset PCM 5%- >/dev/null 2>&1; amixer -c 1 sset Master 5%- >/dev/null 2>&1 || amixer -c 1 sset PCM 5%- >/dev/null 2>&1";
-    if (system(cmd) != 0) { /* ignore */ }
+    // Run the mixer change in a child. system() would block this poll loop
+    // while ALSA is busy, freezing every button and the analog stick too.
+    // Children are reaped at the top of the main loop.
+    pid_t p = fork();
+    if (p == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
 }
 
 int main(void)
@@ -223,6 +247,9 @@ int main(void)
     time_t last_reconnect = 0;
 
     while (running) {
+        // Reap finished volume-child processes without blocking.
+        while (waitpid(-1, NULL, WNOHANG) > 0) { }
+
         // (Re)open any missing device at most once per second: recovers from
         // runtime disconnects and picks up optional devices that probe late.
         time_t now = time(NULL);
@@ -300,9 +327,9 @@ int main(void)
                 } else if (slot == 1 && t == EV_ABS && (c == ABS_X || c == ABS_Y)) {
                     emit(ufd, EV_ABS, c, norm_axis(fd, c, v));
                     need_syn = 1;
-                } else if (slot == 2 && t == EV_KEY && v == 1 &&
+                } else if (slot == 2 && t == EV_KEY && (v == 1 || v == 2) &&
                            (c == KEY_VOLUMEUP || c == KEY_VOLUMEDOWN)) {
-                    handle_volume(c);
+                    handle_volume(c, v);
                 } else if (slot == 3 && t == EV_SW && c == SW_LID) {
                     // v=1: lid closed -> blank panels; v=0: open -> restore
                     set_backlight(v ? 0 : -1);

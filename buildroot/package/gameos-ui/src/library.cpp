@@ -455,6 +455,10 @@ std::vector<SaveEntry> scan_saves()
 
 bool delete_save(const std::string& path)
 {
+    // Defensive: this runs as root, so never unlink outside the saves tree.
+    static const std::string prefix = "/userdata/saves/";
+    if (path.compare(0, prefix.size(), prefix) != 0) return false;
+    if (path.find("..") != std::string::npos) return false;
     return std::remove(path.c_str()) == 0;
 }
 
