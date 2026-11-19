@@ -13,9 +13,12 @@ fallback=a|b    # last confirmed-good slot
 n=<integer>     # unconfirmed boots of `slot`
 ```
 
-`boot.cmd` must: load state; if `n > 3` switch `slot` to `fallback` and reset
-`n=0`; otherwise increment `n`; boot the chosen slot's `/a/Image` or `/b/Image`
-with the model dtb; `root=PARTLABEL=GAMEOS-ROOT-<A|B>`.
+`boot.cmd` must: load state; validate `slot`/`fallback` (default A); increment
+`n` (normalising garbage/negative to 1); if the **incremented** `n > 3` switch
+`slot` to `fallback` and reset `n=0`; boot the chosen slot's `/a/Image` or
+`/b/Image` with the model dtb; `root=PARTLABEL=GAMEOS-ROOT-<A|B>`. Because `n`
+is incremented before the check, rollback fires on the 4th unconfirmed power-on
+(stored `n=3` becomes 4).
 
 ## U-Boot sandbox procedure
 
@@ -24,16 +27,19 @@ with the model dtb; `root=PARTLABEL=GAMEOS-ROOT-<A|B>`.
    `mkimage -A arm64 -O linux -T script -C none -d boot.cmd boot.scr`.
 2. Drive the HUSH script with a fake `state` file and a fake FAT load, stepping
    `n` from 0..4. Use `setenv` / `printenv` to inspect the chosen slot.
-3. Cases:
+3. Cases (`n` is incremented before the `>3` check):
    - `slot=a fallback=a n=0` → boots A, n becomes 1.
-   - `slot=b fallback=a n=3` → boots B, n becomes 4.
-   - `slot=b fallback=a n=4` (>3) → **rolls back to A**, n reset 0.
-   - missing `fallback` line (old state) → safe default (fallback=slot or A),
-     never an empty boot target.
-   - missing/corrupt `state` → default slot A, n=0.
+   - `slot=b fallback=a n=2` → boots B, n becomes 3 (not >3, no rollback yet).
+   - `slot=b fallback=a n=3` → n becomes 4 (>3) → **rolls back to A**, n reset 0.
+   - `slot=b fallback=a n=4` → n becomes 5 (>3) → **rolls back to A**, n reset 0.
+   - `slot=b fallback=b n=4` → **rolls back to B**, n reset 0 (fallback honoured).
+   - missing/garbage `slot`/`fallback` → safe default A, never an empty target.
+   - missing/corrupt `state` → default slot A, fallback A, n 0→1.
+   - garbage/negative `n` → normalised to 1, never disables the counter.
 
-Pass: rollback fires exactly when n>3; the fallback slot is always a valid,
-previously-confirmed slot; a malformed state never selects an empty target.
+Pass: rollback fires exactly when the incremented n>3 (the 4th unconfirmed
+power-on); the fallback slot is always a valid, previously-confirmed slot and is
+left unchanged by a rollback; a malformed state never selects an empty target.
 
 ## On-device procedure (both models)
 
