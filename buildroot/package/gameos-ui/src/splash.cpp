@@ -235,24 +235,16 @@ void set_text(SDL_Renderer* r, TTF_Font* f, const char* s, const SDL_Color& c,
     SDL_FreeSurface(su);
 }
 
-// Korean needs its own face; the SC font is used for every other language.
 // Text is scaled less aggressively than the brand motif so the stage line
 // stays readable on the bottom panel.
-void panel_fonts(Panel& p, int lang)
+void panel_fonts(Panel& p)
 {
     if (p.f_stage) { TTF_CloseFont(p.f_stage); p.f_stage = nullptr; }
     if (p.f_pct)   { TTF_CloseFont(p.f_pct);   p.f_pct   = nullptr; }
     float ts = 0.6f + 0.4f * p.scale;
-    std::string n = p.fontdir
-        + (lang == gameos::LANG_KO ? "/NotoSansKR-Regular.ttf"
-                                   : "/NotoSansSC-Regular.otf");
+    std::string n = p.fontdir + "/NotoSansSC-Regular.otf";
     p.f_stage = TTF_OpenFont(n.c_str(), (int)(30 * ts));
     p.f_pct   = TTF_OpenFont(n.c_str(), (int)(22 * ts));
-    if (!p.f_stage || !p.f_pct) {
-        std::string a = p.fontdir + "/NotoSansSC-Regular.otf";
-        if (!p.f_stage) p.f_stage = TTF_OpenFont(a.c_str(), (int)(30 * ts));
-        if (!p.f_pct)   p.f_pct   = TTF_OpenFont(a.c_str(), (int)(22 * ts));
-    }
     p.cache_stage = -1;
     p.cache_pct = -1;
 }
@@ -319,7 +311,7 @@ bool setup_panel(Panel& p, int display, float scale, const std::string& fonts,
 
     if (!build_brand(p, fonts)) return false;
     load_panel_bg(p, assets, bgname);
-    panel_fonts(p, gameos::g_lang);
+    panel_fonts(p);
     p.cache_lang = gameos::g_lang;
     return true;
 }
@@ -399,7 +391,7 @@ void draw_panel(Panel& p, float t, float fade, const Boot& b)
 
     // --- boot stage line + progress bar ---
     int li = (int)gameos::g_lang;
-    if (p.cache_lang != li) { panel_fonts(p, li); p.cache_lang = li; }
+    if (p.cache_lang != li) { panel_fonts(p); p.cache_lang = li; }
     int si = (int)b.stage;
     if (p.cache_stage != si) {
         set_text(r, p.f_stage, gameos::tr(b.stage), C_TEXT,

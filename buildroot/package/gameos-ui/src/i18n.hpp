@@ -1,4 +1,4 @@
-// gameOS front-end — internationalisation (7 languages).
+// gameOS front-end — internationalisation (6 languages).
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
@@ -14,7 +14,6 @@ enum Lang {
     LANG_EN,          // English
     LANG_RU,          // Русский
     LANG_ES,          // Español
-    LANG_KO,          // 한국어
     LANG_COUNT
 };
 

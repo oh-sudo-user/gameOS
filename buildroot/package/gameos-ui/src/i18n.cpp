@@ -10,7 +10,7 @@ namespace gameos {
 Lang g_lang = LANG_ZH_CN;
 
 // Row order MUST match enum TKey exactly. Columns: zh-CN, zh-TW, ja, en,
-// ru, es, ko. Format keys keep their printf specifiers in every language.
+// ru, es. Format keys keep their printf specifiers in every language.
 static const char* T[LANG_COUNT][T_COUNT] = {
     // --------------------------------------------------------------- zh-CN
     {
@@ -657,114 +657,6 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "←→ Favoritos/Historial  ↑↓ Elegir  Ⓐ Lanzar  Ⓧ Favorito  Ⓨ Actualizar  Ⓑ Volver",
         "Partición de datos no disponible", "Sin formatear: tus datos se conservan. Revisa la tarjeta o reinicia.",
     },
-    // ------------------------------------------------------------------ ko
-    {
-        // home
-        "시스템 설정", "밝기 · 볼륨 · 전원",
-        "← → 선택    Ⓐ 들어가기    START 설정", "%s · 게임 %zu개",
-        // list
-        "게임 %zu개", " · 즐겨찾기만", "즐겨찾기한 게임이 없습니다",
-        "게임을 찾을 수 없습니다",
-        "목록에서 Ⓧ를 눌러 즐겨찾기 추가/해제",
-        "게임 파일을 /userdata/roms/%s 에 복사하세요",
-        "(게임은 TF1의 GAMEOS 드라이브 또는 TF2 카드의 roms 폴더에 넣으세요)", "커버",
-        "↑↓ 선택  Ⓐ 실행  Ⓑ 뒤로  Ⓧ 즐겨찾기  Ⓨ 새로고침  Ⓡ 즐겨찾기만",
-        " · TF2 카드 삽입됨",
-        // bluetooth
-        "블루투스", "켜짐", "꺼짐", "블루투스 스위치", "켜기", "끄기",
-        "오디오", "게임패드", "키보드", "마우스", "장치",
-        " · 연결됨", " · 페어링됨",
-        "장치가 없습니다 — Ⓧ를 눌러 주변 장치 검색", "처리 중…",
-        "Ⓐ 켜기/페어링/연결  Ⓧ 검색  Ⓨ 삭제  Ⓑ 뒤로",
-        "작업 시간 초과", "검색 완료", "블루투스가 켜졌습니다",
-        "실패: 블루투스 칩을 찾을 수 없습니다", "블루투스가 꺼졌습니다",
-        "페어링 성공", "연결됨", "연결 해제됨", "장치를 삭제했습니다", "작업 실패",
-        "끄는 중…", "켜는 중…", "페어링 중… (최대 40초)",
-        "연결 중…", "연결 해제 중…", "검색 중…", "삭제 중…",
-        // settings rows
-        "화면 밝기", "볼륨", "테마", "언어", "저장 관리",
-        "전원 끄기", "다시 시작", "gameOS 정보",
-        "%zu개", "↑↓ 선택  ←→ 조절/전환  Ⓐ 실행  Ⓑ 뒤로",
-        // saves
-        "저장 %zu개", "저장 데이터가 없습니다",
-        "게임 중 SELECT+Ⓛ 빠른 저장 / SELECT+Ⓡ 불러오기",
-        "↑↓ 선택  Ⓐ 삭제  Ⓑ 뒤로",
-        // dialogs
-        "Ⓑ 뒤로", "전원을 끌까요?", "다시 시작할까요?", "이 저장 데이터를 삭제할까요?",
-        "Ⓐ 확인        Ⓑ 취소",
-        "에뮬레이터를 시작할 수 없습니다",
-        "에뮬레이터가 없거나 손상되었습니다. 시스템을 다시 플래시하세요.",
-        "gameOS 1.0\n"
-        "Anbernic RG DS Plus를 위한 오픈 소스 게임 시스템.\n"
-        "NDS · GBA · GBC · PS1 · PSP\n"
-        "github.com/oh-sudo-user/gameOS",
-        // ambient
-        "Anbernic RG DS Plus를 위해 제작",
-        // wifi
-        "무선 네트워크", "↑↓ 선택  ←→ 전환  Ⓐ 연결  Ⓨ 다시 검색  Ⓧ 잊기  Ⓑ 뒤로",
-        "네트워크를 찾지 못했습니다 — Ⓨ 로 다시 검색", "주변 WiFi 검색 중…",
-        "WiFi 비밀번호 입력", "연결 중…", "연결됨 · %s", "연결 실패",
-        "연결 안 됨", "WiFi 하드웨어를 찾지 못했습니다", "저장됨", "개방 네트워크",
-        "네트워크를 잊었습니다",
-        "공백", "삭제", "확인", "취소",
-        // system update
-        "시스템 업데이트", "←→ 선택  Ⓐ 확인/설치/재시작  Ⓑ 뒤로",
-        "업데이트 확인 중…", "최신 버전", "새 버전 %s",
-        "다운로드 중 %d%%", "새 시스템 기록 중…",
-        "재시작하면 적용됩니다", "업데이트 실패: %s",
-        "네트워크 없음 — 설정에서 WiFi를 연결하세요", "재시작하여 적용",
-        "현재 버전 %s", "Ⓐ 업데이트 확인",
-        "%s(으)로 업데이트할까요?", "빈 슬롯에 기록한 뒤 재시작하면 적용됩니다. 게임과 세이브는 유지됩니다.",
-        // boot stages
-        "화면 초기화", "부팅 파티션 마운트", "게임 데이터 준비", "네트워크 초기화",
-        "오디오 초기화", "게임패드 입력 준비", "인터페이스 시작 중",
-        // wizard frame
-        "초기 설정", "gameOS에 오신 것을 환영합니다", "%d / %d 단계",
-        "Ⓐ 다음    Ⓑ 이 단계 건너뛰기    START 모두 건너뛰기",
-        "설정 완료", "이제 게임을 시작할 수 있습니다.\n나중에 설정에서 이 마법사를 다시 실행할 수 있습니다.",
-        "이 단계는 네트워크가 필요합니다 — Ⓑ를 눌러 건너뛰세요", "설정 모두 건너뛰기",
-        // connectivity test
-        "연결 테스트", "연결 테스트 중…", "WiFi 연결", "게이트웨이 경로",
-        "이름 확인", "인터넷 접속", "정상", "실패", "대기",
-        // timezone
-        "시간대 선택", "↑↓ 선택    Ⓐ 확인    Ⓑ 건너뛰기", "아시아", "유럽",
-        "아메리카", "아프리카", "오세아니아", "표준시", "현재 시각 %s",
-        // machine name
-        "기기 이름", "Ⓐ 입력    Ⓑ 건너뛰기", "네트워크에서 이 기기를 식별하는 이름",
-        "영문, 숫자, 하이픈만 사용, 1-63자, 처음과 끝은 하이픈 불가",
-        "기기 이름을 %s(으)로 설정했습니다",
-        // retroachievements
-        "RetroAchievements 계정",
-        "로그인하면 지원 게임에서 업적을 달성하고 진행 상황을 올릴 수 있습니다",
-        "사용자 이름", "비밀번호", "하드코어 모드",
-        "켜면 상태 저장/불러오기와 치트를 사용할 수 없습니다",
-        "로그인", "로그인 중…", "로그인 성공 · %s", "로그인 실패: %s",
-        "로그인됨 · %s", "로그아웃",
-        // covers
-        "libretro 표지 라이브러리에서 게임 이름으로 일치하는 항목 다운로드",
-        "다운로드 시작", "표지 다운로드 중…", "%d / %d · 다운로드 %d · 불일치 %d",
-        "완료: %d장 추가, %d장 불일치", "중지", "표지가 필요한 게임이 없습니다",
-        "게임 표지",
-        "계속",
-        // activity statistics + favorites/history
-        "플레이 통계", "시간 · 타임라인 · 추세 · 추천",
-        "즐겨찾기와 기록", "게임을 빠르게 찾아 실행",
-        "개요", "타임라인", "추세", "추천",
-        "총 플레이 시간", "실행 횟수", "플레이한 게임", "오늘", "최근 7일",
-        "많이 플레이한 순", "아직 플레이 기록이 없습니다",
-        "게임을 실행하고 종료하면 여기에 기록됩니다",
-        "%d회", "%zu개",
-        "%d시간 %d분", "%d분", "%d초",
-        "최근 14일 플레이 시간", "기종별 플레이 시간", "이 기간에는 플레이하지 않았습니다",
-        "즐겨찾기 · 미플레이", "즐겨찾기 · 오랫만", "새 게임", "오랫만", "최근 플레이 중",
-        "추천할 게임이 없습니다", "먼저 게임을 TF 카드에 복사하세요", "%d일 동안 미플레이",
-        "즐겨찾기", "기록", "즐겨찾기가 없습니다", "게임 목록에서 Ⓧ를 누르면 추가됩니다",
-        "플레이 기록이 없습니다", "게임을 실행하면 자동으로 기록됩니다",
-        "파일이 카드에 없습니다", "%zu개",
-        "←→ 탭 전환  ↑↓ 선택  Ⓐ 실행  Ⓧ 즐겨찾기  Ⓨ 새로고침  Ⓑ 뒤로",
-        "←→ 즐겨찾기/기록  ↑↓ 선택  Ⓐ 실행  Ⓧ 즐겨찾기  Ⓨ 새로고침  Ⓑ 뒤로",
-        "데이터 파티션을 마운트할 수 없습니다", "포맷되지 않았으며 데이터가 보존됩니다. 카드를 확인하거나 재부팅하세요.",
-    },
 };
 
 const char* tr(TKey k)
@@ -788,7 +680,6 @@ const char* console_name(const char* id)
         { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP" },
         { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP" },
         { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP" },
-        { "Nintendo DS", "게임보이 어드밴스", "게임보이 / GBC", "소니 PS1", "소니 PSP" },
     };
     static const char* ids[5] = { "nds", "gba", "gbc", "ps1", "psp" };
     for (int i = 0; i < 5; i++)
@@ -805,7 +696,6 @@ const char* theme_name(int idx)
         { "Neon", "Pixel", "Fresh", "Ink" },
         { "Неон", "Пиксель", "Свежесть", "Тушь" },
         { "Neón", "Píxel", "Fresco", "Tinta" },
-        { "네온", "픽셀", "프레시", "수묵" },
     };
     if (idx < 0 || idx > 3) idx = 0;
     return names[g_lang][idx];
@@ -842,7 +732,7 @@ const char* lang_name(int l)
 {
     // Autonyms: each language is always listed in its own script.
     static const char* names[LANG_COUNT] = {
-        "简体中文", "繁體中文", "日本語", "English", "Русский", "Español", "한국어",
+        "简体中文", "繁體中文", "日本語", "English", "Русский", "Español",
     };
     if (l < 0 || l >= LANG_COUNT) l = 0;
     return names[l];
@@ -865,12 +755,6 @@ std::string format_date(const struct tm& t)
     case LANG_JA: {
         static const char* wd[] = { "日", "月", "火", "水", "木", "金", "土" };
         snprintf(buf, sizeof(buf), "%d年%d月%d日（%s）",
-                 t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, wd[t.tm_wday]);
-        break;
-    }
-    case LANG_KO: {
-        static const char* wd[] = { "일", "월", "화", "수", "목", "금", "토" };
-        snprintf(buf, sizeof(buf), "%d년 %d월 %d일 (%s)",
                  t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, wd[t.tm_wday]);
         break;
     }
@@ -919,7 +803,6 @@ int retro_language()
         0,   // RETRO_LANGUAGE_ENGLISH
         9,   // RETRO_LANGUAGE_RUSSIAN
         3,   // RETRO_LANGUAGE_SPANISH
-        10,  // RETRO_LANGUAGE_KOREAN
     };
     return codes[g_lang];
 }
@@ -928,7 +811,7 @@ const char* ppsspp_locale()
 {
     // PPSSPP [General] Language values (assets/langregion.ini)
     static const char* codes[LANG_COUNT] = {
-        "zh_CN", "zh_TW", "ja_JP", "en_US", "ru_RU", "es_ES", "ko_KR",
+        "zh_CN", "zh_TW", "ja_JP", "en_US", "ru_RU", "es_ES",
     };
     return codes[g_lang];
 }

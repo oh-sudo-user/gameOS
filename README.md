@@ -62,7 +62,7 @@ The first power-on runs a short setup wizard, and the boot animation shows what 
 - **A library that stays out of the way.** Favorites (and a favorites-only view), optional box art, subfolders for organizing, and multi-disc PS1 games shown as one entry instead of five.
 - **Covers, two ways.** Drop your own images into `covers/`, or let the wizard / Settings download them online (official libretro thumbnails with mirror fallbacks, verified to be real PNGs before saving).
 - **Four complete themes.** Neon, Pixel, Fresh and Ink — each one a full art set: home and ambient backgrounds, console icons, logo. Switching themes swaps the whole look, not just a color tint.
-- **Seven languages.** 简体中文, 繁體中文, 日本語, English, Русский, Español, 한국어. Switch in Settings and the change is instant — the emulator menus follow along too.
+- **Six languages.** 简体中文, 繁體中文, 日本語, English, Русский, Español. Switch in Settings and the change is instant — the emulator menus follow along too.
 - **Two card slots (Plus).** Games on a second card in TF2 are scanned and merged into the same library automatically; missing NDS BIOS files are copied over from it when present.
 - **Save management.** Browse and delete save files from Settings — no card reader needed.
 - **Comfort.** Brightness and volume adjustment, battery indicator, and Bluetooth audio for headphones and speakers (off by default, paired on demand).
@@ -230,7 +230,7 @@ NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现�
 - **省心的游戏库。** 收藏（和只看收藏）、可选封面图、子文件夹整理，多盘 PS1 游戏只显示一条，不会列出五条。
 - **封面，两种来路。** 自己放图进 `covers/`，或者让向导/设置在线下载（官方 libretro 封面源 + 镜像回退，确认是真 PNG 才保存）。
 - **四套完整主题。** 霓虹夜景、像素复古、清新晨光、水墨山水——每套都是完整素材：主背景与氛围背景、平台图标、logo。换主题是换整套风格，不是调个色。
-- **七种语言。** 简体中文、繁體中文、日本語、English、Русский、Español、한국어。在设置里切换，立刻生效——连模拟器自己的菜单也跟着变。
+- **六种语言。** 简体中文、繁體中文、日本語、English、Русский、Español。在设置里切换，立刻生效——连模拟器自己的菜单也跟着变。
 - **双卡槽（Plus）。** TF2 第二张卡里的游戏自动扫描、合并进同一个游戏库；卡里若有 NDS BIOS 且系统缺失，会自动补齐。
 - **存档管理。** 在设置里浏览、删除存档，不用拔卡。
 - **用得舒服。** 亮度音量调节、电量显示，蓝牙耳机/音箱音频（默认关闭，按需配对）。

@@ -16,7 +16,6 @@ RKBIN_PIN=3e288fe814e059dd06833495f845cab04ac20a5c     # rockchip-linux/rkbin (D
 KERNEL_VERSION=7.2.11                                  # mainline, matches the vendored RK3566 patch set
 
 NOTO_URL="https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
-NOTO_KR_URL="https://github.com/google/fonts/raw/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
 ORBITRON_URL="https://github.com/google/fonts/raw/main/ofl/orbitron/Orbitron%5Bwght%5D.ttf"
 
 echo "==> Fetching vendored kernel support files @ ${VENDOR_PIN:0:12}"
@@ -96,11 +95,10 @@ for f in rk3568_ddr_1560MHz_v1.26.bin rk3568_bl31_v1.46.elf; do
 done
 echo "    DDR init + BL31 verified"
 
-echo "==> Fetching fonts (Noto Sans SC/KR for CJK and Korean, Orbitron for display)"
+echo "==> Fetching fonts (Noto Sans SC for CJK, Orbitron for display)"
 FONTS="$BOARD/rootfs-overlay/usr/share/gameos/fonts"
 mkdir -p "$FONTS"
 [ -f "$FONTS/NotoSansSC-Regular.otf" ] || curl -fL --retry 3 -o "$FONTS/NotoSansSC-Regular.otf" "$NOTO_URL"
-[ -f "$FONTS/NotoSansKR-Regular.ttf" ] || curl -fL --retry 3 -o "$FONTS/NotoSansKR-Regular.ttf" "$NOTO_KR_URL"
 [ -f "$FONTS/Orbitron.ttf" ]           || curl -fL --retry 3 -o "$FONTS/Orbitron.ttf" "$ORBITRON_URL"
 
 echo "==> Vendor fetch complete."
