@@ -1,0 +1,214 @@
+#!/bin/sh
+# gameOS TF2 — the second microSD slot.
+#
+# The RG DS Plus DTS enables both slots (sdmmc0 = TF1, sdmmc1 = TF2), so the
+# kernel already sees the second card as a block device; nothing mounted it and
+# the front-end only scanned /userdata/roms. This helper mounts that card
+# READ-ONLY at /mnt/tf2 so the library can list roms from both cards, and so a
+# game card can never be corrupted by a power cut on the device.
+#
+#   gameos-tf2 auto     mount the card if present, unmount it if it is gone
+#   gameos-tf2 umount   unconditionally unmount (used before shutdown)
+#   gameos-tf2 status   print the state file
+#
+# Called by udev (99-gameos-tf2.rules) on insert/remove and once at boot from
+# S20gameos. The UI polls /run/gameos/tf2 and rescans when it changes.
+#
+# Layouts recognised on the card (see rom_roots() in the front-end):
+#   roms/nds/...   roms/gba/...      (same layout as the GAMEOS data partition)
+#   nds/...        gba/...           (console folders straight at the root)
+# exFAT/FAT lookups are case-insensitive, so ROMS/NDS work as well.
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+
+MNT=/mnt/tf2
+RUN=/run/gameos
+STATE=$RUN/tf2
+LOG=/tmp/gameos-tf2.log
+
+mkdir -p "$RUN" "$MNT"
+case $1 in
+auto|mount|umount)
+    exec 9>"$RUN/tf2.lock"; flock 9
+    ;;
+esac
+
+log() { echo "[tf2] $*" >> "$LOG"; }
+state() { printf '%s\n' "$@" > "$STATE.new" && mv -f "$STATE.new" "$STATE"; }
+
+# The disk we booted from — never touch it. Derived from the running root
+# partition, not a fixed mmcblk0 (eMMC/TF enumeration order varies).
+boot_disk() {
+    root=$(awk '$2 == "/" { print $1; exit }' /proc/self/mounts 2>/dev/null)
+    case "$root" in
+    /dev/mmcblk*p[0-9]*) echo "${root%p[0-9]*}"; return 0 ;;
+    esac
+    for lbl in GAMEOS-ROOT-A GAMEOS-ROOT-B; do
+        rp=$(readlink -f "/dev/disk/by-partlabel/$lbl" 2>/dev/null)
+        case "$rp" in
+        /dev/mmcblk*p[0-9]*) echo "${rp%p[0-9]*}"; return 0 ;;
+        esac
+    done
+}
+
+mounted_src() { awk -v m="$MNT" '$2 == m { print $1; exit }' /proc/self/mounts; }
+mounted_fs()  { awk -v m="$MNT" '$2 == m { print $3; exit }' /proc/self/mounts; }
+
+# parent_disk /dev/mmcblk2p1 -> /dev/mmcblk2 ; a whole-disk node is its own
+# parent. sysfs tells the two apart: partition nodes are NOT in /sys/block
+# (and "loop0" must not be mistaken for "loop" + partition "0").
+parent_disk() {
+    name=${1##*/}
+    if [ -d "/sys/block/$name" ]; then echo "$1"; else echo "${1%p[0-9]*}"; fi
+}
+
+do_umount() {
+    [ -n "$(mounted_src)" ] || return 0
+    # -l (lazy) detaches even while an emulator still has a rom open, so a
+    # card pulled mid-game cannot leave a stale mount blocking the next one.
+    umount "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null \
+        || log "WARN: could not unmount $MNT"
+}
+
+has_games() {  # has_games <dir> — does this look like a rom card?
+    for d in roms ROMS Roms nds NDS gba GBA gbc GBC ps1 PS1 psp PSP; do
+        [ -d "$1/$d" ] && return 0
+    done
+    return 1
+}
+
+# try_mount <dev> — mount read-only, figuring out the filesystem by trying.
+#
+# We deliberately do NOT use blkid: on this image /sbin/blkid is busybox, which
+# ignores -o/-s entirely and (CONFIG_FEATURE_BLKID_TYPE unset) never prints a
+# TYPE at all. Probing with mount is both portable and more honest — the kernel
+# checks the superblock magic, so a wrong type fails immediately, and success
+# means the card really is readable. FOUND_FS is then taken from the kernel's
+# own report in /proc/self/mounts.
+#
+# vfat needs an explicit utf8: this kernel's FAT_DEFAULT_IOCHARSET is "ascii",
+# so without it Chinese/Japanese rom names would come out as mojibake.
+try_mount() {
+    FOUND_FS=""
+    for spec in exfat:ro vfat:ro,utf8 vfat:ro ext4:ro ext3:ro ext2:ro ntfs3:ro; do
+        t=${spec%%:*}; o=${spec#*:}
+        [ "$t" = ntfs3 ] && modprobe ntfs3 2>/dev/null
+        mount -t "$t" -o "$o" "$1" "$MNT" 2>/dev/null || continue
+        FOUND_FS=$(mounted_fs)
+        return 0
+    done
+    # Anything else the kernel knows (f2fs, ...): let it auto-detect.
+    if mount -o ro "$1" "$MNT" 2>/dev/null; then
+        FOUND_FS=$(mounted_fs)
+        return 0
+    fi
+    return 1
+}
+
+# NDS needs three BIOS files, and the front-end refuses to launch without them.
+# People usually keep them on the game card, so when TF2 has them and the
+# internal data partition does not, copy them over — that is what makes an NDS
+# rom on TF2 actually playable. Existing non-empty files are NEVER overwritten,
+# the copy is atomic (tmp + rename on the same filesystem) so a power cut cannot
+# leave a half-written BIOS that looks present, and TF2 itself stays read-only.
+copy_bios() {
+    mountpoint -q /userdata 2>/dev/null || return 0
+    mkdir -p /userdata/bios 2>/dev/null || return 0
+    for f in bios7.bin bios9.bin firmware.bin; do
+        dst=/userdata/bios/$f
+        [ -s "$dst" ] && continue
+        for d in "$MNT/bios" "$MNT/BIOS" "$MNT/system" "$MNT/SYSTEM" "$MNT"; do
+            [ -s "$d/$f" ] || continue
+            if cp "$d/$f" "$dst.tmp" 2>/dev/null && mv -f "$dst.tmp" "$dst"; then
+                log "bios: copied $f from $d"
+            else
+                rm -f "$dst.tmp" 2>/dev/null
+            fi
+            break
+        done
+    done
+}
+
+part_size() {  # part_size /dev/mmcblk2p1 -> bytes (sysfs, 512B sectors)
+    name=${1##*/}
+    if [ -d "/sys/block/$name" ]; then
+        sf="/sys/block/$name/size"
+    else
+        sf="/sys/block/${name%p[0-9]*}/$name/size"
+    fi
+    secs=$(cat "$sf" 2>/dev/null)
+    case "$secs" in ''|*[!0-9]*) secs=0 ;; esac
+    echo $((secs * 512))
+}
+
+do_auto() {
+    bd=$(boot_disk)
+    src=$(mounted_src)
+    # Already mounted and the node is still there: udev emits many change
+    # events per insert, so do nothing rather than unmount/remount each time.
+    # The boot disk is never a valid TF2 source — if the card we are now
+    # booting from happens to be mounted here, fall through and fix it.
+    if [ -n "$src" ] && [ -b "$src" ] && [ "$(parent_disk "$src")" != "$bd" ]; then
+        g=0; has_games "$MNT" && g=1
+        state "state=mounted" "dev=$src" "fs=$(mounted_fs)" "games=$g"
+        # Retry the BIOS top-up here too: at boot udev fires before S20gameos
+        # has mounted /userdata, so the first run's copy_bios was a no-op and
+        # this already-mounted path is the only later chance. It is idempotent
+        # and only stats a few files.
+        copy_bios
+        return 0
+    fi
+
+    best=""; bestsize=0; bestfs=""; bestgames=0
+    for d in /sys/block/mmcblk*; do
+        [ -e "$d/removable" ] || continue
+        [ "$(cat "$d/removable" 2>/dev/null)" = 1 ] || continue
+        disk=/dev/${d##*/}
+        [ "$disk" = "$bd" ] && continue
+        [ -b "$disk" ] || continue
+        # Partitions if the card has a partition table, else the whole disk
+        # (a "superfloppy" card formatted without one).
+        parts=""
+        for p in "$disk"p*; do [ -b "$p" ] && parts="$parts $p"; done
+        [ -n "$parts" ] || parts=" $disk"
+        for p in $parts; do
+            sz=$(part_size "$p")
+            do_umount
+            try_mount "$p" || continue   # unformatted / unknown -> not a candidate
+            fs=$FOUND_FS
+            g=0; has_games "$MNT" && g=1
+            # A partition that actually holds roms wins over a bigger empty
+            # one; among equals the largest wins.
+            if [ "$g" -gt "$bestgames" ] ||
+               { [ "$g" = "$bestgames" ] && [ "$sz" -gt "$bestsize" ]; }; then
+                best=$p; bestsize=$sz; bestfs=$fs; bestgames=$g
+            else
+                umount "$MNT" 2>/dev/null
+            fi
+        done
+    done
+
+    if [ -z "$best" ]; then
+        do_umount
+        state "state=absent" "dev=" "fs=" "games=0"
+        return 0
+    fi
+    do_umount
+    if try_mount "$best"; then
+        state "state=mounted" "dev=$best" "fs=$bestfs" "games=$bestgames"
+        log "mounted $best ($bestfs, games=$bestgames)"
+        copy_bios
+    else
+        state "state=unsupported" "dev=$best" "fs=$bestfs" "games=0"
+        log "ERROR: could not mount $best ($bestfs)"
+    fi
+    return 0
+}
+
+case $1 in
+auto|mount) do_auto ;;
+umount)     do_umount; state "state=absent" "dev=" "fs=" "games=0" ;;
+status)     cat "$STATE" 2>/dev/null ;;
+*)          echo "usage: gameos-tf2 auto|umount|status" >&2; exit 1 ;;
+esac

@@ -203,11 +203,39 @@ static void scan_dir(const std::string& dir, const Console& c,
     closedir(d);
 }
 
+// ROM roots in priority order. TF1 (the GAMEOS data partition) comes first,
+// then the second microSD slot, which gameos-tf2 mounts read-only at /mnt/tf2.
+// Both the "roms/<system>" layout and console folders straight at the card
+// root are accepted, so a card prepared for another firmware works as-is.
+// exFAT/FAT lookups are case-insensitive; the ROMS variant covers ext4 cards.
+static std::vector<std::string> rom_roots(const Console& c)
+{
+    std::vector<std::string> roots;
+    roots.push_back(std::string("/userdata/roms/") + c.id);
+    for (const char* base : { "/mnt/tf2/roms/", "/mnt/tf2/ROMS/", "/mnt/tf2/" })
+        roots.push_back(std::string(base) + c.id);
+    return roots;
+}
+
+static int root_index(const std::string& path,
+                      const std::vector<std::string>& roots)
+{
+    for (size_t i = 0; i < roots.size(); i++)
+        if (path.compare(0, roots[i].size(), roots[i]) == 0) return (int)i;
+    return (int)roots.size();
+}
+
+bool on_tf2(const std::string& path)
+{
+    return path.compare(0, 9, "/mnt/tf2/") == 0;
+}
+
 std::vector<Game> scan_games(const Console& c)
 {
     std::vector<Game> out;
-    std::string dir = std::string("/userdata/roms/") + c.id;
-    scan_dir(dir, c, 0, out);
+    const std::vector<std::string> roots = rom_roots(c);
+    for (const auto& dir : roots)
+        scan_dir(dir, c, 0, out);
 
     std::set<std::string> hidden;
     collect_hidden(out, hidden);
@@ -234,9 +262,28 @@ std::vector<Game> scan_games(const Console& c)
         last_stem = s;
     }
 
-    std::sort(dedup.begin(), dedup.end(),
+    // The same game on both cards is still one entry: keep the TF1 copy (the
+    // roots are in priority order) so saves and favourites stay on the
+    // internal data partition. Titles are compared after the stem pass, which
+    // reordered everything by path.
+    std::sort(dedup.begin(), dedup.end(), [&](const Game& a, const Game& b) {
+        int ra = root_index(a.path, roots), rb = root_index(b.path, roots);
+        if (ra != rb) return ra < rb;
+        return a.title < b.title;
+    });
+    // Global title set, NOT an adjacent comparison: the sort above groups by
+    // root first, so the TF1 and TF2 copies of one title are separated by every
+    // other TF1 game and would never be neighbours.
+    std::vector<Game> uniq;
+    std::set<std::string> seen_titles;
+    for (const auto& g : dedup) {
+        if (!seen_titles.insert(g.title).second) continue;
+        uniq.push_back(g);
+    }
+
+    std::sort(uniq.begin(), uniq.end(),
               [](const Game& a, const Game& b) { return a.title < b.title; });
-    return dedup;
+    return uniq;
 }
 
 bool nds_bios_ok()

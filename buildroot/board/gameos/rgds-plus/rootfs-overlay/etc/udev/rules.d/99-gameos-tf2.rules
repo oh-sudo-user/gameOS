@@ -1,0 +1,10 @@
+# gameOS: auto-mount the second microSD slot (TF2) at /mnt/tf2 so the game
+# library lists roms from both cards. gameos-tf2 ignores the disk we booted
+# from, so these rules are safe for TF1/eMMC events too. It takes a flock, so
+# the burst of add/change events one insert produces cannot race.
+SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]", ACTION=="add|change", RUN+="/usr/bin/gameos-tf2 auto"
+SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]p[0-9]*", ACTION=="add|change", RUN+="/usr/bin/gameos-tf2 auto"
+# Card pulled: the nodes disappear, the helper unmounts (lazily if an emulator
+# still holds a rom open) and marks the slot absent so the UI rescans.
+SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]", ACTION=="remove", RUN+="/usr/bin/gameos-tf2 auto"
+SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]p[0-9]*", ACTION=="remove", RUN+="/usr/bin/gameos-tf2 auto"

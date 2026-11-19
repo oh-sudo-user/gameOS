@@ -130,6 +130,9 @@ struct App {
     Uint32 upd_op_at = 0;
     Uint32 upd_refresh_at = 0;
 
+    // second microSD slot (gameos-tf2 mounts it at /mnt/tf2; refreshed 1/s)
+    bool tf2_mounted = false;
+
     bool running = true;
     int exit_code = 0;
 
@@ -274,6 +277,27 @@ std::vector<std::string> wrap(TTF_Font* f, const std::string& s, int maxw)
     }
     if (!cur.empty()) lines.push_back(cur);
     return lines;
+}
+
+// Shorten a label to a pixel width, marking the cut with an ellipsis. Used for
+// game rows so a long title cannot run into the TF2 badge or the cover panel.
+std::string ellipsize(TTF_Font* f, const std::string& s, int maxw)
+{
+    if (maxw <= 0 || text_width(f, s) <= maxw) return s;
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t len = 1;
+        unsigned char ch = (unsigned char)s[i];
+        if (ch >= 0xF0) len = 4; else if (ch >= 0xE0) len = 3;
+        else if (ch >= 0xC0) len = 2;
+        if (i + len > s.size()) break;
+        std::string piece = s.substr(i, len);
+        if (text_width(f, out + piece + "…") > maxw) break;
+        out += piece;
+        i += len;
+    }
+    return out + "…";
 }
 
 std::string two(int v)
@@ -619,6 +643,7 @@ void draw_list(SDL_Renderer* r)
     snprintf(b, sizeof(b), tr(T_LIST_COUNT_FMT), app.games.size());
     std::string cnt = b;
     if (app.fav_only) cnt += tr(T_FAV_SUFFIX);
+    if (app.tf2_mounted) cnt += tr(T_TF2_ON);
     text(r, app.f_body, cnt, W - 32, 34, C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
@@ -652,7 +677,13 @@ void draw_list(SDL_Renderer* r)
             const Game& g = app.games[idx];
             std::string label = g.title;
             if (fav_contains(c.id, g.title)) label = "★ " + label;
+            // Games from the second card carry a TF2 badge; shorten the title
+            // so the two never overlap.
+            bool tf2 = on_tf2(g.path);
+            label = ellipsize(app.f_body, label, listw - 96 - (tf2 ? 76 : 0));
             text(r, app.f_body, label, 48, y + 14, tc);
+            if (tf2)
+                text(r, app.f_small, "TF2", listw - 40, y + 18, C_DIM, Align::Right);
         }
         // scrollbar
         if ((int)app.games.size() > vis) {
@@ -1601,6 +1632,25 @@ static void refresh_games()
     if (app.screen == Screen::List) rebuild_list();
 }
 
+// TF2 hotplug: udev runs gameos-tf2 on insert/remove, which rewrites
+// /run/gameos/tf2. When that file changes, every console cache is stale, so
+// drop them all — a card swapped while the UI is running shows up without the
+// user having to press Ⓨ. Checked once a second; the file is a few bytes.
+static void tf2_poll()
+{
+    static Uint32 last = 0;
+    static std::string seen;
+    Uint32 now = SDL_GetTicks();
+    if (now - last < 1000) return;
+    last = now;
+    std::string s = read_file("/run/gameos/tf2");
+    app.tf2_mounted = s.find("state=mounted") != std::string::npos;
+    if (s == seen) return;
+    seen = std::move(s);
+    for (int i = 0; i < 5; i++) invalidate_games(i);
+    if (app.screen == Screen::List) rebuild_list();
+}
+
 void do_launch()
 {
     if (app.games.empty()) return;
@@ -2065,6 +2115,7 @@ int main(int, char**)
         bt_poll();
         wifi_poll();
         update_poll();
+        tf2_poll();
 
         // Tell S99update the UI really got on screen: boot.scr only clears the
         // boot counter once this marker exists, so a rootfs whose session

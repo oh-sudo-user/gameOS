@@ -62,14 +62,38 @@ fi
 FIRSTBOOT=0
 if [ -f /etc/gameos-firstboot ]; then
   FIRSTBOOT=1
-  fstype=$(blkid -o value -s TYPE ${DEV}p4 2>/dev/null)
-  if [ "$fstype" = exfat ]; then
-    log "GAMEOS-DATA already exfat; clearing firstboot marker"
+  # Does p4 already hold a filesystem? Find out by mounting it READ-ONLY.
+  #
+  # Do NOT use blkid for this: /sbin/blkid on this image is busybox, which
+  # ignores -o/-s and (CONFIG_FEATURE_BLKID_TYPE unset) never prints TYPE, so
+  # the old 'fstype = exfat' test was ALWAYS false. Every rootfs image carries
+  # this firstboot marker (post-build.sh touches it), so the first boot into a
+  # freshly OTA-written slot would have run mkfs.exfat over the existing
+  # GAMEOS-DATA partition and erased the user's games and saves.
+  data_fs=""
+  if [ -b ${DEV}p4 ]; then
+    probe=/tmp/gameos-data-probe
+    mkdir -p "$probe"
+    for t in exfat vfat ext4 ext3 ext2 ntfs3; do
+      [ "$t" = ntfs3 ] && modprobe ntfs3 2>/dev/null
+      if mount -t "$t" -o ro ${DEV}p4 "$probe" 2>/dev/null; then
+        data_fs=$t
+        break
+      fi
+    done
+    if [ -n "$data_fs" ]; then
+      umount "$probe" 2>/dev/null
+    fi
+    rmdir "$probe" 2>/dev/null
+  fi
+  if [ -n "$data_fs" ]; then
+    log "GAMEOS-DATA already holds a filesystem ($data_fs); keeping it, clearing firstboot marker"
     rm -f /etc/gameos-firstboot
   else
-    # Create p4 only when the partition node is absent; otherwise reformat it.
+    # Create p4 only when the partition node is absent; otherwise format it
+    # (it exists but has no mountable filesystem, i.e. nothing to lose).
     if [ ! -b ${DEV}p4 ]; then
-      log "creating GAMEOS-DATA partition (p4 type: ${fstype:-none})"
+      log "creating GAMEOS-DATA partition"
       # The flashed image is only ~1.5 GiB, so on a larger card the backup
       # GPT header still sits at the end of the SMALL image. Relocate it to
       # the true end of the disk FIRST (sgdisk -e) so "mkpart ... 100%" is
@@ -156,6 +180,14 @@ EOF
   fi
 else
   log "WARN: /userdata not mounted; skipping data skeleton (rootfs protected)"
+fi
+
+# --- second microSD slot (TF2) ---------------------------------------------
+# udev also runs this on every card event; doing it here as well covers a card
+# that was already in the slot at boot, before the UI starts scanning.
+if [ -x /usr/bin/gameos-tf2 ]; then
+  /usr/bin/gameos-tf2 auto >>"$LOG" 2>&1
+  log "tf2: $(sed -n 's/^state=//p' /run/gameos/tf2 2>/dev/null)"
 fi
 
 # --- performance: CPU and GPU governors ------------------------------------

@@ -31,7 +31,14 @@ struct Game {
     std::string title;
 };
 
+// Scans /userdata/roms/<id> (TF1) and the second microSD slot mounted at
+// /mnt/tf2 (roms/<id> or <id> at the card root). Same title on both cards is
+// listed once, preferring the TF1 copy.
 std::vector<Game> scan_games(const Console& c);
+
+// True when the game file lives on the second card (/mnt/tf2). Whether a card
+// is mounted there is tracked by the UI from /run/gameos/tf2 (see tf2_poll).
+bool on_tf2(const std::string& path);
 
 // NDS needs bios7.bin / bios9.bin / firmware.bin in /userdata/bios.
 bool nds_bios_ok();
