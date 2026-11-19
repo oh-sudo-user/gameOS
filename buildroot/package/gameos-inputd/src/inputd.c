@@ -47,7 +47,9 @@ static int open_named(const char *want)
         if (strncmp(e->d_name, "event", 5) != 0) continue;
         char path[PATH_MAX];
         snprintf(path, sizeof(path), "/dev/input/%s", e->d_name);
-        int f = open(path, O_RDONLY | O_NONBLOCK);
+        // O_CLOEXEC: handle_volume() forks /bin/sh for amixer; without it the
+        // child inherits every evdev fd and keeps the devices busy.
+        int f = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (f < 0) continue;
         char name[128] = {0};
         if (ioctl(f, EVIOCGNAME(sizeof(name) - 1), name) >= 0 &&
@@ -75,7 +77,9 @@ static void syn(int fd) { emit(fd, EV_SYN, SYN_REPORT, 0); }
 
 static int uinput_open(void)
 {
-    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    // O_CLOEXEC: an inherited uinput fd would keep the virtual pad alive in
+    // every amixer child even after inputd itself exits.
+    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         perror(PROG ": open /dev/uinput");
         return -1;
@@ -95,6 +99,8 @@ static int uinput_open(void)
     ioctl(fd, UI_SET_EVBIT, EV_ABS);
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
+    ioctl(fd, UI_SET_ABSBIT, ABS_RX);
+    ioctl(fd, UI_SET_ABSBIT, ABS_RY);
 
     struct uinput_setup us;
     memset(&us, 0, sizeof(us));
@@ -113,6 +119,10 @@ static int uinput_open(void)
     abs.code = ABS_X;
     ioctl(fd, UI_ABS_SETUP, &abs);
     abs.code = ABS_Y;
+    ioctl(fd, UI_ABS_SETUP, &abs);
+    abs.code = ABS_RX;
+    ioctl(fd, UI_ABS_SETUP, &abs);
+    abs.code = ABS_RY;
     ioctl(fd, UI_ABS_SETUP, &abs);
 
     if (ioctl(fd, UI_DEV_SETUP, &us) < 0 || ioctl(fd, UI_DEV_CREATE) < 0) {
@@ -134,6 +144,31 @@ static int norm_axis(int fd, int code, int raw)
     if (v < -32768) v = -32768;
     if (v >  32767) v =  32767;
     return (int)v;
+}
+
+// RG DS (non-Plus) wires left stick = ABS_X/ABS_RY and right = ABS_Y/ABS_RX;
+// remap to the conventional left X/Y + right RX/RY. Plus only exposes X/Y.
+static int g_is_plus = 1;
+static int map_axis(int code)
+{
+    if (g_is_plus) return code;
+    switch (code) {
+    case ABS_RY: return ABS_Y;
+    case ABS_Y:  return ABS_RX;
+    case ABS_RX: return ABS_RY;
+    default:     return code;
+    }
+}
+
+static void detect_model(void)
+{
+    FILE *f = fopen("/proc/device-tree/compatible", "rb");
+    if (!f) return;
+    char buf[256] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    for (size_t i = 0; i < n; i++) if (!buf[i]) buf[i] = ' ';
+    g_is_plus = strstr(buf, "rg-ds-plus") != NULL;
 }
 
 static void set_backlight(int percent_of_max)
@@ -207,6 +242,10 @@ static void handle_volume(int code, int value)
     // while ALSA is busy, freezing every button and the analog stick too.
     // Children are reaped at the top of the main loop.
     pid_t p = fork();
+    if (p < 0) {
+        perror(PROG ": fork");
+        return;
+    }
     if (p == 0) {
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
@@ -217,6 +256,7 @@ int main(void)
 {
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
+    detect_model();
 
     int ufd = -1, bfd = -1, afd = -1, vfd = -1, hfd = -1, homefd = -1;
 
@@ -324,8 +364,10 @@ int main(void)
                      (c >= BTN_DPAD_UP && c <= BTN_DPAD_RIGHT))) {
                     emit(ufd, EV_KEY, c, v);
                     need_syn = 1;
-                } else if (slot == 1 && t == EV_ABS && (c == ABS_X || c == ABS_Y)) {
-                    emit(ufd, EV_ABS, c, norm_axis(fd, c, v));
+                } else if (slot == 1 && t == EV_ABS &&
+                           (c == ABS_X || c == ABS_Y ||
+                            c == ABS_RX || c == ABS_RY)) {
+                    emit(ufd, EV_ABS, map_axis(c), norm_axis(fd, c, v));
                     need_syn = 1;
                 } else if (slot == 2 && t == EV_KEY && (v == 1 || v == 2) &&
                            (c == KEY_VOLUMEUP || c == KEY_VOLUMEDOWN)) {

@@ -1,18 +1,19 @@
 --- a/gfx/drivers_context/drm_ctx.c
 +++ b/gfx/drivers_context/drm_ctx.c
-@@ -115,6 +115,403 @@
+@@ -115,6 +115,410 @@
  static drmModeModeInfo gfx_ctx_crt_switch_mode;
  static bool switch_mode                   = false;
  
 +/* ===========================================================================
-+ * gameOS dual-screen support (Anbernic RG DS Plus, RK3568 VOP2)
++ * gameOS dual-screen support (Anbernic RG DS / RG DS Plus, RK3568 VOP2)
 + *
-+ * Enabled with GAMEOS_DUALSCREEN=1. Creates one 1024x1536 GBM framebuffer
-+ * and scans it out across both DSI panels with a single atomic commit:
-+ * top panel shows FB rows [0,768), bottom panel shows rows [768,1536).
-+ * The melonDS libretro core in vertical layout (256x384) then scales 4x
-+ * integer onto both physical screens, with touch on the bottom panel
-+ * mapped to the bottom NDS screen (see udev_input.c gameOS patch).
++ * Enabled with GAMEOS_DUALSCREEN=1. Creates one span GBM framebuffer
++ * (1024x1536 on Plus, 640x960 on DS) and scans it out across both DSI
++ * panels with a single atomic commit: top panel shows FB rows [0,top_h),
++ * bottom panel shows rows [top_h,span_h). DSI-2 is the physical top (lid)
++ * panel on both models. The melonDS libretro core in vertical layout
++ * (256x384) then scales integer onto both physical screens, with touch on
++ * the bottom panel mapped to the bottom NDS screen (udev_input.c patch).
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + * =========================================================================== */
 +#include <errno.h>
@@ -225,12 +226,18 @@
 +   if (!crtc_bot)
 +      goto fail;
 +
-+   g_gameos_crtc_top = g_crtc_id;
-+   g_gameos_crtc_bot = crtc_bot;
-+   g_gameos_conn_top = g_connector_id;
-+   g_gameos_conn_bot = bot->connector_id;
-+   g_gameos_mode_top = g_drm_connector->modes[0];
-+   g_gameos_mode_bot = bot->modes[0];
++   /* DSI-2 is the physical top (lid) panel on both RG DS models; the DRM
++    * primary may still be DSI-1, so swap the roles when it is. */
++   bool prim_is_top = !(g_drm_connector->connector_type ==
++         DRM_MODE_CONNECTOR_DSI && g_drm_connector->connector_type_id == 1);
++   drmModeConnector *topc = prim_is_top ? g_drm_connector : bot;
++   drmModeConnector *botc = prim_is_top ? bot : g_drm_connector;
++   g_gameos_crtc_top = prim_is_top ? g_crtc_id : crtc_bot;
++   g_gameos_crtc_bot = prim_is_top ? crtc_bot : g_crtc_id;
++   g_gameos_conn_top = topc->connector_id;
++   g_gameos_conn_bot = botc->connector_id;
++   g_gameos_mode_top = topc->modes[0];
++   g_gameos_mode_bot = botc->modes[0];
 +   g_gameos_top_h    = g_gameos_mode_top.vdisplay;
 +   g_gameos_span_w   = g_gameos_mode_top.hdisplay;
 +
@@ -404,7 +411,7 @@
  static float mode_vrefresh(drmModeModeInfo *mode)
  {
     return  mode->clock * 1000.00f / (mode->htotal * mode->vtotal);
-@@ -530,6 +927,10 @@
+@@ -530,6 +934,10 @@
     if (!fb)
        fb             = (struct drm_fb*)drm_fb_get_from_bo(drm->next_bo);
  
@@ -415,10 +422,62 @@
     if (switch_mode)
     {
        RARCH_DBG("[KMS] modeswitch detected, creating the new CRTC.\n");
-@@ -731,6 +1132,20 @@
+@@ -731,6 +1139,72 @@
  
     drm_setup(fd);
  
++   /* gameOS: DSI-2 (lid) is the main/top panel; DRM lists DSI-1 first, so
++    * re-point the primary connector at DSI-2 for single-panel games too. */
++   {
++      drmModeRes *gres = drmModeGetResources(fd);
++      if (gres)
++      {
++         for (int i = 0; i < gres->count_connectors; i++)
++         {
++            drmModeConnector *gc = drmModeGetConnector(fd, gres->connectors[i]);
++            if (!gc)
++               continue;
++            if (gc->connector_type == DRM_MODE_CONNECTOR_DSI &&
++                gc->connector_type_id == 2 &&
++                gc->connection == DRM_MODE_CONNECTED && gc->count_modes > 0)
++            {
++               uint32_t ncrtc = 0;
++               drmModeEncoder *ge = gc->encoder_id ?
++                  drmModeGetEncoder(fd, gc->encoder_id) : NULL;
++               if (ge && ge->crtc_id)
++                  ncrtc = ge->crtc_id;
++               if (ge)
++                  drmModeFreeEncoder(ge);
++               for (int e = 0; e < gc->count_encoders && !ncrtc; e++)
++               {
++                  drmModeEncoder *ge2 = drmModeGetEncoder(fd, gc->encoders[e]);
++                  if (!ge2)
++                     continue;
++                  for (int c = 0; c < gres->count_crtcs && !ncrtc; c++)
++                     if (ge2->possible_crtcs & (1u << c))
++                        ncrtc = gres->crtcs[c];
++                  drmModeFreeEncoder(ge2);
++               }
++               if (ncrtc)
++               {
++                  if (g_drm_connector)
++                     drmModeFreeConnector(g_drm_connector);
++                  g_drm_connector = gc;
++                  g_connector_id  = gc->connector_id;
++                  g_crtc_id       = ncrtc;
++                  gc = NULL;
++               }
++            }
++            if (gc)
++               drmModeFreeConnector(gc);
++            if (g_drm_connector &&
++                g_drm_connector->connector_type_id == 2)
++               break;
++         }
++         drmModeFreeResources(gres);
++      }
++   }
++
 +   /* gameOS: optionally span both RG DS Plus panels */
 +   {
 +      const char *dual = getenv("GAMEOS_DUALSCREEN");
@@ -436,7 +495,7 @@
     /* Choose the optimal video mode for get_video_size():
       - video mode issued by switchres through the CRT module
       - custom timings from configuration
-@@ -757,6 +1172,12 @@
+@@ -757,6 +1231,12 @@
        drm->fb_height = g_drm_connector->modes[0].vdisplay;
     }
  
@@ -449,7 +508,7 @@
     drmSetMaster(g_drm_fd);
  
     drm->gbm_dev      = gbm_create_device(fd);
-@@ -816,7 +1237,8 @@
+@@ -816,7 +1296,8 @@
     /* Find desired video mode, and use that.
      * If not fullscreen, we get desired windowed size,
      * which is not appropriate. */
@@ -459,7 +518,7 @@
     {
        RARCH_DBG("[KMS] New mode detected: %dx%d.\n", gfx_ctx_crt_switch_mode.hdisplay, gfx_ctx_crt_switch_mode.vdisplay);
        g_drm_mode     = &gfx_ctx_crt_switch_mode;
-@@ -826,7 +1248,11 @@
+@@ -826,7 +1307,11 @@
        /* Let's exit, since modeswitching will happen while swapping buffers */
        return true;
     }
@@ -472,7 +531,7 @@
     {
        RARCH_WARN("[KMS] Falling back to mode 0 (default).\n");
        g_drm_mode     = &g_drm_connector->modes[0];
-@@ -907,7 +1333,26 @@
+@@ -907,7 +1392,26 @@
     if (!(fb = (struct drm_fb*)gbm_bo_get_user_data(drm->bo)))
        fb     = drm_fb_get_from_bo(drm->bo);
  

@@ -96,6 +96,21 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "%d / %d · 已下载 %d · 未匹配 %d", "完成：新增 %d 张，未匹配 %d 张",
         "停止", "没有需要下载封面的游戏", "游戏封面",
         "继续",
+        // activity statistics + favorites/history
+        "游玩统计", "时长 · 时间线 · 趋势 · 推荐",
+        "收藏与历史", "快速找到并启动游戏",
+        "概览", "时间线", "趋势", "推荐",
+        "总游玩时长", "启动次数", "玩过的游戏", "今日", "近 7 天",
+        "最常玩", "还没有游玩记录", "启动一个游戏，退出后就会记录在这里",
+        "%d 次", "%zu 款",
+        "%d 小时 %d 分", "%d 分钟", "%d 秒",
+        "近 14 天游玩时长", "各机种时长", "这段时间没有游玩",
+        "收藏了还没玩", "收藏 · 好久没玩", "新游戏", "好久没玩", "最近在玩",
+        "没有可推荐的游戏", "先把游戏复制到 TF 卡", "%d 天没玩",
+        "收藏", "历史", "还没有收藏", "在游戏列表里按 Ⓧ 收藏",
+        "还没有游玩历史", "启动一个游戏后会自动记录", "文件已不在卡上", "%zu 款",
+        "←→ 切换分页  ↑↓ 选择  Ⓐ 启动  Ⓧ 收藏  Ⓨ 刷新  Ⓑ 返回",
+        "←→ 收藏/历史  ↑↓ 选择  Ⓐ 启动  Ⓧ 收藏  Ⓨ 刷新  Ⓑ 返回",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -181,6 +196,21 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "%d / %d · 已下載 %d · 未比對 %d", "完成：新增 %d 張，未比對 %d 張",
         "停止", "沒有需要下載封面的遊戲", "遊戲封面",
         "繼續",
+        // activity statistics + favorites/history
+        "遊玩統計", "時長 · 時間線 · 趨勢 · 推薦",
+        "收藏與歷史", "快速找到並啟動遊戲",
+        "總覽", "時間線", "趨勢", "推薦",
+        "總遊玩時長", "啟動次數", "玩過的遊戲", "今日", "近 7 天",
+        "最常玩", "還沒有遊玩記錄", "啟動一個遊戲，離開後就會記錄在這裡",
+        "%d 次", "%zu 款",
+        "%d 小時 %d 分", "%d 分鐘", "%d 秒",
+        "近 14 天遊玩時長", "各機種時長", "這段時間沒有遊玩",
+        "收藏了還沒玩", "收藏 · 好久沒玩", "新遊戲", "好久沒玩", "最近在玩",
+        "沒有可推薦的遊戲", "先把遊戲複製到 TF 卡", "%d 天沒玩",
+        "收藏", "歷史", "還沒有收藏", "在遊戲列表裡按 Ⓧ 收藏",
+        "還沒有遊玩歷史", "啟動一個遊戲後會自動記錄", "檔案已不在卡上", "%zu 款",
+        "←→ 切換分頁  ↑↓ 選擇  Ⓐ 啟動  Ⓧ 收藏  Ⓨ 重新整理  Ⓑ 返回",
+        "←→ 收藏/歷史  ↑↓ 選擇  Ⓐ 啟動  Ⓧ 收藏  Ⓨ 重新整理  Ⓑ 返回",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -277,6 +307,21 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "%d / %d · 取得 %d · 不一致 %d", "完了：%d 件追加、%d 件は不一致",
         "停止", "ダウンロードが必要なゲームがありません", "ゲームカバー",
         "次へ",
+        // activity statistics + favorites/history
+        "プレイ統計", "時間 · タイムライン · 傾向 · おすすめ",
+        "お気に入りと履歴", "すばやく見つけて起動",
+        "概要", "タイムライン", "傾向", "おすすめ",
+        "総プレイ時間", "起動回数", "プレイしたゲーム", "今日", "直近 7 日",
+        "よく遊ぶ順", "まだプレイ記録がありません", "ゲームを起動して終了するとここに記録されます",
+        "%d 回", "%zu 本",
+        "%d 時間 %d 分", "%d 分", "%d 秒",
+        "直近 14 日のプレイ時間", "機種別プレイ時間", "この期間はプレイしていません",
+        "お気に入り・未プレイ", "お気に入り・久しぶり", "新着ゲーム", "久しぶり", "最近プレイ中",
+        "おすすめできるゲームがありません", "先にゲームを TF カードへコピーしてください", "%d 日プレイなし",
+        "お気に入り", "履歴", "お気に入りがありません", "ゲーム一覧で Ⓧ を押すと登録できます",
+        "プレイ履歴がありません", "ゲームを起動すると自動で記録されます", "ファイルがカードにありません", "%zu 本",
+        "←→ タブ切替  ↑↓ 選択  Ⓐ 起動  Ⓧ お気に入り  Ⓨ 更新  Ⓑ 戻る",
+        "←→ お気に入り/履歴  ↑↓ 選択  Ⓐ 起動  Ⓧ お気に入り  Ⓨ 更新  Ⓑ 戻る",
     },
     // ------------------------------------------------------------------ en
     {
@@ -373,6 +418,24 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "%d / %d · downloaded %d · unmatched %d", "Done: %d added, %d unmatched",
         "Stop", "No games need a cover", "Game covers",
         "Continue",
+        // activity statistics + favorites/history
+        "Activity", "Play time · Timeline · Trends · Next up",
+        "Favorites & History", "Find and launch a game fast",
+        "Overview", "Timeline", "Trends", "Next up",
+        "Total play time", "Sessions", "Games played", "Today", "Last 7 days",
+        "Most played", "No play history yet",
+        "Launch a game and it is recorded here when you quit",
+        "%d sessions", "%zu games",
+        "%dh %dm", "%d min", "%d sec",
+        "Play time, last 14 days", "Time per console", "Nothing played in this period",
+        "Favorited, never played", "Favorited, been a while", "New game",
+        "Been a while", "Playing lately",
+        "Nothing to recommend", "Copy some games to the TF card first", "%d days idle",
+        "Favorites", "History", "No favorites yet", "Press Ⓧ in a game list to add one",
+        "No play history yet", "Launching a game records it automatically",
+        "File is no longer on the card", "%zu games",
+        "←→ Tabs  ↑↓ Select  Ⓐ Launch  Ⓧ Favorite  Ⓨ Refresh  Ⓑ Back",
+        "←→ Favorites/History  ↑↓ Select  Ⓐ Launch  Ⓧ Favorite  Ⓨ Refresh  Ⓑ Back",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -470,6 +533,25 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Готово: добавлено %d, без совпадения %d", "Остановить",
         "Нет игр, которым нужна обложка", "Обложки игр",
         "Продолжить",
+        // activity statistics + favorites/history
+        "Статистика", "Время · Хроника · Тренды · Рекомендации",
+        "Избранное и история", "Быстро найти и запустить игру",
+        "Обзор", "Хроника", "Тренды", "Советуем",
+        "Общее время игры", "Запусков", "Игр опробовано", "Сегодня", "За 7 дней",
+        "Чаще всего", "Записей об игре пока нет",
+        "Запустите игру — после выхода она появится здесь",
+        "%d запусков", "%zu игр",
+        "%d ч %d мин", "%d мин", "%d сек",
+        "Время игры за 14 дней", "Время по консолям", "В этот период игр не было",
+        "В избранном, не запускалось", "Избранное, давно не играли", "Новая игра",
+        "Давно не играли", "Недавно играли",
+        "Нечего рекомендовать", "Сначала скопируйте игры на карту TF", "%d дней без игры",
+        "Избранное", "История", "В избранном пусто",
+        "Нажмите Ⓧ в списке игр, чтобы добавить",
+        "Истории игр пока нет", "Запуск игры записывается автоматически",
+        "Файла больше нет на карте", "%zu игр",
+        "←→ Вкладки  ↑↓ Выбор  Ⓐ Запуск  Ⓧ Избранное  Ⓨ Обновить  Ⓑ Назад",
+        "←→ Избранное/История  ↑↓ Выбор  Ⓐ Запуск  Ⓧ Избранное  Ⓨ Обновить  Ⓑ Назад",
     },
     // ------------------------------------------------------------------ es
     {
@@ -571,6 +653,27 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Listo: %d añadidas, %d sin coincidencia", "Detener",
         "No hay juegos que necesiten carátula", "Carátulas de juegos",
         "Continuar",
+        // activity statistics + favorites/history
+        "Actividad", "Tiempo · Cronología · Tendencias · Siguiente",
+        "Favoritos e historial", "Encuentra y lanza un juego rápido",
+        "Resumen", "Cronología", "Tendencias", "Siguiente",
+        "Tiempo total de juego", "Sesiones", "Juegos jugados", "Hoy", "Últimos 7 días",
+        "Más jugados", "Aún no hay registro de juego",
+        "Lanza un juego y se registrará aquí al salir",
+        "%d sesiones", "%zu juegos",
+        "%d h %d min", "%d min", "%d s",
+        "Tiempo de juego, últimos 14 días", "Tiempo por consola",
+        "No se jugó en este periodo",
+        "Favorito, nunca jugado", "Favorito, hace tiempo", "Juego nuevo",
+        "Hace tiempo", "Jugando últimamente",
+        "Nada que recomendar", "Copia algunos juegos a la tarjeta TF primero",
+        "%d días sin jugar",
+        "Favoritos", "Historial", "Aún no hay favoritos",
+        "Pulsa Ⓧ en una lista de juegos para añadir",
+        "Aún no hay historial", "Al lanzar un juego se registra automáticamente",
+        "El archivo ya no está en la tarjeta", "%zu juegos",
+        "←→ Pestañas  ↑↓ Elegir  Ⓐ Lanzar  Ⓧ Favorito  Ⓨ Actualizar  Ⓑ Volver",
+        "←→ Favoritos/Historial  ↑↓ Elegir  Ⓐ Lanzar  Ⓧ Favorito  Ⓨ Actualizar  Ⓑ Volver",
     },
     // ------------------------------------------------------------------ ko
     {
@@ -665,6 +768,23 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "완료: %d장 추가, %d장 불일치", "중지", "표지가 필요한 게임이 없습니다",
         "게임 표지",
         "계속",
+        // activity statistics + favorites/history
+        "플레이 통계", "시간 · 타임라인 · 추세 · 추천",
+        "즐겨찾기와 기록", "게임을 빠르게 찾아 실행",
+        "개요", "타임라인", "추세", "추천",
+        "총 플레이 시간", "실행 횟수", "플레이한 게임", "오늘", "최근 7일",
+        "많이 플레이한 순", "아직 플레이 기록이 없습니다",
+        "게임을 실행하고 종료하면 여기에 기록됩니다",
+        "%d회", "%zu개",
+        "%d시간 %d분", "%d분", "%d초",
+        "최근 14일 플레이 시간", "기종별 플레이 시간", "이 기간에는 플레이하지 않았습니다",
+        "즐겨찾기 · 미플레이", "즐겨찾기 · 오랫만", "새 게임", "오랫만", "최근 플레이 중",
+        "추천할 게임이 없습니다", "먼저 게임을 TF 카드에 복사하세요", "%d일 동안 미플레이",
+        "즐겨찾기", "기록", "즐겨찾기가 없습니다", "게임 목록에서 Ⓧ를 누르면 추가됩니다",
+        "플레이 기록이 없습니다", "게임을 실행하면 자동으로 기록됩니다",
+        "파일이 카드에 없습니다", "%zu개",
+        "←→ 탭 전환  ↑↓ 선택  Ⓐ 실행  Ⓧ 즐겨찾기  Ⓨ 새로고침  Ⓑ 뒤로",
+        "←→ 즐겨찾기/기록  ↑↓ 선택  Ⓐ 실행  Ⓧ 즐겨찾기  Ⓨ 새로고침  Ⓑ 뒤로",
     },
 };
 
@@ -700,16 +820,43 @@ const char* console_name(const char* id)
 const char* theme_name(int idx)
 {
     static const char* names[LANG_COUNT][4] = {
-        { "默认青", "暖橙", "幻紫", "翠绿" },
-        { "預設青", "暖橙", "幻紫", "翠綠" },
-        { "ティール", "アンバー", "バイオレット", "グリーン" },
-        { "Teal", "Amber", "Violet", "Green" },
-        { "Бирюзовый", "Янтарный", "Фиолетовый", "Зелёный" },
-        { "Turquesa", "Ámbar", "Violeta", "Verde" },
-        { "청록", "호박색", "보라", "초록" },
+        { "霓虹夜景", "像素复古", "清新晨光", "水墨山水" },
+        { "霓虹夜景", "像素復古", "清新晨光", "水墨山水" },
+        { "ネオン", "ピクセル", "フレッシュ", "水墨" },
+        { "Neon", "Pixel", "Fresh", "Ink" },
+        { "Неон", "Пиксель", "Свежесть", "Тушь" },
+        { "Neón", "Píxel", "Fresco", "Tinta" },
+        { "네온", "픽셀", "프레시", "수묵" },
     };
     if (idx < 0 || idx > 3) idx = 0;
     return names[g_lang][idx];
+}
+
+const char* theme_key(int idx)
+{
+    static const char* keys[4] = { "neon", "pixel", "fresh", "ink" };
+    if (idx < 0 || idx > 3) idx = 0;
+    return keys[idx];
+}
+
+ThemePal theme_palette(int idx)
+{
+    static const ThemePal pals[4] = {
+        { { 53, 208, 186 }, { 232, 236, 247 }, { 138, 147, 178 },
+          { 20, 27, 51 }, { 11, 16, 32 }, { 28, 38, 58 }, { 214, 255, 247 },
+          235, 14, 26 },
+        { { 154, 222, 80 }, { 235, 240, 228 }, { 148, 158, 190 },
+          { 22, 24, 52 }, { 14, 14, 38 }, { 34, 36, 64 }, { 240, 255, 220 },
+          235, 10, 18 },
+        { { 16, 150, 140 }, { 28, 62, 72 }, { 96, 125, 133 },
+          { 255, 255, 255 }, { 240, 248, 246 }, { 205, 225, 222 }, { 255, 255, 255 },
+          215, 0, 0 },
+        { { 178, 58, 48 }, { 42, 40, 38 }, { 112, 106, 100 },
+          { 250, 247, 240 }, { 242, 238, 229 }, { 210, 204, 192 }, { 255, 252, 245 },
+          220, 0, 0 },
+    };
+    if (idx < 0 || idx > 3) idx = 0;
+    return pals[idx];
 }
 
 const char* lang_name(int l)

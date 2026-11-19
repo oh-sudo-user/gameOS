@@ -23,7 +23,7 @@ chmod +x "$TARGET_DIR/etc/gameos/sleep.d/"* 2>/dev/null || true
 rm -f "$TARGET_DIR/etc/init.d/S40bluetoothd"
 
 # Machine-id for a stable identity
-[ -f "$TARGET_DIR/etc/machine-id" ] || echo "gameos-rgdsplus-0001" > "$TARGET_DIR/etc/machine-id"
+[ -f "$TARGET_DIR/etc/machine-id" ] || echo "gameos-rgds-0001" > "$TARGET_DIR/etc/machine-id"
 
 # Build version, shown by Settings > System update and compared against the
 # release manifest by gameos-update. The release tag is bumped by editing
@@ -47,7 +47,7 @@ NAME="gameOS"
 VERSION="$VER"
 ID=gameos
 VERSION_ID="$BASE_VER"
-PRETTY_NAME="gameOS $BASE_VER (RG DS Plus)"
+PRETTY_NAME="gameOS $BASE_VER (RG DS / RG DS Plus)"
 HOME_URL="https://github.com/oh-sudo-user/gameOS"
 EOF
 

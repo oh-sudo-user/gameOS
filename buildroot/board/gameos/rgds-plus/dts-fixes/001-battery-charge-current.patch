@@ -1,6 +1,6 @@
 --- a/dts/rk3568-anbernic-rg-ds-plus.dts
 +++ b/dts/rk3568-anbernic-rg-ds-plus.dts
-@@ -72,16 +72,15 @@
+@@ -72,16 +72,17 @@
  	 * node was left at 2500000. "factory-internal-resistance-micro-ohms"
  	 * was set at 80 but based on context should likely be 80000.
  	 *
@@ -8,9 +8,11 @@
 -	 * which is likely incorrect but I cannot validate; furthermore
 -	 * the onboard charger of the rk817 cannot charge past 3.5A
 -	 * anyway.
-+	 * "constant-charge-current-max-microamp" is gameOS-corrected to the
-+	 * stock 5V/1.5A supply (the BSP tree carried a 10A placeholder; the
-+	 * rk817 would clamp it to 3.5A, far above the battery/PSU rating).
++	 * "constant-charge-current-max-microamp" is a cell property of the
++	 * simple-battery binding: the max constant current the pack accepts,
++	 * used by the rk817 as its CC limit. gameOS sets 1.5A to match the
++	 * stock firmware's charge limit for this 4247mAh pack; the BSP's 10A
++	 * placeholder exceeds the cell's safe C-rate and the charger ceiling.
  	 */
  	battery: battery {
  		compatible = "simple-battery";

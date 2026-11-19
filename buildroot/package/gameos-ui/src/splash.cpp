@@ -39,12 +39,27 @@ namespace {
 constexpr int W = 1024;
 constexpr int H = 768;
 
-const SDL_Color C_BG     = {  11,  16,  32, 255 };
-const SDL_Color C_ACCENT = {  53, 208, 186, 255 };
-const SDL_Color C_SHEEN  = { 214, 255, 247, 255 };
-const SDL_Color C_TEXT   = { 226, 236, 245, 255 };
-const SDL_Color C_DIM    = { 140, 158, 178, 255 };
-const SDL_Color C_TRACK  = {  28,  38,  58, 255 };
+// Mutable: the saved theme is read once /userdata mounts and the whole
+// brand motif + cross-fade background switch to match the UI's palette.
+SDL_Color C_BG     = {  11,  16,  32, 255 };
+SDL_Color C_ACCENT = {  53, 208, 186, 255 };
+SDL_Color C_SHEEN  = { 214, 255, 247, 255 };
+SDL_Color C_TEXT   = { 226, 236, 245, 255 };
+SDL_Color C_DIM    = { 140, 158, 178, 255 };
+SDL_Color C_TRACK  = {  28,  38,  58, 255 };
+int g_theme = 0;
+bool g_theme_dirty = false;
+
+void apply_splash_theme(int idx)
+{
+    gameos::ThemePal p = gameos::theme_palette(idx);
+    C_BG     = { p.bg.r,     p.bg.g,     p.bg.b,     255 };
+    C_ACCENT = { p.accent.r, p.accent.g, p.accent.b, 255 };
+    C_SHEEN  = { p.sheen.r,  p.sheen.g,  p.sheen.b,  255 };
+    C_TEXT   = { p.text.r,   p.text.g,   p.text.b,   255 };
+    C_DIM    = { p.dim.r,    p.dim.g,    p.dim.b,    255 };
+    C_TRACK  = { p.track.r,  p.track.g,  p.track.b,  255 };
+}
 
 const char* RUN_DIR   = "/run/gameos";
 const char* PID_FILE  = "/run/gameos/splash.pid";
@@ -170,13 +185,19 @@ void poll_boot(Boot& b)
     if (!lang_done) {
         std::ifstream s(SETTINGS_FILE);
         while (std::getline(s, line)) {
-            if (line.compare(0, 9, "language=") != 0) continue;
-            int v = atoi(line.c_str() + 9);
-            if (v >= 0 && v < gameos::LANG_COUNT) {
-                gameos::g_lang = (gameos::Lang)v;
-                lang_done = true;
+            if (line.compare(0, 9, "language=") == 0) {
+                int v = atoi(line.c_str() + 9);
+                if (v >= 0 && v < gameos::LANG_COUNT) {
+                    gameos::g_lang = (gameos::Lang)v;
+                    lang_done = true;
+                }
+            } else if (line.compare(0, 6, "theme=") == 0) {
+                int v = atoi(line.c_str() + 6);
+                if (v >= 0 && v <= 3 && v != g_theme) {
+                    g_theme = v;
+                    g_theme_dirty = true;
+                }
             }
-            break;
         }
     }
 }
@@ -236,6 +257,49 @@ void panel_fonts(Panel& p, int lang)
     p.cache_pct = -1;
 }
 
+// (Re)build the brand motif in the current palette. New textures are created
+// first and only swapped in on full success, so a mid-boot theme change can
+// never leave a panel with a null logo.
+bool build_brand(Panel& p, const std::string& fonts)
+{
+    TTF_Font* f = TTF_OpenFont((fonts + "/Orbitron.ttf").c_str(), (int)(110 * p.scale));
+    if (!f) f = TTF_OpenFont((fonts + "/NotoSansSC-Regular.otf").c_str(), (int)(96 * p.scale));
+    if (!f) return false;
+    SDL_Surface* s = TTF_RenderUTF8_Blended(f, "gameOS", C_ACCENT);
+    SDL_Surface* b = TTF_RenderUTF8_Blended(f, "gameOS", C_SHEEN);
+    TTF_CloseFont(f);
+    if (!s || !b) {
+        if (s) SDL_FreeSurface(s);
+        if (b) SDL_FreeSurface(b);
+        return false;
+    }
+    int lw = s->w, lh = s->h;
+    SDL_Texture* logo  = SDL_CreateTextureFromSurface(p.ren, s);
+    SDL_Texture* sheen = SDL_CreateTextureFromSurface(p.ren, b);
+    SDL_FreeSurface(s);
+    SDL_FreeSurface(b);
+    SDL_Texture* glow = make_radial(p.ren, 256, 2.2f, 150);
+    SDL_Texture* dot  = make_radial(p.ren, 24, 1.6f, 255);
+    if (!logo || !sheen || !glow || !dot) {
+        for (SDL_Texture* t : { logo, sheen, glow, dot })
+            if (t) SDL_DestroyTexture(t);
+        return false;
+    }
+    for (SDL_Texture* t : { p.logo, p.sheen, p.glow, p.dot })
+        if (t) SDL_DestroyTexture(t);
+    p.logo = logo; p.sheen = sheen; p.glow = glow; p.dot = dot;
+    p.lw = lw; p.lh = lh;
+    SDL_SetTextureBlendMode(p.sheen, SDL_BLENDMODE_ADD);
+    return true;
+}
+
+void load_panel_bg(Panel& p, const std::string& assets, const char* bgname)
+{
+    if (p.bg) { SDL_DestroyTexture(p.bg); p.bg = nullptr; }
+    p.bg = IMG_LoadTexture(p.ren,
+        (assets + "/themes/" + gameos::theme_key(g_theme) + "/" + bgname).c_str());
+}
+
 bool setup_panel(Panel& p, int display, float scale, const std::string& fonts,
                  const std::string& assets, const char* bgname)
 {
@@ -250,31 +314,14 @@ bool setup_panel(Panel& p, int display, float scale, const std::string& fonts,
     if (!p.ren) p.ren = SDL_CreateRenderer(p.win, -1, SDL_RENDERER_SOFTWARE);
     if (!p.ren) return false;
     SDL_SetRenderDrawBlendMode(p.ren, SDL_BLENDMODE_BLEND);
+    // Design space stays 1024x768; on the 640x480 RG DS panels SDL scales it.
+    SDL_RenderSetLogicalSize(p.ren, W, H);
 
-    TTF_Font* f = TTF_OpenFont((fonts + "/Orbitron.ttf").c_str(), (int)(110 * scale));
-    if (!f) f = TTF_OpenFont((fonts + "/NotoSansSC-Regular.otf").c_str(), (int)(96 * scale));
-    if (!f) return false;
-    SDL_Surface* s = TTF_RenderUTF8_Blended(f, "gameOS", C_ACCENT);
-    SDL_Surface* b = TTF_RenderUTF8_Blended(f, "gameOS", C_SHEEN);
-    TTF_CloseFont(f);
-    if (!s || !b) {
-        if (s) SDL_FreeSurface(s);
-        if (b) SDL_FreeSurface(b);
-        return false;
-    }
-    p.lw = s->w;
-    p.lh = s->h;
-    p.logo  = SDL_CreateTextureFromSurface(p.ren, s);
-    p.sheen = SDL_CreateTextureFromSurface(p.ren, b);
-    SDL_FreeSurface(s);
-    SDL_FreeSurface(b);
-    if (p.sheen) SDL_SetTextureBlendMode(p.sheen, SDL_BLENDMODE_ADD);
-    p.glow = make_radial(p.ren, 256, 2.2f, 150);
-    p.dot  = make_radial(p.ren, 24, 1.6f, 255);
-    p.bg   = IMG_LoadTexture(p.ren, (assets + "/" + bgname).c_str());
+    if (!build_brand(p, fonts)) return false;
+    load_panel_bg(p, assets, bgname);
     panel_fonts(p, gameos::g_lang);
     p.cache_lang = gameos::g_lang;
-    return p.logo && p.sheen && p.glow && p.dot;
+    return true;
 }
 
 void teardown(Panel& p)
@@ -430,15 +477,22 @@ int main()
     std::string assets = env_dir("GAMEOS_ASSETS", "/usr/share/gameos/assets");
 
     Panel top, bot;
-    if (!setup_panel(top, 0, 1.f, fonts, assets, "home_bg.png")) {
+    // DSI-2 is the physical top (lid) panel; SDL enumerates DSI-1 first.
+    int dtop = 0, ndisp = SDL_GetNumVideoDisplays();
+    for (int i = 0; i < ndisp; i++) {
+        const char *dn = SDL_GetDisplayName(i);
+        if (dn && strstr(dn, "DSI-2")) { dtop = i; break; }
+    }
+    int dbot = (ndisp > 1) ? (dtop == 0 ? 1 : 0) : -1;
+    if (!setup_panel(top, dtop, 1.f, fonts, assets, "home_bg.png")) {
         fprintf(stderr, "splash: top panel: %s\n", SDL_GetError());
         teardown(top);
         TTF_Quit(); IMG_Quit(); SDL_Quit();
         cleanup_files();
         return 1;
     }
-    if (SDL_GetNumVideoDisplays() > 1)
-        setup_panel(bot, 1, 0.62f, fonts, assets, "ambient_bg.png");  // best effort
+    if (dbot >= 0)
+        setup_panel(bot, dbot, 0.62f, fonts, assets, "ambient_bg.png");  // best effort
 
     Uint32 t0 = SDL_GetTicks();
     float fade = 1.f;
@@ -450,6 +504,16 @@ int main()
             stopping = true;
         float t = (SDL_GetTicks() - t0) / 1000.f;
         poll_boot(boot);
+        if (g_theme_dirty) {
+            g_theme_dirty = false;
+            apply_splash_theme(g_theme);
+            build_brand(top, fonts);
+            load_panel_bg(top, assets, "home_bg.png");
+            if (bot.ren) {
+                build_brand(bot, fonts);
+                load_panel_bg(bot, assets, "ambient_bg.png");
+            }
+        }
         if (stopping) {
             boot.target = 100;               // finish the bar during the handoff
             fade -= 1.f / 15.f;              // ~250 ms cross-fade at 60 fps

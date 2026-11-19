@@ -83,6 +83,18 @@ enum TKey {
     T_COVER_DONE_FMT, T_COVER_STOP, T_COVER_NONE, T_COVERS,
     // wizard: advance without acting on the current row
     T_NEXT,
+    // activity statistics + favorites/history hub
+    T_ACTIVITY, T_ACTIVITY_SUB, T_QUICK, T_QUICK_SUB,
+    T_TAB_OVERVIEW, T_TAB_TIMELINE, T_TAB_TREND, T_TAB_PICKS,
+    T_ACT_TOTAL, T_ACT_SESSIONS, T_ACT_GAMES_PLAYED, T_ACT_TODAY, T_ACT_WEEK,
+    T_ACT_MOST, T_ACT_EMPTY, T_ACT_EMPTY_HELP, T_ACT_SESSIONS_FMT, T_ACT_GAMES_FMT,
+    T_DUR_HM_FMT, T_DUR_M_FMT, T_DUR_S_FMT,
+    T_ACT_TREND_TITLE, T_ACT_BY_CONSOLE, T_ACT_NO_TREND,
+    T_PICK_FAV_NEW, T_PICK_FAV_BACK, T_PICK_NEW, T_PICK_BACK, T_PICK_REGULAR,
+    T_ACT_PICKS_EMPTY, T_ACT_PICKS_HELP, T_PICK_IDLE_FMT,
+    T_TAB_FAV, T_TAB_HISTORY, T_QUICK_EMPTY_FAV, T_QUICK_EMPTY_FAV_HELP,
+    T_QUICK_EMPTY_HIST, T_QUICK_EMPTY_HIST_HELP, T_QUICK_MISSING, T_QUICK_COUNT_FMT,
+    T_ACTIVITY_HINT, T_QUICK_HINT,
     T_COUNT
 };
 
@@ -92,6 +104,17 @@ const char* tr(TKey k);
 const char* console_name(const char* id);
 // Localised theme name (0..3).
 const char* theme_name(int idx);
+// Asset directory key for a theme: themes/<key>/ under the assets root.
+const char* theme_key(int idx);
+// Full palette of a theme, shared by the UI and the boot splash so both
+// panels and the handoff stay on the same colours.
+struct ThemeRGB { unsigned char r, g, b; };
+struct ThemePal {
+    ThemeRGB accent, text, dim, panel, bg, track, sheen;
+    unsigned char panel_a;              // panel translucency
+    unsigned char tint_top, tint_bot;   // accent wash over each panel
+};
+ThemePal theme_palette(int idx);
 // Language autonym — always in its own language ("简体中文", "English", ...).
 const char* lang_name(int l);
 // Full date line for the ambient panel, locale-aware (weekday/month names).

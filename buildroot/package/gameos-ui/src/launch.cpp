@@ -56,6 +56,14 @@ static void apply_ppsspp_language()
     write_file(path, out.str());
 }
 
+// RG DS panels are 640x480, Plus panels 1024x768; the span framebuffer and
+// the bottom-panel touch offset follow the physical panel height.
+static int panel_height()
+{
+    std::string c = read_file("/proc/device-tree/compatible");
+    return c.find("rg-ds-plus") != std::string::npos ? 768 : 480;
+}
+
 int launch_game(const Console& c, const Game& g)
 {
     // Localise emulator menus to the system language before forking.
@@ -76,10 +84,11 @@ int launch_game(const Console& c, const Game& g)
         setenv("XDG_RUNTIME_DIR", "/tmp/gameos-runtime", 1);
 
         if (c.dual) {
-            // NDS: span both panels, map bottom-panel touch to y+768.
+            // NDS: span both panels, map bottom-panel touch to y+panel_h.
+            const std::string ph = std::to_string(panel_height());
             setenv("GAMEOS_DUALSCREEN", "1", 1);
-            setenv("GAMEOS_TOUCH_Y_OFFSET", "768", 1);
-            setenv("GAMEOS_TOUCH_PANEL_H", "768", 1);
+            setenv("GAMEOS_TOUCH_Y_OFFSET", ph.c_str(), 1);
+            setenv("GAMEOS_TOUCH_PANEL_H", ph.c_str(), 1);
         } else {
             unsetenv("GAMEOS_DUALSCREEN");
             unsetenv("GAMEOS_TOUCH_Y_OFFSET");

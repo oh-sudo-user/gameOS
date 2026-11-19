@@ -7,6 +7,7 @@
 #include <SDL2/SDL_image.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gameos {
@@ -64,6 +65,58 @@ void apply_volume(int pct);
 // Favorites (persisted across sessions), keyed "<system>/<title>".
 bool fav_contains(const std::string& sys, const std::string& title);
 void fav_toggle(const std::string& sys, const std::string& title);
+// Every favorite key, split into system id and title, in stored order.
+std::vector<std::pair<std::string, std::string>> fav_list();
+
+// ---------------------------------------------------------------------------
+// Play-time statistics (/userdata/system/activity.log)
+// ---------------------------------------------------------------------------
+struct PlaySession {
+    long long start = 0;      // wall-clock epoch seconds when the game started
+    long long seconds = 0;    // measured play time, excluding system suspend
+    std::string sys, title;
+};
+
+struct GameStat {
+    std::string sys, title;
+    long long seconds = 0;
+    int sessions = 0;
+    long long last = 0;       // wall-clock epoch of the most recent session
+};
+
+// Why a game was suggested. The UI turns this into a localised sentence.
+enum PickReason {
+    PICK_FAV_NEW = 0,   // favorited, never played
+    PICK_FAV_BACK,      // favorited, not played for a week
+    PICK_NEW,           // never played
+    PICK_BACK,          // not played for a fortnight
+    PICK_REGULAR        // played recently and often
+};
+
+struct Pick {
+    std::string sys, title;
+    int reason = PICK_NEW;
+    long long seconds = 0;
+    int idle_days = 0;
+    long long score = 0;
+};
+
+struct LibEntry {
+    std::string sys, title;
+};
+
+// Append one finished session. Sessions under 5 s are dropped: a failed exec
+// exits immediately and would otherwise fill the log with non-play.
+void activity_record(const std::string& sys, const std::string& title,
+                     long long wall_start, long long seconds);
+
+std::vector<PlaySession> activity_sessions();   // newest first
+std::vector<GameStat> activity_games();         // most played first
+long long activity_total();                     // sum of all play seconds
+// Totals for the last `days` local days, oldest first (last element = today).
+std::vector<long long> activity_daily(int days);
+// Deterministic "what to play next" ranking over the whole scanned library.
+std::vector<Pick> activity_recommend(const std::vector<LibEntry>& lib, int limit);
 
 // Save-state / save-file management under /userdata/saves.
 struct SaveEntry {

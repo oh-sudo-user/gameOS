@@ -429,6 +429,18 @@ void fav_toggle(const std::string& sys, const std::string& title)
     fav_flush();
 }
 
+std::vector<std::pair<std::string, std::string>> fav_list()
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto& k : fav_set()) {
+        auto slash = k.find('/');
+        if (slash == std::string::npos || slash == 0 || slash + 1 >= k.size())
+            continue;
+        out.emplace_back(k.substr(0, slash), k.substr(slash + 1));
+    }
+    return out;
+}
+
 std::vector<SaveEntry> scan_saves()
 {
     std::vector<SaveEntry> out;

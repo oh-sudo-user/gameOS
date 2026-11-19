@@ -5,7 +5,7 @@ PKGS = sdl2 SDL2_ttf SDL2_image
 CXXFLAGS += -O2 -std=c++17 -Wall -Wextra $(shell $(PKG_CONFIG) --cflags $(PKGS))
 LIBS = $(shell $(PKG_CONFIG) --libs $(PKGS))
 
-SRCS = main.cpp library.cpp launch.cpp i18n.cpp sound.cpp
+SRCS = main.cpp library.cpp launch.cpp activity.cpp i18n.cpp sound.cpp
 
 all: gameos-ui gameos-splash
 

@@ -34,21 +34,45 @@ namespace {
 constexpr int W = 1024;
 constexpr int H = 768;
 
-const SDL_Color C_TEXT   = { 232, 236, 247, 255 };
-const SDL_Color C_DIM    = { 138, 147, 178, 255 };
-const SDL_Color C_ACCENT = {  53, 208, 186, 255 };
+// Home carousel: five consoles, then the two libraries, then settings.
+constexpr int CAR_N        = 8;
+constexpr int CAR_ACTIVITY = 5;
+constexpr int CAR_QUICK    = 6;
+constexpr int CAR_SETTINGS = 7;
+
+// Mutable palette: apply_theme() swaps the whole set (light themes need
+// dark text and light panels), so every draw call stays theme-correct.
+SDL_Color C_TEXT   = { 232, 236, 247, 255 };
+SDL_Color C_DIM    = { 138, 147, 178, 255 };
+SDL_Color C_ACCENT = {  53, 208, 186, 255 };
 const SDL_Color C_AMBER  = { 255, 180,  84, 255 };
-const SDL_Color C_PANEL  = {  20,  27,  51, 235 };
-const SDL_Color C_BG     = {  11,  16,  32, 255 };
+SDL_Color C_PANEL  = {  20,  27,  51, 235 };
+SDL_Color C_BG     = {  11,  16,  32, 255 };
+SDL_Color C_TRACK  = {  28,  38,  58, 255 };
 const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
+int g_tint_top = 14, g_tint_bot = 26;
+SDL_Color g_accent = C_ACCENT;
 
-enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup, Msg, Confirm };
+enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
+                    Activity, Quick, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update };
 
 struct BtDev {
     std::string mac, name, kind;
     bool paired = false, connected = false;
+};
+
+// A favorite/history key resolved against the scanned library. The ROM may be
+// gone (deleted, or the TF2 card pulled): the row stays visible and is marked
+// missing rather than silently disappearing from the user's collection.
+struct QuickEntry {
+    int con = 0;               // index into consoles()
+    std::string sys;           // system id as stored in the key
+    Game game;
+    bool missing = false;
+    long long seconds = 0;
+    long long last = 0;
 };
 
 struct WifiNet {
@@ -72,8 +96,11 @@ struct App {
 
     SDL_Texture* bg = nullptr;
     SDL_Texture* ambient = nullptr;
+    SDL_Texture* logo = nullptr;
     SDL_Texture* icons[5] = {};
     SDL_Texture* icon_settings = nullptr;
+    SDL_Texture* icon_activity = nullptr;
+    SDL_Texture* icon_quick = nullptr;
 
     SDL_GameController* pad = nullptr;
 
@@ -162,6 +189,20 @@ struct App {
     std::string setup_ra_name;         // account reported by the last login
     int  cov_total = 0, cov_done = 0, cov_ok = 0, cov_miss = 0, cov_fail = 0;
     std::string cov_state, cov_current;
+
+    // activity statistics screen
+    int act_tab = 0;                   // 0 overview, 1 timeline, 2 trends, 3 picks
+    int act_sel = 0, act_scroll = 0;
+    long long act_total = 0;
+    std::vector<PlaySession> act_sessions;
+    std::vector<GameStat> act_games;
+    std::vector<long long> act_daily;
+    std::vector<Pick> act_picks;
+
+    // favorites / history quick screen
+    int quick_tab = 0;                 // 0 favorites, 1 history
+    int quick_sel = 0, quick_scroll = 0;
+    std::vector<QuickEntry> quick;
 
     bool running = true;
     int exit_code = 0;
@@ -337,6 +378,49 @@ std::string two(int v)
     return b;
 }
 
+// Play time as a short localised string: "2 小时 5 分" / "12 分钟" / "40 秒".
+std::string fmt_duration(long long secs)
+{
+    if (secs < 0) secs = 0;
+    char b[96];
+    if (secs >= 3600)
+        snprintf(b, sizeof(b), tr(T_DUR_HM_FMT),
+                 (int)(secs / 3600), (int)((secs % 3600) / 60));
+    else if (secs >= 60)
+        snprintf(b, sizeof(b), tr(T_DUR_M_FMT), (int)(secs / 60));
+    else
+        snprintf(b, sizeof(b), tr(T_DUR_S_FMT), (int)secs);
+    return b;
+}
+
+// "11-19 14:32" — numeric on purpose, so it needs no translation and stays
+// the same width in every language.
+std::string fmt_when(long long epoch)
+{
+    time_t t = (time_t)epoch;
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    char b[32];
+    snprintf(b, sizeof(b), "%02d-%02d %02d:%02d",
+             tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+    return b;
+}
+
+int console_index(const std::string& id)
+{
+    for (int i = 0; i < 5; i++)
+        if (id == consoles()[i].id) return i;
+    return 5;   // unknown system: sorts last, never launches
+}
+
+// Short badge for a stored system id. A log entry can outlive the console list
+// (or come from a card that is no longer inserted), so never index blindly.
+std::string console_badge(const std::string& id)
+{
+    int i = console_index(id);
+    return (i < 5) ? consoles()[i].name_en : "?";
+}
+
 // ---------------------------------------------------------------------------
 // graphics init / teardown (also used around emulator launches)
 // ---------------------------------------------------------------------------
@@ -424,6 +508,55 @@ void reload_fonts()
     }
 }
 
+void apply_theme(int idx)
+{
+    ThemePal p = theme_palette(idx);
+    C_TEXT   = { p.text.r,   p.text.g,   p.text.b,   255 };
+    C_DIM    = { p.dim.r,    p.dim.g,    p.dim.b,    255 };
+    C_ACCENT = { p.accent.r, p.accent.g, p.accent.b, 255 };
+    C_PANEL  = { p.panel.r,  p.panel.g,  p.panel.b,  p.panel_a };
+    C_BG     = { p.bg.r,     p.bg.g,     p.bg.b,     255 };
+    C_TRACK  = { p.track.r,  p.track.g,  p.track.b,  255 };
+    g_accent = C_ACCENT;
+    g_tint_top = p.tint_top;
+    g_tint_bot = p.tint_bot;
+}
+
+// Whole-set theme assets: background, ambient, console icons, hub icons and
+// logo all come from themes/<key>/ so a switch never mixes styles.
+void load_theme_assets()
+{
+    const std::string dir = assets_dir() + "/themes/" + theme_key(app.settings.theme);
+    if (app.bg)      { SDL_DestroyTexture(app.bg);      app.bg = nullptr; }
+    if (app.ambient) { SDL_DestroyTexture(app.ambient); app.ambient = nullptr; }
+    if (app.logo)    { SDL_DestroyTexture(app.logo);    app.logo = nullptr; }
+    for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
+    if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
+    if (app.icon_activity) { SDL_DestroyTexture(app.icon_activity); app.icon_activity = nullptr; }
+    if (app.icon_quick)    { SDL_DestroyTexture(app.icon_quick);    app.icon_quick = nullptr; }
+    app.bg      = load_tex(app.ren_top, dir + "/home_bg.png");
+    app.ambient = app.ren_bot ? load_tex(app.ren_bot, dir + "/ambient_bg.png") : nullptr;
+    app.logo    = load_tex(app.ren_top, dir + "/logo.png");
+    const char* ids[] = { "nds", "gba", "gbc", "ps1", "psp" };
+    for (int i = 0; i < 5; i++)
+        app.icons[i] = load_tex(app.ren_top, dir + "/console_" + ids[i] + ".png");
+    app.icon_settings = load_tex(app.ren_top, dir + "/icon_settings.png");
+    app.icon_activity = load_tex(app.ren_top, dir + "/icon_activity.png");
+    app.icon_quick    = load_tex(app.ren_top, dir + "/icon_quick.png");
+}
+
+// DSI-2 is the physical top (lid) panel on both RG DS models; SDL enumerates
+// DSI-1 first, so pick the display by connector name instead of index.
+static int top_display()
+{
+    int n = SDL_GetNumVideoDisplays();
+    for (int i = 0; i < n; i++) {
+        const char *name = SDL_GetDisplayName(i);
+        if (name && strstr(name, "DSI-2")) return i;
+    }
+    return 0;
+}
+
 bool init_gfx()
 {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
@@ -439,7 +572,6 @@ bool init_gfx()
     SDL_ShowCursor(SDL_DISABLE);
 
     std::string fonts = fonts_dir();
-    std::string assets = assets_dir();
     std::string orbi = fonts + "/Orbitron.ttf";
 
     app.f_logo  = TTF_OpenFont(orbi.c_str(), 52);
@@ -453,8 +585,10 @@ bool init_gfx()
     }
 
     int ndisp = SDL_GetNumVideoDisplays();
+    int dtop = top_display();
+    int dbot = (ndisp > 1) ? (dtop == 0 ? 1 : 0) : -1;
     app.win_top = SDL_CreateWindow("gameOS",
-        SDL_WINDOWPOS_CENTERED_DISPLAY(0), SDL_WINDOWPOS_CENTERED_DISPLAY(0),
+        SDL_WINDOWPOS_CENTERED_DISPLAY(dtop), SDL_WINDOWPOS_CENTERED_DISPLAY(dtop),
         W, H, SDL_WINDOW_FULLSCREEN_DESKTOP);
     if (!app.win_top) {
         fprintf(stderr, "gameos-ui: window: %s\n", SDL_GetError());
@@ -471,10 +605,12 @@ bool init_gfx()
         fprintf(stderr, "gameos-ui: cannot create renderer: %s\n", SDL_GetError());
         return false;
     }
+    // Design space stays 1024x768; on the 640x480 RG DS panels SDL scales it.
+    SDL_RenderSetLogicalSize(app.ren_top, W, H);
 
-    if (ndisp > 1) {
+    if (dbot >= 0) {
         app.win_bot = SDL_CreateWindow("gameOS ambient",
-            SDL_WINDOWPOS_CENTERED_DISPLAY(1), SDL_WINDOWPOS_CENTERED_DISPLAY(1),
+            SDL_WINDOWPOS_CENTERED_DISPLAY(dbot), SDL_WINDOWPOS_CENTERED_DISPLAY(dbot),
             W, H, SDL_WINDOW_FULLSCREEN_DESKTOP);
         if (app.win_bot) {
             app.ren_bot = SDL_CreateRenderer(app.win_bot, -1,
@@ -482,17 +618,13 @@ bool init_gfx()
             if (!app.ren_bot) {
                 SDL_DestroyWindow(app.win_bot);
                 app.win_bot = nullptr;
+            } else {
+                SDL_RenderSetLogicalSize(app.ren_bot, W, H);
             }
         }
     }
 
-    app.bg      = load_tex(app.ren_top, assets + "/home_bg.png");
-    app.ambient = app.ren_bot ? load_tex(app.ren_bot, assets + "/ambient_bg.png") : nullptr;
-    const char* ids[] = { "nds", "gba", "gbc", "ps1", "psp" };
-    for (int i = 0; i < 5; i++)
-        app.icons[i] = load_tex(app.ren_top,
-            assets + "/console_" + ids[i] + ".png");
-    app.icon_settings = load_tex(app.ren_top, assets + "/icon_settings.png");
+    load_theme_assets();
 
     open_controller();
     sound_init("/usr/share/gameos/sounds");   // silent fallback if audio fails
@@ -509,8 +641,11 @@ void shutdown_gfx()
     if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
     for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
+    if (app.icon_activity) { SDL_DestroyTexture(app.icon_activity); app.icon_activity = nullptr; }
+    if (app.icon_quick)    { SDL_DestroyTexture(app.icon_quick);    app.icon_quick = nullptr; }
     if (app.bg)      { SDL_DestroyTexture(app.bg); app.bg = nullptr; }
     if (app.ambient) { SDL_DestroyTexture(app.ambient); app.ambient = nullptr; }
+    if (app.logo)    { SDL_DestroyTexture(app.logo); app.logo = nullptr; }
     for (TTF_Font* f : { app.f_logo, app.f_title, app.f_body, app.f_small, app.f_clock })
         if (f) TTF_CloseFont(f);
     app.f_logo = app.f_title = app.f_body = app.f_small = app.f_clock = nullptr;
@@ -528,7 +663,16 @@ void shutdown_gfx()
 // ---------------------------------------------------------------------------
 void draw_topbar(SDL_Renderer* r)
 {
-    text(r, app.f_logo, "gameOS", 32, 20, C_ACCENT);
+    if (app.logo) {
+        int tw = 0, th = 0;
+        SDL_QueryTexture(app.logo, nullptr, nullptr, &tw, &th);
+        if (th > 0) {
+            SDL_Rect dst = { 32, 16, tw * 44 / th, 44 };
+            draw_tex(r, app.logo, dst);
+        }
+    } else {
+        text(r, app.f_logo, "gameOS", 32, 20, C_ACCENT);
+    }
 
     time_t now = time(nullptr);
     struct tm tmv;
@@ -557,20 +701,9 @@ void draw_topbar(SDL_Renderer* r)
 
 void draw_hint(SDL_Renderer* r, const std::string& s)
 {
-    fill_rect(r, 0, H - 56, W, 56, { 8, 12, 26, 200 });
+    fill_rect(r, 0, H - 56, W, 56, C_PANEL);
     text(r, app.f_small, s, W / 2, H - 42, C_DIM, Align::Center);
 }
-
-// Dynamic dual-screen theme: an accent + a low-alpha tint laid over both
-// panels' backgrounds, so the whole device (top UI + bottom ambient) shifts
-// palette together. Persisted via Settings.theme.
-const SDL_Color C_THEMES[4] = {
-    {  53, 208, 186, 255 },   // 默认青
-    { 255, 180,  84, 255 },   // 暖橙
-    { 167, 139, 250, 255 },   // 幻紫
-    { 105, 220, 140, 255 },   // 翠绿
-};
-SDL_Color g_accent = C_THEMES[0];
 
 // Bounded box-art cache (covers belong to a renderer; cleared on shutdown).
 std::map<std::string, SDL_Texture*> g_cover_cache;
@@ -601,7 +734,7 @@ void draw_background(SDL_Renderer* r)
         fill_rect(r, 0, 0, W, 6, g_accent);
     }
     // subtle theme tint over the top panel
-    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, 14 });
+    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, (Uint8)g_tint_top });
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +746,7 @@ void draw_home(SDL_Renderer* r)
     draw_topbar(r);
 
     const auto& cons = consoles();
-    int total = 6; // 5 consoles + settings
+    int total = CAR_N;
 
     for (int i = 0; i < total; i++) {
         int off = i - app.carousel;
@@ -624,14 +757,19 @@ void draw_home(SDL_Renderer* r)
         int cy = 330;
         Uint8 alpha = (off == 0) ? 255 : 130;
 
-        SDL_Texture* icon = (i < 5) ? app.icons[i] : app.icon_settings;
+        SDL_Texture* icon = (i < 5) ? app.icons[i]
+                          : (i == CAR_ACTIVITY) ? app.icon_activity
+                          : (i == CAR_QUICK)    ? app.icon_quick
+                                                : app.icon_settings;
+        const char* badge = (i < 5) ? cons[i].name_en
+                          : (i == CAR_ACTIVITY) ? "ACT"
+                          : (i == CAR_QUICK)    ? "FAV" : "SET";
         if (icon) {
             SDL_Rect dst = { cx - size / 2, cy - size / 2, size, size };
             draw_tex(r, icon, dst, alpha);
         } else {
             fill_rect(r, cx - size / 2, cy - size / 2, size, size, C_PANEL);
-            text(r, app.f_title, (i < 5) ? cons[i].name_en : "SET",
-                 cx, cy - 20, C_ACCENT, Align::Center);
+            text(r, app.f_title, badge, cx, cy - 20, C_ACCENT, Align::Center);
         }
     }
 
@@ -646,6 +784,12 @@ void draw_home(SDL_Renderer* r)
         char b[128];
         snprintf(b, sizeof(b), tr(T_GAMES_FMT), c.name_en, games.size());
         sub = b;
+    } else if (app.carousel == CAR_ACTIVITY) {
+        name = tr(T_ACTIVITY);
+        sub = tr(T_ACTIVITY_SUB);
+    } else if (app.carousel == CAR_QUICK) {
+        name = tr(T_QUICK);
+        sub = tr(T_QUICK_SUB);
     } else {
         name = tr(T_SETTINGS);
         sub = tr(T_SETTINGS_SUB);
@@ -721,7 +865,7 @@ void draw_list(SDL_Renderer* r)
             int barh = std::max(30, trackh * vis / (int)app.games.size());
             int bary = top + (trackh - barh) * app.scroll /
                        std::max(1, (int)app.games.size() - vis);
-            fill_rect(r, listw - 14, top, 4, trackh, { 60, 68, 96, 160 });
+            fill_rect(r, listw - 14, top, 4, trackh, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
             fill_rect(r, listw - 14, bary, 4, barh, g_accent);
         }
         // cover preview for the selected game
@@ -1663,7 +1807,7 @@ void draw_setup_wifi(SDL_Renderer* r)
             for (int b = 0; b < 4; b++) {
                 int h = 6 + b * 5;
                 fill_rect(r, W - 104 + b * 13, y + 34 - h, 8, h,
-                          b < bars ? g_accent : SDL_Color{ 60, 68, 96, 160 });
+                          b < bars ? g_accent : SDL_Color{ C_DIM.r, C_DIM.g, C_DIM.b, 90 });
             }
         } else {
             setup_row(r, 32, y, W - 64, rowh, sel,
@@ -1800,7 +1944,7 @@ void draw_setup_covers(SDL_Renderer* r)
                  app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
         text(r, app.f_body, b, W / 2, 210, C_TEXT, Align::Center);
         int bw = W - 160, bx = 80, by = 268;
-        fill_rect(r, bx, by, bw, 12, { 28, 38, 58, 255 });
+        fill_rect(r, bx, by, bw, 12, C_TRACK);
         int fw = app.cov_total > 0 ? bw * app.cov_done / app.cov_total : 0;
         if (fw > 0) fill_rect(r, bx, by, fw, 12, g_accent);
         if (!app.cov_current.empty())
@@ -1989,7 +2133,7 @@ void draw_update(SDL_Renderer* r)
     }
 
     if (app.upd_busy && app.upd_op == "apply" && app.upd_state == "downloading") {
-        fill_rect(r, W / 2 - 300, 420, 600, 18, { 60, 68, 96, 160 });
+        fill_rect(r, W / 2 - 300, 420, 600, 18, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
         fill_rect(r, W / 2 - 300, 420, 600 * app.upd_pct / 100, 18, g_accent);
         snprintf(b, sizeof(b), "%d%%", app.upd_pct);
         text(r, app.f_small, b, W / 2, 452, C_DIM, Align::Center);
@@ -2002,7 +2146,7 @@ void draw_update(SDL_Renderer* r)
 
 void draw_kb(SDL_Renderer* r)
 {
-    fill_rect(r, 0, 0, W, H, { 5, 8, 18, 205 });    int pw = 944, ph = 476, px = (W - pw) / 2, py = (H - ph) / 2;
+    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 205 });    int pw = 944, ph = 476, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, g_accent);
     const std::string& buf = app.kb_generic ? *app.kb_buf : app.wifi_pw;
@@ -2011,7 +2155,7 @@ void draw_kb(SDL_Renderer* r)
     text(r, app.f_small, app.kb_generic ? std::string() : app.wifi_target,
          W / 2, py + 78, C_DIM, Align::Center);
 
-    fill_rect(r, px + 56, py + 108, pw - 112, 52, { 60, 68, 96, 120 });
+    fill_rect(r, px + 56, py + 108, pw - 112, 52, { C_DIM.r, C_DIM.g, C_DIM.b, 120 });
     std::string disp = app.kb_mask ? std::string(buf.size(), '*') : buf;
     if (disp.size() > 42) disp = disp.substr(disp.size() - 42);
     text(r, app.f_body, disp + "_", px + 72, py + 120, C_TEXT);
@@ -2033,7 +2177,7 @@ void draw_kb(SDL_Renderer* r)
         for (int ci = 0; ci < (int)row.size(); ci++) {
             int x = x0 + ci * (kw + kgap);
             bool sel = app.kb_r == ri && app.kb_c == ci;
-            fill_rect(r, x, y, kw, kh, sel ? g_accent : SDL_Color{ 32, 41, 70, 220 });
+            fill_rect(r, x, y, kw, kh, sel ? g_accent : C_PANEL);
             std::string lab = row[ci];
             if (lab == "ABC") lab = app.kb_shift ? "abc" : "ABC";
             else if (lab == " ") lab = tr(T_KB_SPACE);
@@ -2043,7 +2187,7 @@ void draw_kb(SDL_Renderer* r)
             else if (app.kb_shift && lab.size() == 1)
                 lab[0] = (char)toupper((unsigned char)lab[0]);
             text(r, app.f_small, lab, x + kw / 2, y + 15,
-                 sel ? SDL_Color{ 11, 16, 32, 255 } : C_TEXT, Align::Center);
+                 sel ? C_BG : C_TEXT, Align::Center);
         }
     }
     text(r, app.f_small, tr(T_CONFIRM_HINT), W / 2, py + ph - 34, C_DIM, Align::Center);
@@ -2091,7 +2235,7 @@ void draw_wifi(SDL_Renderer* r)
         int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3 : w.signal >= -78 ? 2 : 1;
         for (int b = 0; b < 4; b++) {
             int h = 6 + b * 5;
-            SDL_Color bc = (b < bars) ? g_accent : SDL_Color{ 60, 68, 96, 160 };
+            SDL_Color bc = (b < bars) ? g_accent : SDL_Color{ C_DIM.r, C_DIM.g, C_DIM.b, 90 };
             fill_rect(r, W - 92 + b * 13, y + 36 - h, 8, h, bc);
         }
     }
@@ -2188,7 +2332,7 @@ void draw_settings(SDL_Renderer* r)
         text(r, app.f_body, rows[i], 150, y + 10, tc);
         if (i == 0 || i == 1) {
             int v = (i == 0) ? app.settings.brightness : app.settings.volume;
-            fill_rect(r, 560, y + 20, 240, 12, { 60, 68, 96, 160 });
+            fill_rect(r, 560, y + 20, 240, 12, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
             fill_rect(r, 560, y + 20, 240 * v / 100, 12, g_accent);
             char b[16];
             snprintf(b, sizeof(b), "%d%%", v);
@@ -2275,10 +2419,289 @@ void draw_saves(SDL_Renderer* r)
     draw_hint(r, tr(T_SAVES_HINT));
 }
 
+// ---------------------------------------------------------------------------
+// activity statistics / favorites / history
+// ---------------------------------------------------------------------------
+void draw_tabbar(SDL_Renderer* r, const std::vector<std::string>& names, int active)
+{
+    int x = 32;
+    for (int i = 0; i < (int)names.size(); i++) {
+        int w = text_width(app.f_body, names[i]) + 32;
+        if (i == active) {
+            fill_rect(r, x, 104, w, 46, C_PANEL);
+            fill_rect(r, x, 146, w, 4, g_accent);
+        }
+        text(r, app.f_body, names[i], x + 16, 112, (i == active) ? C_TEXT : C_DIM);
+        x += w + 10;
+    }
+}
+
+void draw_scrollbar(SDL_Renderer* r, int top, int vis, int rowh, int n, int scroll, int w)
+{
+    if (n <= vis) return;
+    int trackh = vis * rowh;
+    int barh = std::max(30, trackh * vis / n);
+    int bary = top + (trackh - barh) * scroll / std::max(1, n - vis);
+    fill_rect(r, w - 14, top, 4, trackh, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
+    fill_rect(r, w - 14, bary, 4, barh, g_accent);
+}
+
+// Two-line selectable row: title above, dim meta below, one value on the right.
+void draw_row(SDL_Renderer* r, int y, int w, bool sel, const std::string& title,
+              const std::string& meta, const std::string& right, SDL_Color rightc)
+{
+    const int rowh = 76;
+    if (sel) {
+        fill_rect(r, 24, y, w - 48, rowh - 6, C_PANEL);
+        fill_rect(r, 24, y, 5, rowh - 6, g_accent);
+    }
+    int rw = text_width(app.f_small, right);
+    text(r, app.f_body, ellipsize(app.f_body, title, w - 100 - rw),
+         48, y + 4, sel ? C_TEXT : C_DIM);
+    text(r, app.f_small, ellipsize(app.f_small, meta, w - 100 - rw), 48, y + 44, C_DIM);
+    if (!right.empty()) text(r, app.f_small, right, w - 40, y + 26, rightc, Align::Right);
+}
+
+// Rows the current activity tab lets you select. Trends is a chart: nothing.
+static int act_row_count()
+{
+    switch (app.act_tab) {
+    case 0:  return std::min(5, (int)app.act_games.size());
+    case 1:  return (int)app.act_sessions.size();
+    case 3:  return (int)app.act_picks.size();
+    default: return 0;
+    }
+}
+
+void draw_activity(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    text(r, app.f_title, tr(T_ACTIVITY), 32, 26, C_TEXT);
+    text(r, app.f_body, fmt_duration(app.act_total), W - 32, 34, C_DIM, Align::Right);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+    draw_tabbar(r, { tr(T_TAB_OVERVIEW), tr(T_TAB_TIMELINE),
+                     tr(T_TAB_TREND), tr(T_TAB_PICKS) }, app.act_tab);
+
+    const int top = 164, rowh = 76, vis = 7;
+
+    if (app.act_tab == 0) {
+        long long today = app.act_daily.empty() ? 0 : app.act_daily.back();
+        long long week = 0;
+        for (int i = std::max(0, (int)app.act_daily.size() - 7);
+             i < (int)app.act_daily.size(); i++)
+            week += app.act_daily[i];
+
+        const char* labels[] = { tr(T_ACT_TOTAL), tr(T_ACT_SESSIONS),
+                                 tr(T_ACT_GAMES_PLAYED), tr(T_ACT_TODAY) };
+        // act_sessions is capped at the newest 200 for browsing; the count tile
+        // must be the real total, which the per-game aggregates still carry.
+        long long sess_total = 0;
+        for (const auto& g : app.act_games) sess_total += g.sessions;
+        char v1[32], v2[64];
+        snprintf(v1, sizeof(v1), "%lld", sess_total);
+        snprintf(v2, sizeof(v2), tr(T_ACT_GAMES_FMT), app.act_games.size());
+        std::string vals[] = { fmt_duration(app.act_total), v1, v2, fmt_duration(today) };
+        // 2x2 rather than 4-across: a localised "9999 小时 59 分" needs 213px
+        // at 30pt, which a 228px tile cannot show without truncating.
+        for (int i = 0; i < 4; i++) {
+            int x = 32 + (i % 2) * 488, y = 170 + (i / 2) * 108;
+            fill_rect(r, x, y, 472, 96, C_PANEL);
+            fill_rect(r, x, y, 472, 3, g_accent);
+            text(r, app.f_small, labels[i], x + 16, y + 12, C_DIM);
+            text(r, app.f_body, ellipsize(app.f_body, vals[i], 440), x + 16, y + 44, C_TEXT);
+        }
+        text(r, app.f_small, tr(T_ACT_WEEK) + std::string(" · ") + fmt_duration(week),
+             32, 390, C_DIM);
+        text(r, app.f_body, tr(T_ACT_MOST), 32, 424, C_TEXT);
+
+        if (app.act_games.empty()) {
+            text(r, app.f_body, tr(T_ACT_EMPTY), W / 2, 500, C_TEXT, Align::Center);
+            text(r, app.f_small, tr(T_ACT_EMPTY_HELP), W / 2, 556, C_DIM, Align::Center);
+        } else {
+            for (int i = 0; i < act_row_count(); i++) {
+                const GameStat& g = app.act_games[i];
+                int y = 466 + i * 48;
+                bool sel = (i == app.act_sel);
+                if (sel) {
+                    fill_rect(r, 24, y, W - 48, 44, C_PANEL);
+                    fill_rect(r, 24, y, 5, 44, g_accent);
+                }
+                char rk[8], ss[64];
+                snprintf(rk, sizeof(rk), "%d", i + 1);
+                snprintf(ss, sizeof(ss), tr(T_ACT_SESSIONS_FMT), g.sessions);
+                text(r, app.f_body, rk, 48, y + 6, sel ? g_accent : C_DIM);
+                text(r, app.f_body, ellipsize(app.f_body, g.title, 440),
+                     96, y + 6, sel ? C_TEXT : C_DIM);
+                text(r, app.f_small, console_badge(g.sys), W - 420, y + 11, C_DIM, Align::Right);
+                text(r, app.f_small, ss, W - 250, y + 11, C_DIM, Align::Right);
+                text(r, app.f_small, fmt_duration(g.seconds), W - 48, y + 11,
+                     g_accent, Align::Right);
+            }
+        }
+    } else if (app.act_tab == 1) {
+        if (app.act_sessions.empty()) {
+            text(r, app.f_body, tr(T_ACT_EMPTY), W / 2, 330, C_TEXT, Align::Center);
+            text(r, app.f_small, tr(T_ACT_EMPTY_HELP), W / 2, 386, C_DIM, Align::Center);
+        } else {
+            if (app.act_sel < app.act_scroll) app.act_scroll = app.act_sel;
+            if (app.act_sel >= app.act_scroll + vis) app.act_scroll = app.act_sel - vis + 1;
+            for (int i = 0; i < vis; i++) {
+                int idx = app.act_scroll + i;
+                if (idx >= (int)app.act_sessions.size()) break;
+                const PlaySession& s = app.act_sessions[idx];
+                draw_row(r, top + i * rowh, W, idx == app.act_sel, s.title,
+                         fmt_when(s.start) + " · " + console_badge(s.sys),
+                         fmt_duration(s.seconds), g_accent);
+            }
+            draw_scrollbar(r, top, vis, rowh, (int)app.act_sessions.size(),
+                           app.act_scroll, W);
+        }
+    } else if (app.act_tab == 2) {
+        long long mx = 0;
+        for (long long v : app.act_daily) mx = std::max(mx, v);
+        text(r, app.f_body, tr(T_ACT_TREND_TITLE), 32, 170, C_TEXT);
+        if (mx == 0) {
+            text(r, app.f_body, tr(T_ACT_NO_TREND), W / 2, 330, C_TEXT, Align::Center);
+        } else {
+            const int n = (int)app.act_daily.size();
+            const int cx0 = 48, cw = W - 96, base = 430, ch = 200;
+            int slot = cw / n, bw = slot - 14;
+            time_t now = time(nullptr);
+            for (int i = 0; i < n; i++) {
+                int x = cx0 + i * slot + 7;
+                int h = (int)(ch * app.act_daily[i] / mx);
+                fill_rect(r, x, base - ch, bw, ch, { C_DIM.r, C_DIM.g, C_DIM.b, 60 });
+                if (h > 0) fill_rect(r, x, base - h, bw, h, g_accent);
+                // label by local calendar day, not now - k*86400: a DST change
+                // would otherwise shift every label after it by one day
+                struct tm tmv;
+                localtime_r(&now, &tmv);
+                tmv.tm_hour = 0; tmv.tm_min = 0; tmv.tm_sec = 0;
+                tmv.tm_mday -= (n - 1 - i);
+                // -1, not today's tm_isdst: the shifted day can be on the other
+                // side of a DST change, and a stale flag makes mktime move the
+                // hour — which can roll the label back to the previous day.
+                tmv.tm_isdst = -1;
+                mktime(&tmv);
+                char d[8];
+                snprintf(d, sizeof(d), "%d", tmv.tm_mday);
+                text(r, app.f_small, d, x + bw / 2, base + 8, C_DIM, Align::Center);
+            }
+            fill_rect(r, cx0, base, cw, 2, { C_DIM.r, C_DIM.g, C_DIM.b, 200 });
+        }
+        text(r, app.f_body, tr(T_ACT_BY_CONSOLE), 32, 486, C_TEXT);
+        long long per[5] = { 0, 0, 0, 0, 0 };
+        for (const auto& g : app.act_games) {
+            int ci = console_index(g.sys);
+            if (ci < 5) per[ci] += g.seconds;
+        }
+        long long pmx = 0;
+        for (long long v : per) pmx = std::max(pmx, v);
+        for (int i = 0; i < 5; i++) {
+            int y = 524 + i * 36;
+            text(r, app.f_small, consoles()[i].name_en, 48, y, C_DIM);
+            fill_rect(r, 140, y + 6, 600, 14, { C_DIM.r, C_DIM.g, C_DIM.b, 60 });
+            if (pmx > 0 && per[i] > 0)
+                fill_rect(r, 140, y + 6, (int)(600 * per[i] / pmx), 14, g_accent);
+            text(r, app.f_small, fmt_duration(per[i]), W - 48, y, C_DIM, Align::Right);
+        }
+    } else {
+        if (app.act_picks.empty()) {
+            text(r, app.f_body, tr(T_ACT_PICKS_EMPTY), W / 2, 330, C_TEXT, Align::Center);
+            text(r, app.f_small, tr(T_ACT_PICKS_HELP), W / 2, 386, C_DIM, Align::Center);
+        } else {
+            if (app.act_sel < app.act_scroll) app.act_scroll = app.act_sel;
+            if (app.act_sel >= app.act_scroll + vis) app.act_scroll = app.act_sel - vis + 1;
+            const char* reasons[] = { tr(T_PICK_FAV_NEW), tr(T_PICK_FAV_BACK),
+                                      tr(T_PICK_NEW), tr(T_PICK_BACK),
+                                      tr(T_PICK_REGULAR) };
+            for (int i = 0; i < vis; i++) {
+                int idx = app.act_scroll + i;
+                if (idx >= (int)app.act_picks.size()) break;
+                const Pick& p = app.act_picks[idx];
+                std::string right;
+                if (p.idle_days > 0) {
+                    char b[64];
+                    snprintf(b, sizeof(b), tr(T_PICK_IDLE_FMT), p.idle_days);
+                    right = b;
+                } else if (p.seconds > 0) {
+                    right = fmt_duration(p.seconds);
+                }
+                draw_row(r, top + i * rowh, W, idx == app.act_sel, p.title,
+                         std::string(reasons[p.reason]) + " · " + console_badge(p.sys),
+                         right, C_AMBER);
+            }
+            draw_scrollbar(r, top, vis, rowh, (int)app.act_picks.size(), app.act_scroll, W);
+        }
+    }
+    draw_hint(r, tr(T_ACTIVITY_HINT));
+}
+
+void draw_quick(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    text(r, app.f_title, tr(T_QUICK), 32, 26, C_TEXT);
+    char b[96];
+    snprintf(b, sizeof(b), tr(T_QUICK_COUNT_FMT), app.quick.size());
+    text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+    draw_tabbar(r, { tr(T_TAB_FAV), tr(T_TAB_HISTORY) }, app.quick_tab);
+
+    const int top = 164, rowh = 76, vis = 7;
+    const int listw = W - 360;   // leave room for the cover panel
+
+    if (app.quick.empty()) {
+        text(r, app.f_body,
+             app.quick_tab == 0 ? tr(T_QUICK_EMPTY_FAV) : tr(T_QUICK_EMPTY_HIST),
+             listw / 2, 330, C_TEXT, Align::Center);
+        text(r, app.f_small,
+             app.quick_tab == 0 ? tr(T_QUICK_EMPTY_FAV_HELP) : tr(T_QUICK_EMPTY_HIST_HELP),
+             listw / 2, 386, C_DIM, Align::Center);
+    } else {
+        if (app.quick_sel < app.quick_scroll) app.quick_scroll = app.quick_sel;
+        if (app.quick_sel >= app.quick_scroll + vis) app.quick_scroll = app.quick_sel - vis + 1;
+        for (int i = 0; i < vis; i++) {
+            int idx = app.quick_scroll + i;
+            if (idx >= (int)app.quick.size()) break;
+            const QuickEntry& e = app.quick[idx];
+            std::string title = e.game.title;
+            if (fav_contains(e.sys, title)) title = "★ " + title;
+            std::string meta = console_badge(e.sys);
+            if (e.missing) {
+                meta += " · " + std::string(tr(T_QUICK_MISSING));
+            } else if (e.last > 0) {
+                meta += " · " + fmt_when(e.last) + " · " + fmt_duration(e.seconds);
+            }
+            // No right-hand value column: the meta line already carries the
+            // duration, and duplicating it would cost the title 156px.
+            draw_row(r, top + i * rowh, listw, idx == app.quick_sel, title, meta,
+                     "", C_DIM);
+        }
+        draw_scrollbar(r, top, vis, rowh, (int)app.quick.size(), app.quick_scroll, listw);
+
+        const QuickEntry& e = app.quick[app.quick_sel];
+        int px = W - 320, py = 190, pw = 280, ph = 280;
+        fill_rect(r, px - 8, py - 8, pw + 16, ph + 16, C_PANEL);
+        SDL_Texture* cv = e.missing ? nullptr
+                                    : cover_tex(r, cover_path(e.sys, e.game.title));
+        if (cv) {
+            SDL_Rect dst = { px, py, pw, ph };
+            draw_tex(r, cv, dst);
+        } else if (!e.missing && app.icons[e.con]) {
+            SDL_Rect dst = { px + 40, py + 40, pw - 80, ph - 80 };
+            draw_tex(r, app.icons[e.con], dst, 160);
+        }
+        text(r, app.f_small, tr(T_COVER), px + pw / 2, py + ph + 20, C_DIM, Align::Center);
+    }
+    draw_hint(r, tr(T_QUICK_HINT));
+}
+
 void draw_msg(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, H, { 5, 8, 18, 170 });
+    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 170 });
     int pw = 820, ph = 460, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, C_AMBER);
@@ -2295,7 +2718,7 @@ void draw_msg(SDL_Renderer* r)
 void draw_confirm(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, H, { 5, 8, 18, 170 });
+    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 170 });
     int pw = 640, ph = 300, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, C_RED);
@@ -2334,7 +2757,7 @@ void draw_ambient()
         fill_rect(r, 0, H - 6, W, 6, g_accent);
     }
     // theme tint over the bottom panel (stronger than top for a live feel)
-    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, 26 });
+    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, (Uint8)g_tint_bot });
 
     text(r, app.f_logo, "gameOS", W / 2, 170, g_accent, Align::Center);
 
@@ -2376,12 +2799,131 @@ static void rebuild_list()
     app.scroll = 0;
 }
 
+// Resolve a "<system>/<title>" key to something launchable. games_for() is the
+// same cached scan the console list uses, so a favorite on the TF2 card keeps
+// its real path and launches from there.
+static QuickEntry resolve_entry(const std::string& sys, const std::string& title)
+{
+    QuickEntry e;
+    e.sys = sys;
+    e.game.title = title;
+    int ci = console_index(sys);
+    if (ci < 5) {
+        e.con = ci;
+        for (const auto& g : games_for(ci)) {
+            if (g.title == title) {
+                e.game = g;
+                return e;
+            }
+        }
+    }
+    e.missing = true;   // con stays 0: the row is never launchable anyway
+    return e;
+}
+
+static void rebuild_quick()
+{
+    app.quick.clear();
+    std::map<std::string, GameStat> played;
+    for (const auto& g : activity_games())
+        played[g.sys + "\t" + g.title] = g;
+
+    if (app.quick_tab == 0) {
+        auto keys = fav_list();
+        // console order first, so the list reads like the carousel
+        std::stable_sort(keys.begin(), keys.end(),
+                         [](const std::pair<std::string, std::string>& a,
+                            const std::pair<std::string, std::string>& b) {
+            int ia = console_index(a.first), ib = console_index(b.first);
+            if (ia != ib) return ia < ib;
+            return a.second < b.second;
+        });
+        for (const auto& k : keys) {
+            QuickEntry e = resolve_entry(k.first, k.second);
+            auto it = played.find(k.first + "\t" + k.second);
+            if (it != played.end()) { e.seconds = it->second.seconds; e.last = it->second.last; }
+            app.quick.push_back(std::move(e));
+        }
+    } else {
+        std::vector<GameStat> hist;
+        for (const auto& kv : played) hist.push_back(kv.second);
+        std::sort(hist.begin(), hist.end(), [](const GameStat& a, const GameStat& b) {
+            if (a.last != b.last) return a.last > b.last;
+            if (a.sys != b.sys) return a.sys < b.sys;
+            return a.title < b.title;
+        });
+        for (const auto& s : hist) {
+            QuickEntry e = resolve_entry(s.sys, s.title);
+            e.seconds = s.seconds;
+            e.last = s.last;
+            app.quick.push_back(std::move(e));
+        }
+    }
+    app.quick_sel = std::clamp(app.quick_sel, 0, std::max(0, (int)app.quick.size() - 1));
+    app.quick_scroll = 0;
+}
+
+static void rebuild_activity()
+{
+    app.act_sessions = activity_sessions();
+    // the timeline is a browsing aid, not an archive: keep the newest 200 so a
+    // years-old log cannot make the screen allocate and sort unbounded rows
+    if (app.act_sessions.size() > 200) app.act_sessions.resize(200);
+    app.act_games = activity_games();
+    app.act_daily = activity_daily(14);
+    app.act_total = activity_total();
+
+    std::vector<LibEntry> lib;
+    for (int i = 0; i < 5; i++)
+        for (const auto& g : games_for(i))
+            lib.push_back(LibEntry{ consoles()[i].id, g.title });
+    app.act_picks = activity_recommend(lib, 12);
+
+    app.act_sel = 0;
+    app.act_scroll = 0;
+}
+
+// The game the highlighted activity row points at. Trends has no rows.
+static bool act_selected(std::string& sys, std::string& title)
+{
+    if (app.act_sel >= act_row_count()) return false;
+    if (app.act_tab == 0) {
+        sys = app.act_games[app.act_sel].sys;
+        title = app.act_games[app.act_sel].title;
+    } else if (app.act_tab == 1) {
+        sys = app.act_sessions[app.act_sel].sys;
+        title = app.act_sessions[app.act_sel].title;
+    } else {
+        sys = app.act_picks[app.act_sel].sys;
+        title = app.act_picks[app.act_sel].title;
+    }
+    return true;
+}
+
 static void toggle_fav()
 {
-    if (app.screen != Screen::List || app.games.empty()) return;
-    fav_toggle(consoles()[app.carousel].id, app.games[app.sel].title);
-    sound_play(SND_FAV);
-    if (app.fav_only) rebuild_list();
+    if (app.screen == Screen::List) {
+        if (app.games.empty()) return;
+        fav_toggle(consoles()[app.carousel].id, app.games[app.sel].title);
+        sound_play(SND_FAV);
+        if (app.fav_only) rebuild_list();
+    } else if (app.screen == Screen::Quick) {
+        if (app.quick.empty()) return;
+        std::string sys = app.quick[app.quick_sel].sys;
+        std::string title = app.quick[app.quick_sel].game.title;
+        fav_toggle(sys, title);
+        sound_play(SND_FAV);
+        // un-favoriting on the favorites tab removes the row outright
+        if (app.quick_tab == 0) rebuild_quick();
+    } else if (app.screen == Screen::Activity) {
+        std::string sys, title;
+        if (!act_selected(sys, title)) return;
+        fav_toggle(sys, title);
+        sound_play(SND_FAV);
+        int keep = app.act_sel;
+        rebuild_activity();   // the recommendation ranking depends on favorites
+        app.act_sel = std::clamp(keep, 0, std::max(0, act_row_count() - 1));
+    }
 }
 
 static void toggle_fav_only()
@@ -2395,7 +2937,8 @@ static void toggle_fav_only()
 static void cycle_theme(int dir = 1)
 {
     app.settings.theme = (app.settings.theme + dir + 4) % 4;
-    g_accent = C_THEMES[app.settings.theme];
+    apply_theme(app.settings.theme);
+    load_theme_assets();
     save_settings(app.settings);
 }
 
@@ -2409,24 +2952,44 @@ static void cycle_lang(int dir = 1)
 
 void enter_selection()
 {
-    if (app.carousel == 5) {
+    if (app.carousel == CAR_SETTINGS) {
         app.screen = Screen::Settings;
         app.set_sel = 0;
         return;
     }
-    const Console& c = consoles()[app.carousel];
+    if (app.carousel == CAR_ACTIVITY) {
+        rebuild_activity();
+        app.screen = Screen::Activity;
+        return;
+    }
+    if (app.carousel == CAR_QUICK) {
+        rebuild_quick();
+        app.screen = Screen::Quick;
+        return;
+    }
     invalidate_games(app.carousel);   // entering a console: force a fresh scan
     app.sel = 0;
     rebuild_list();
     app.screen = Screen::List;
 }
 
-// Explicit refresh (Y button / R key): rescan the current console. On the
-// list screen update app.games immediately; on home the next draw_home picks
-// up the invalidated cache.
+// Explicit refresh (Y button / R key). On the list screen update app.games
+// immediately; on home the next draw_home picks up the invalidated cache.
 static void refresh_games()
 {
     sound_play(SND_ADJUST);
+    // the two libraries span every console, so one invalidation is not enough
+    if (app.screen == Screen::Activity || app.screen == Screen::Quick) {
+        for (int i = 0; i < 5; i++) invalidate_games(i);
+        if (app.screen == Screen::Activity) {
+            int keep = app.act_sel;
+            rebuild_activity();
+            app.act_sel = std::clamp(keep, 0, std::max(0, act_row_count() - 1));
+        } else {
+            rebuild_quick();
+        }
+        return;
+    }
     invalidate_games(app.carousel);
     if (app.screen == Screen::List) rebuild_list();
 }
@@ -2448,12 +3011,18 @@ static void tf2_poll()
     seen = std::move(s);
     for (int i = 0; i < 5; i++) invalidate_games(i);
     if (app.screen == Screen::List) rebuild_list();
+    else if (app.screen == Screen::Quick) rebuild_quick();
+    else if (app.screen == Screen::Activity) {
+        int keep = app.act_sel;
+        rebuild_activity();
+        app.act_sel = std::clamp(keep, 0, std::max(0, act_row_count() - 1));
+    }
 }
 
-void do_launch()
+// Launch one game from any screen (console list, favorites, history, a
+// recommendation). Records the session; the caller refreshes its own list.
+static void launch_one(const Console& c, const Game& g)
 {
-    if (app.games.empty()) return;
-    const Console& c = consoles()[app.carousel];
     // BIOS is only needed to actually run a game; gate launching, not list
     // entry, so an empty NDS library looks like every other empty console.
     if (c.dual && !nds_bios_ok()) {
@@ -2463,11 +3032,21 @@ void do_launch()
         show_msg(tr(T_BIOS_TITLE), std::string(m) + "\n" + tr(T_BIOS_BODY));
         return;
     }
-    const Game& g = app.games[app.sel];
 
+    long long wall_start = (long long)time(nullptr);
     SDL_Delay(230);                    // let the launch chime ring out
     shutdown_gfx();                    // release DRM master
+    // CLOCK_MONOTONIC, not the wall clock: gameos-sleepd suspends to RAM on lid
+    // close and CLOCK_REALTIME jumps forward by the sleep time on resume.
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     int rc = launch_game(c, g);
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    // Log the session BEFORE taking the panels back: if init_gfx() fails the UI
+    // exits right here, and the hour just played would otherwise never be saved.
+    if (rc != 127)
+        activity_record(c.id, g.title, wall_start, (long long)(t1.tv_sec - t0.tv_sec));
     if (!init_gfx()) {                 // emulator exited — take panels back
         // Graphics re-init failed (DRM still held / mode broken). Exit non-zero
         // so the session supervisor backs off instead of treating it as a clean
@@ -2476,11 +3055,19 @@ void do_launch()
         app.exit_code = 1;
         return;
     }
+
     if (rc == 127) {
         sound_play(SND_ERROR);
         show_msg(tr(T_EMU_FAIL), tr(T_EMU_FAIL_BODY));
     } else if (rc != 0)
         fprintf(stderr, "gameos-ui: emulator exited with %d\n", rc);
+}
+
+void do_launch()
+{
+    if (app.games.empty()) return;
+    launch_one(consoles()[app.carousel], app.games[app.sel]);
+    if (!app.running) return;
 
     // Back from the emulator: refresh the cached list and keep selection in
     // range (a ROM may have been added/removed, saves/screenshots changed).
@@ -2494,6 +3081,8 @@ void go_back()
     sound_play(SND_BACK);
     switch (app.screen) {
     case Screen::List:
+    case Screen::Activity:
+    case Screen::Quick:
         app.screen = Screen::Home;
         break;
     case Screen::Settings:
@@ -2539,6 +3128,31 @@ void confirm_btn()
     case Screen::List:
         do_launch();
         break;
+    case Screen::Activity: {
+        std::string sys, title;
+        if (!act_selected(sys, title)) break;
+        QuickEntry e = resolve_entry(sys, title);
+        if (e.missing) { sound_play(SND_ERROR); break; }
+        int con = e.con, keep = app.act_sel;
+        Game g = e.game;
+        launch_one(consoles()[con], g);
+        if (!app.running) break;
+        invalidate_games(con);
+        rebuild_activity();
+        app.act_sel = std::clamp(keep, 0, std::max(0, act_row_count() - 1));
+        break;
+    }
+    case Screen::Quick: {
+        if (app.quick.empty()) break;
+        if (app.quick[app.quick_sel].missing) { sound_play(SND_ERROR); break; }
+        int con = app.quick[app.quick_sel].con;
+        Game g = app.quick[app.quick_sel].game;
+        launch_one(consoles()[con], g);
+        if (!app.running) break;
+        invalidate_games(con);
+        rebuild_quick();
+        break;
+    }
     case Screen::Settings:
         if (app.set_sel == 2) bt_enter();
         else if (app.set_sel == 3) wifi_enter();
@@ -2648,11 +3262,31 @@ void navigate(int dx, int dy)
     }
     switch (app.screen) {
     case Screen::Home:
-        if (dx) app.carousel = (app.carousel + dx + 6) % 6;
+        if (dx) app.carousel = (app.carousel + dx + CAR_N) % CAR_N;
         break;
     case Screen::List:
         if (dy && !app.games.empty())
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
+        break;
+    case Screen::Activity:
+        if (dx) {
+            app.act_tab = (app.act_tab + dx + 4) % 4;
+            app.act_sel = 0;
+            app.act_scroll = 0;
+        }
+        if (dy) {
+            int n = act_row_count();
+            if (n > 0) app.act_sel = std::clamp(app.act_sel + dy, 0, n - 1);
+        }
+        break;
+    case Screen::Quick:
+        if (dx) {
+            app.quick_tab = (app.quick_tab + dx + 2) % 2;
+            app.quick_sel = 0;
+            rebuild_quick();
+        }
+        if (dy && !app.quick.empty())
+            app.quick_sel = std::clamp(app.quick_sel + dy, 0, (int)app.quick.size() - 1);
         break;
     case Screen::Settings:
         if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 11);
@@ -2895,7 +3529,7 @@ int main(int, char**)
     app.settings = load_settings();
     g_lang = (Lang)std::clamp(app.settings.language, 0, (int)LANG_COUNT - 1);
     app.carousel = app.settings.last_console;
-    g_accent = C_THEMES[app.settings.theme];
+    apply_theme(app.settings.theme);
     app.saves = scan_saves();
     apply_brightness(app.settings.brightness);
     // Restore the user's saved volume on every startup. S20gameos now only
@@ -2983,6 +3617,8 @@ int main(int, char**)
         case Screen::Wifi:      draw_wifi(r); break;
         case Screen::Bluetooth: draw_bluetooth(r); break;
         case Screen::Saves:     draw_saves(r); break;
+        case Screen::Activity:  draw_activity(r); break;
+        case Screen::Quick:     draw_quick(r); break;
         case Screen::Update:    draw_update(r); break;
         case Screen::Setup:     draw_setup(r); break;
         case Screen::Msg:       draw_msg(r); break;
@@ -2993,7 +3629,9 @@ int main(int, char**)
         SDL_Delay(1);
     }
 
-    app.settings.last_console = std::clamp(app.carousel, 0, 4);
+    // Only a console tile is a "last console"; Activity/Quick/Settings would
+    // otherwise be clamped onto psp and reopen there next boot.
+    if (app.carousel < 5) app.settings.last_console = app.carousel;
     save_settings(app.settings);
     shutdown_gfx();
     return app.exit_code;

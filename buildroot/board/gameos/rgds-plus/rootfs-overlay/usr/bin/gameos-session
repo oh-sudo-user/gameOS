@@ -54,8 +54,9 @@ while true; do
       kill "$INPUTD_PID" 2>/dev/null
       # -f is deliberate: the UI and emulator are already gone and data is
       # synced. A normal poweroff waits on init's shutdown scripts and can
-      # hang the device; at worst exFAT is left with a dirty flag, which the
-      # next mount repairs.
+      # hang the device. sync flushes file data first; the exFAT dirty flag
+      # an unclean unmount leaves is only warned about at the next mount —
+      # the kernel does not repair it (that needs fsck.exfat).
       sync
       /sbin/poweroff -f
       ;;

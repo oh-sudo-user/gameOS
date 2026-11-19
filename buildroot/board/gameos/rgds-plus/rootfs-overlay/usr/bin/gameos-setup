@@ -33,6 +33,9 @@ ARG=$RUN/setup-arg
 ZONEINFO=/usr/share/zoneinfo
 CA=/etc/ssl/certs/ca-certificates.crt
 RA_URL=https://retroachievements.org/dorequest.php
+# The Connect API requires unofficial clients to identify themselves with a
+# unique, descriptive User-Agent (RAWeb public/dorequest.php, requirement 3).
+RA_UA="gameOS-setup/1.0 (Anbernic RG DS; +https://github.com/oh-sudo-user/gameOS)"
 
 mkdir -p "$RUN" 2>/dev/null
 
@@ -143,7 +146,7 @@ do_ra_login() {
     fi
 
     resp=$(curl -sS --max-time 25 --connect-timeout 10 --cacert "$CA" \
-                "$@" "$RA_URL" 2>"$d/err")
+                -A "$RA_UA" "$@" "$RA_URL" 2>"$d/err")
     rc=$?
     rm -rf "$d"
 
@@ -161,6 +164,17 @@ do_ra_login() {
     ok=$(printf '%s' "$resp" | sed -n 's/.*"Success"[[:space:]]*:[[:space:]]*true.*/1/p')
     if [ "$ok" != 1 ]; then
         why=$(printf '%s' "$resp" | sed -n 's/.*"Error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        # A rejected token is dead for good, and do_status reports ra=1 purely
+        # from this file existing -- so leaving it behind would show "logged in"
+        # for a session that can never unlock anything. Only invalidate on
+        # token re-auth: a failed password attempt says nothing about the
+        # token we already hold. An HTML error page yields no "Error" field,
+        # so a server outage never logs the user out.
+        if [ -z "$p" ]; then
+            case $why in
+            expired_token|invalid_credentials|access_denied) rm -f "$RA_CFG" ;;
+            esac
+        fi
         echo "ERROR ${why:-login-failed}"
         return 1
     fi

@@ -41,8 +41,12 @@ define GAMEOS_LINUX_INSTALL_DTS
 	      $(@D)/drivers/gpu/drm/panel/
 	grep -q 'panel-generic-dsi.o' $(@D)/drivers/gpu/drm/panel/Makefile || \
 	      echo 'obj-y += panel-generic-dsi.o' >> $(@D)/drivers/gpu/drm/panel/Makefile
-	grep -q 'rk3568-anbernic-rg-ds-plus.dtb' $(@D)/arch/arm64/boot/dts/rockchip/Makefile || \
-	      printf 'dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-anbernic-rg-ds-plus.dtb\n' \
+	# $$, not $: make expands $(...) inside a define before the shell sees
+	# it, so a single $ would emit a dead "dtb- +=" line into the kernel
+	# Makefile. Drop any previous append first so re-runs repair old trees.
+	sed -i '/+= rk3568-anbernic-rg-ds-plus\.dtb$$/d' \
+	      $(@D)/arch/arm64/boot/dts/rockchip/Makefile
+	printf 'dtb-$$(CONFIG_ARCH_ROCKCHIP) += rk3568-anbernic-rg-ds-plus.dtb\n' \
 	      >> $(@D)/arch/arm64/boot/dts/rockchip/Makefile
 endef
 LINUX_POST_PATCH_HOOKS += GAMEOS_LINUX_INSTALL_DTS

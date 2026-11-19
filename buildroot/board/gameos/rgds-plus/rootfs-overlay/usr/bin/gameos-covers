@@ -10,11 +10,16 @@
 #
 # Matching is by ROM file name stem, exactly the title the front-end shows
 # (library.cpp scan_dir does not strip region tags), and the file name is
-# sanitised the same way RetroArch does it in gfx_thumbnail_path.c:
+# sanitised the same way RetroArch does it in gfx_thumbnail_path.c:120:
 # & * / : ` " < > ? \ |  ->  _
 #
-# thumbnails.libretro.com is dead (404 for every path), so the two mirrors
-# below are used instead, raw.githubusercontent first and jsDelivr as fallback.
+# Like RetroArch, the full label is tried first and then a short name truncated
+# at the first " (" (gfx_thumbnail_path.c:104-115), so a cover that only exists
+# as "Game.png" is still found for "Game (USA).nds". It is always SAVED under the
+# full title, because that is what cover_path() looks up.
+#
+# thumbnails.libretro.com is the official source and is tried first;
+# raw.githubusercontent and jsDelivr mirror the same content and are fallbacks.
 # A download only counts when it really is a PNG: jsDelivr answers some errors
 # with a 200 HTML page, which would otherwise be saved as a broken cover.
 #
@@ -125,6 +130,9 @@ do_run() {
         [ -s "$list" ] || continue
         repo=$(repo_of "$sys")
         [ -n "$repo" ] || continue
+        # libretro-thumbnails repo names are the display names with spaces
+        # replaced by underscores; the official server wants the spaces back.
+        official=$(printf '%s' "$repo" | tr '_' ' ' | urlencode)
         mkdir -p "$COVERS/$sys"
         while IFS= read -r title; do
             [ -n "$title" ] || continue
@@ -136,27 +144,36 @@ do_run() {
             DONE=$((DONE + 1))
             write_state running "$title"
 
-            name=$(printf '%s' "$title" | LC_ALL=C tr '&*/:`"<>?\\|' '___________')
-            enc=$(printf '%s' "$name" | urlencode)
+            # RetroArch's short-name variant: everything before the first " (".
+            # No bracket means there is no short name to try.
+            short=$(printf '%s' "$title" \
+                    | awk '{ i = index($0, " ("); if (i > 1) print substr($0, 1, i - 1) }')
             tmp=$RUN/covers.dl
             got=0
-            for base in \
+            for cand in "$title" "$short"; do
+                [ -n "$cand" ] || continue
+                name=$(printf '%s' "$cand" | LC_ALL=C tr '&*/:`"<>?\\|' '___________')
+                enc=$(printf '%s' "$name" | urlencode)
+                for base in \
+"https://thumbnails.libretro.com/$official/Named_Boxarts" \
 "https://raw.githubusercontent.com/libretro-thumbnails/$repo/master/Named_Boxarts" \
 "https://cdn.jsdelivr.net/gh/libretro-thumbnails/$repo@master/Named_Boxarts"; do
-                rm -f "$tmp"
-                curl -fsSL --connect-timeout 8 --max-time 45 --cacert "$CA" \
-                     -o "$tmp" "$base/$enc.png" 2>/dev/null
-                rc=$?
-                if [ $rc -eq 0 ]; then
-                    sig=$(head -c 4 "$tmp" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-                    if [ "$sig" = "89504e47" ] \
-                       && mv -f "$tmp" "$COVERS/$sys/$title.png" 2>/dev/null; then
-                        got=1
+                    rm -f "$tmp"
+                    curl -fsSL --connect-timeout 8 --max-time 45 --cacert "$CA" \
+                         -o "$tmp" "$base/$enc.png" 2>/dev/null
+                    rc=$?
+                    if [ $rc -eq 0 ]; then
+                        sig=$(head -c 4 "$tmp" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+                        if [ "$sig" = "89504e47" ] \
+                           && mv -f "$tmp" "$COVERS/$sys/$title.png" 2>/dev/null; then
+                            got=1
+                        fi
+                    elif [ $rc -ne 22 ]; then
+                        FAIL=$((FAIL + 1))   # transport/TLS error, not a 404
                     fi
-                elif [ $rc -ne 22 ]; then
-                    FAIL=$((FAIL + 1))   # transport/TLS error, not a 404
-                fi
-                rm -f "$tmp"
+                    rm -f "$tmp"
+                    [ $got -eq 1 ] && break
+                done
                 [ $got -eq 1 ] && break
             done
             if [ $got -eq 1 ]; then
