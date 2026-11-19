@@ -10,6 +10,8 @@
 #                               line 2 = passphrase (empty = open / saved)
 #                               last line "OK <ip>" or "ERROR <why>"
 #   gameos-wifi disconnect      drop the link, kill DHCP lease
+#   gameos-wifi test            staged connectivity check, key=value lines
+#                               (link, route, dns, net) then OK / ERROR <stage>
 #   gameos-wifi forget          reads wifi-arg line 1 = SSID, drop it from disk
 #   gameos-wifi known           one saved SSID per line
 #   gameos-wifi up | down       bring the supplicant up/down (S30wifi)
@@ -27,12 +29,13 @@ SOCK=/run/wpa_supplicant
 IFACE=${WIFI_IFACE:-}
 WPA="wpa_cli -p $SOCK"
 ACTION=/etc/gameos/wpa_action.sh
+CA=/etc/ssl/certs/ca-certificates.crt
 
 mkdir -p "$RUN"
 
 # one operation at a time; the UI runs these in the background
 case $1 in
-up|down|connect|disconnect|forget|scan) exec 9>"$RUN/wifi.lock"; flock 9 ;;
+up|down|connect|disconnect|forget|scan|test) exec 9>"$RUN/wifi.lock"; flock 9 ;;
 esac
 
 log() { echo "[gameos-wifi] $*"; }
@@ -278,6 +281,69 @@ do_connect() {
     return 1
 }
 
+# --- connectivity test -----------------------------------------------------
+# The target has no timeout(1), so curl's own --connect-timeout/--max-time are
+# the watchdog. DNS is inferred from curl exit 6 (could not resolve host)
+# instead of a separate nslookup, which cannot be time-limited here.
+# Three endpoints, first success wins: the first two are reachable from CN
+# without a proxy, the last one also proves TLS + the CA bundle work.
+probe() { # $1 url -> P_CODE (http status), P_RC (curl exit)
+    P_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+        --connect-timeout 4 --max-time 6 --cacert "$CA" "$1" 2>/dev/null)
+    P_RC=$?
+}
+
+do_test() {
+    enc=$(iface)
+    [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
+
+    if [ "$(state)" != COMPLETED ]; then
+        echo "link=fail"
+        echo "route=wait"
+        echo "dns=wait"
+        echo "net=wait"
+        echo "ERROR link"
+        return 1
+    fi
+    echo "link=ok"
+    echo "ssid=$(link_ssid)"
+    echo "ip=$(link_ip)"
+
+    if ip -4 route 2>/dev/null | grep -q '^default'; then
+        echo "route=ok"
+    else
+        echo "route=fail"
+        echo "dns=wait"
+        echo "net=wait"
+        echo "ERROR route"
+        return 1
+    fi
+
+    resolved=0
+    reached=0
+    for u in http://connect.rom.miui.com/generate_204 \
+             http://www.msftconnecttest.com/connecttest.txt \
+             https://github.com; do
+        probe "$u"
+        [ $P_RC -ne 6 ] && resolved=1
+        case $u in
+        *generate_204) want=204 ;;
+        *)             want=200 ;;
+        esac
+        if [ "$P_CODE" = "$want" ]; then reached=1; break; fi
+    done
+
+    if [ $resolved -eq 1 ]; then echo "dns=ok"; else echo "dns=fail"; fi
+    if [ $reached -eq 1 ]; then
+        echo "net=ok"
+        echo OK
+        return 0
+    fi
+    echo "net=fail"
+    if [ $resolved -eq 1 ]; then echo "ERROR net"; else echo "ERROR dns"; fi
+    return 1
+}
+
 do_disconnect() {
     w disconnect >/dev/null 2>&1
     kill_lease
@@ -304,8 +370,9 @@ down)       do_down ;;
 status)     do_status ;;
 scan)       do_scan ;;
 connect)    do_connect ;;
+test)       do_test ;;
 disconnect) do_disconnect ;;
 forget)     do_forget ;;
 known)      do_known ;;
-*)          echo "Usage: $0 {up|down|status|scan|connect|disconnect|forget|known}"; exit 1 ;;
+*)          echo "Usage: $0 {up|down|status|scan|connect|test|disconnect|forget|known}"; exit 1 ;;
 esac

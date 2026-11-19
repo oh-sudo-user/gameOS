@@ -5,8 +5,10 @@
 # unpowered) until the Bluetooth stack explicitly enables it.
 case "$1" in
     start)
+        /usr/bin/gameos-bootstage 70 network
         modprobe rtw88_8821cs 2>/dev/null
         modprobe snd-soc-aw88166 2>/dev/null
+        /usr/bin/gameos-bootstage 75 network
         ;;
     stop)
         rmmod rtw88_8821cs 2>/dev/null

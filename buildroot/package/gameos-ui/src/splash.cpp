@@ -5,6 +5,12 @@
 // only (see the APPEND line in post-image.sh), and this daemon paints an
 // animated brand screen on both DSI panels until the front-end is ready.
 //
+// The init scripts publish milestones with gameos-bootstage; this daemon
+// renders them as a localised stage line plus a progress bar, so a slow first
+// boot (partition creation, WiFi firmware) looks deliberate instead of hung.
+// The language is picked up from /userdata/system/gameos.ini as soon as the
+// data partition is mounted, and falls back to Simplified Chinese before that.
+//
 // Handoff: gameos-ui writes /run/gameos/splash.stop just before SDL_Init;
 // we cross-fade into the UI's own background over ~250 ms, release DRM
 // master and exit, so the front-end's first frame lands on identical
@@ -19,11 +25,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "i18n.hpp"
 
 namespace {
 
@@ -33,10 +42,15 @@ constexpr int H = 768;
 const SDL_Color C_BG     = {  11,  16,  32, 255 };
 const SDL_Color C_ACCENT = {  53, 208, 186, 255 };
 const SDL_Color C_SHEEN  = { 214, 255, 247, 255 };
+const SDL_Color C_TEXT   = { 226, 236, 245, 255 };
+const SDL_Color C_DIM    = { 140, 158, 178, 255 };
+const SDL_Color C_TRACK  = {  28,  38,  58, 255 };
 
 const char* RUN_DIR   = "/run/gameos";
 const char* PID_FILE  = "/run/gameos/splash.pid";
 const char* STOP_FILE = "/run/gameos/splash.stop";
+const char* STAGE_FILE = "/run/gameos/boot-stage";
+const char* SETTINGS_FILE = "/userdata/system/gameos.ini";
 
 std::string env_dir(const char* var, const char* fallback)
 {
@@ -110,6 +124,63 @@ SDL_Texture* make_radial(SDL_Renderer* ren, int size, float power, Uint8 peak)
     return t;
 }
 
+// --- boot progress ---------------------------------------------------------
+gameos::TKey stage_key(const std::string& s)
+{
+    if (s == "storage") return gameos::T_BOOT_STORAGE;
+    if (s == "data")    return gameos::T_BOOT_DATA;
+    if (s == "network") return gameos::T_BOOT_NETWORK;
+    if (s == "audio")   return gameos::T_BOOT_AUDIO;
+    if (s == "input")   return gameos::T_BOOT_INPUT;
+    if (s == "ready")   return gameos::T_BOOT_READY;
+    return gameos::T_BOOT_DISPLAY;
+}
+
+struct Boot {
+    float pct = 0.f;                          // smoothed, drives the bar
+    int   target = 0;                         // last published percent
+    gameos::TKey stage = gameos::T_BOOT_DISPLAY;
+};
+
+// The stage file is rewritten by tmp+rename, so a read either sees the old
+// contents or the new ones, never a mix. Poll at 6 Hz: init milestones are
+// seconds apart and this runs on the same CPU as the boot itself.
+void poll_boot(Boot& b)
+{
+    static Uint32 next = 0;
+    static bool lang_done = false;
+    Uint32 now = SDL_GetTicks();
+    if (now < next) return;
+    next = now + 160;
+
+    std::ifstream f(STAGE_FILE);
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.compare(0, 4, "pct=") == 0) {
+            int v = atoi(line.c_str() + 4);
+            if (v < 0) v = 0;
+            if (v > 100) v = 100;
+            b.target = v;
+        } else if (line.compare(0, 6, "stage=") == 0) {
+            b.stage = stage_key(line.substr(6));
+        }
+    }
+
+    // /userdata only exists from S20gameos onwards; until then keep zh-CN.
+    if (!lang_done) {
+        std::ifstream s(SETTINGS_FILE);
+        while (std::getline(s, line)) {
+            if (line.compare(0, 9, "language=") != 0) continue;
+            int v = atoi(line.c_str() + 9);
+            if (v >= 0 && v < gameos::LANG_COUNT) {
+                gameos::g_lang = (gameos::Lang)v;
+                lang_done = true;
+            }
+            break;
+        }
+    }
+}
+
 struct Panel {
     SDL_Window*   win   = nullptr;
     SDL_Renderer* ren   = nullptr;
@@ -120,12 +191,56 @@ struct Panel {
     SDL_Texture*  bg    = nullptr;   // the UI background, for the cross-fade
     int lw = 0, lh = 0;              // logo texture size
     float scale = 1.f;               // bottom panel draws a smaller motif
+    std::string fontdir;
+    TTF_Font* f_stage = nullptr;     // localised boot stage line
+    TTF_Font* f_pct   = nullptr;     // percent label
+    SDL_Texture* stage_tex = nullptr;
+    SDL_Texture* pct_tex   = nullptr;
+    int stage_w = 0, stage_h = 0, pct_w = 0, pct_h = 0;
+    int cache_stage = -1, cache_lang = -1, cache_pct = -1;
 };
+
+void set_text(SDL_Renderer* r, TTF_Font* f, const char* s, const SDL_Color& c,
+              SDL_Texture*& tex, int& w, int& h)
+{
+    if (tex) { SDL_DestroyTexture(tex); tex = nullptr; }
+    w = h = 0;
+    if (!f || !s || !*s) return;
+    SDL_Surface* su = TTF_RenderUTF8_Blended(f, s, c);
+    if (!su) return;
+    w = su->w;
+    h = su->h;
+    tex = SDL_CreateTextureFromSurface(r, su);
+    SDL_FreeSurface(su);
+}
+
+// Korean needs its own face; the SC font is used for every other language.
+// Text is scaled less aggressively than the brand motif so the stage line
+// stays readable on the bottom panel.
+void panel_fonts(Panel& p, int lang)
+{
+    if (p.f_stage) { TTF_CloseFont(p.f_stage); p.f_stage = nullptr; }
+    if (p.f_pct)   { TTF_CloseFont(p.f_pct);   p.f_pct   = nullptr; }
+    float ts = 0.6f + 0.4f * p.scale;
+    std::string n = p.fontdir
+        + (lang == gameos::LANG_KO ? "/NotoSansKR-Regular.ttf"
+                                   : "/NotoSansSC-Regular.otf");
+    p.f_stage = TTF_OpenFont(n.c_str(), (int)(30 * ts));
+    p.f_pct   = TTF_OpenFont(n.c_str(), (int)(22 * ts));
+    if (!p.f_stage || !p.f_pct) {
+        std::string a = p.fontdir + "/NotoSansSC-Regular.otf";
+        if (!p.f_stage) p.f_stage = TTF_OpenFont(a.c_str(), (int)(30 * ts));
+        if (!p.f_pct)   p.f_pct   = TTF_OpenFont(a.c_str(), (int)(22 * ts));
+    }
+    p.cache_stage = -1;
+    p.cache_pct = -1;
+}
 
 bool setup_panel(Panel& p, int display, float scale, const std::string& fonts,
                  const std::string& assets, const char* bgname)
 {
     p.scale = scale;
+    p.fontdir = fonts;
     p.win = SDL_CreateWindow("gameOS boot",
         SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display),
         W, H, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -157,20 +272,26 @@ bool setup_panel(Panel& p, int display, float scale, const std::string& fonts,
     p.glow = make_radial(p.ren, 256, 2.2f, 150);
     p.dot  = make_radial(p.ren, 24, 1.6f, 255);
     p.bg   = IMG_LoadTexture(p.ren, (assets + "/" + bgname).c_str());
+    panel_fonts(p, gameos::g_lang);
+    p.cache_lang = gameos::g_lang;
     return p.logo && p.sheen && p.glow && p.dot;
 }
 
 void teardown(Panel& p)
 {
-    for (SDL_Texture* t : { p.bg, p.dot, p.glow, p.sheen, p.logo })
+    for (SDL_Texture* t : { p.bg, p.dot, p.glow, p.sheen, p.logo,
+                            p.stage_tex, p.pct_tex })
         if (t) SDL_DestroyTexture(t);
     p.bg = p.dot = p.glow = p.sheen = p.logo = nullptr;
+    p.stage_tex = p.pct_tex = nullptr;
+    if (p.f_stage) { TTF_CloseFont(p.f_stage); p.f_stage = nullptr; }
+    if (p.f_pct)   { TTF_CloseFont(p.f_pct);   p.f_pct   = nullptr; }
     if (p.ren) { SDL_DestroyRenderer(p.ren); p.ren = nullptr; }
     if (p.win) { SDL_DestroyWindow(p.win);   p.win = nullptr; }
 }
 
 // fade = 1: full animation. fade -> 0: cross-fade into the UI background.
-void draw_panel(Panel& p, float t, float fade)
+void draw_panel(Panel& p, float t, float fade, const Boot& b)
 {
     SDL_Renderer* r = p.ren;
     SDL_SetRenderDrawColor(r, C_BG.r, C_BG.g, C_BG.b, 255);
@@ -228,6 +349,58 @@ void draw_panel(Panel& p, float t, float fade)
         SDL_SetTextureAlphaMod(p.dot, a);
         SDL_RenderCopy(r, p.dot, nullptr, &d);
     }
+
+    // --- boot stage line + progress bar ---
+    int li = (int)gameos::g_lang;
+    if (p.cache_lang != li) { panel_fonts(p, li); p.cache_lang = li; }
+    int si = (int)b.stage;
+    if (p.cache_stage != si) {
+        set_text(r, p.f_stage, gameos::tr(b.stage), C_TEXT,
+                 p.stage_tex, p.stage_w, p.stage_h);
+        p.cache_stage = si;
+    }
+    int ip = (int)(b.pct + 0.5f);
+    if (p.cache_pct != ip) {
+        char buf[16];
+        snprintf(buf, sizeof buf, "%d%%", ip);
+        set_text(r, p.f_pct, buf, C_DIM, p.pct_tex, p.pct_w, p.pct_h);
+        p.cache_pct = ip;
+    }
+
+    float bw = 520.f * p.scale;
+    float bh = 8.f * p.scale;
+    float bx = cx - bw / 2.f;
+    float by = H * 0.79f;
+
+    if (p.stage_tex) {
+        SDL_SetTextureAlphaMod(p.stage_tex, fa);
+        SDL_Rect d = { (int)(cx - p.stage_w / 2.f),
+                       (int)(H * 0.735f - p.stage_h / 2.f),
+                       p.stage_w, p.stage_h };
+        SDL_RenderCopy(r, p.stage_tex, nullptr, &d);
+    }
+
+    SDL_SetRenderDrawColor(r, C_TRACK.r, C_TRACK.g, C_TRACK.b, fa);
+    SDL_Rect track = { (int)bx, (int)by, (int)bw, (int)bh };
+    SDL_RenderFillRect(r, &track);
+
+    float fw = bw * (b.pct / 100.f);
+    if (fw > 1.f) {
+        SDL_SetRenderDrawColor(r, C_ACCENT.r, C_ACCENT.g, C_ACCENT.b, fa);
+        SDL_Rect fill = { (int)bx, (int)by, (int)fw, (int)bh };
+        SDL_RenderFillRect(r, &fill);
+        SDL_SetRenderDrawColor(r, C_SHEEN.r, C_SHEEN.g, C_SHEEN.b,
+                               (Uint8)(fa * 0.7f));
+        SDL_Rect tip = { (int)(bx + fw) - 2, (int)by, 2, (int)bh };
+        SDL_RenderFillRect(r, &tip);
+    }
+
+    if (p.pct_tex) {
+        SDL_SetTextureAlphaMod(p.pct_tex, fa);
+        SDL_Rect d = { (int)(cx - p.pct_w / 2.f),
+                       (int)(by + bh + 14.f * p.scale), p.pct_w, p.pct_h };
+        SDL_RenderCopy(r, p.pct_tex, nullptr, &d);
+    }
 }
 
 } // namespace
@@ -270,17 +443,22 @@ int main()
     Uint32 t0 = SDL_GetTicks();
     float fade = 1.f;
     bool stopping = false;
+    Boot boot;
     for (;;) {
         // Failsafe: never hold DRM master forever if the UI never comes.
         if (!stopping && (access(STOP_FILE, F_OK) == 0 || SDL_GetTicks() - t0 > 90000))
             stopping = true;
         float t = (SDL_GetTicks() - t0) / 1000.f;
+        poll_boot(boot);
         if (stopping) {
+            boot.target = 100;               // finish the bar during the handoff
             fade -= 1.f / 15.f;              // ~250 ms cross-fade at 60 fps
             if (fade < 0.f) fade = 0.f;
         }
-        draw_panel(top, t, fade);
-        if (bot.ren) draw_panel(bot, t, fade * 0.8f);
+        boot.pct += (boot.target - boot.pct) * 0.15f;
+        if (std::fabs(boot.target - boot.pct) < 0.4f) boot.pct = (float)boot.target;
+        draw_panel(top, t, fade, boot);
+        if (bot.ren) draw_panel(bot, t, fade * 0.8f, boot);
         SDL_RenderPresent(top.ren);
         if (bot.ren) SDL_RenderPresent(bot.ren);
         if (stopping && fade <= 0.f) break;

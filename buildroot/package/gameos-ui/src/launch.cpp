@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <vector>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -89,11 +90,21 @@ int launch_game(const Console& c, const Game& g)
             std::string core = std::string("/usr/lib/libretro/") + c.core;
             std::string cfg =
                 std::string("/usr/share/gameos/retroarch/") + c.appendcfg;
-            execlp("retroarch", "retroarch",
-                   "-L", core.c_str(),
-                   "--appendconfig", cfg.c_str(),
-                   "--appendconfig", "/tmp/gameos-ra-lang.cfg",
-                   g.path.c_str(), (char*)nullptr);
+            std::vector<const char*> av = {
+                "retroarch", "-L", core.c_str(),
+                "--appendconfig", cfg.c_str(),
+                "--appendconfig", "/tmp/gameos-ra-lang.cfg",
+            };
+            // RetroAchievements credentials live on /userdata so they survive
+            // an OTA. Appended last so they win over the per-console defaults;
+            // config_save_on_exit is false, so RetroArch never rewrites them.
+            if (access("/userdata/system/retroarch/cheevos.cfg", F_OK) == 0) {
+                av.push_back("--appendconfig");
+                av.push_back("/userdata/system/retroarch/cheevos.cfg");
+            }
+            av.push_back(g.path.c_str());
+            av.push_back(nullptr);
+            execvp("retroarch", (char* const*)av.data());
         } else {
             execlp("ppsspp-run", "ppsspp-run", g.path.c_str(), (char*)nullptr);
         }

@@ -68,6 +68,34 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "没有网络连接，请先在设置里连接 WiFi", "重启并应用更新",
         "当前版本 %s", "Ⓐ 检查更新",
         "确认更新到 %s？", "下载后写入空闲分区，重启生效；游戏和存档不受影响。",
+        // boot stages
+        "初始化显示", "挂载启动分区", "准备游戏数据", "初始化网络",
+        "初始化音频", "准备手柄输入", "即将进入界面",
+        // wizard frame
+        "首次设置", "欢迎使用 gameOS", "第 %d / %d 步",
+        "Ⓐ 下一步    Ⓑ 跳过本步    START 全部跳过",
+        "设置完成", "现在可以开始游戏了。\n之后可在 系统设置 里重新运行本向导。",
+        "这一步需要联网，可先按 Ⓑ 跳过", "跳过全部设置",
+        // connectivity test
+        "测试连通性", "正在测试连通性…", "WiFi 关联", "网关路由", "域名解析",
+        "互联网访问", "正常", "失败", "等待",
+        // timezone
+        "选择时区", "↑↓ 选择    Ⓐ 确定    Ⓑ 跳过", "亚洲", "欧洲", "美洲",
+        "非洲", "大洋洲", "标准时间", "当前时间 %s",
+        // machine name
+        "机器名", "Ⓐ 输入    Ⓑ 跳过", "用于在网络上识别这台机器",
+        "只能用字母、数字和连字符，1-63 个字符，首尾不能是连字符",
+        "机器名已设为 %s",
+        // retroachievements
+        "RetroAchievements 账号", "登录后即可在支持的游戏中解锁成就并上传进度",
+        "用户名", "密码", "硬核模式", "开启后禁用即时存档、读档和金手指",
+        "登录", "正在登录…", "登录成功 · %s", "登录失败：%s",
+        "已登录 · %s", "退出登录",
+        // covers
+        "从 libretro 封面库按游戏名匹配下载封面", "开始下载", "正在下载封面…",
+        "%d / %d · 已下载 %d · 未匹配 %d", "完成：新增 %d 张，未匹配 %d 张",
+        "停止", "没有需要下载封面的游戏", "游戏封面",
+        "继续",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -125,6 +153,34 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "沒有網路連線，請先在設定裡連接 WiFi", "重啟並套用更新",
         "目前版本 %s", "Ⓐ 檢查更新",
         "確認更新到 %s？", "下載後寫入閒置分割區，重啟生效；遊戲和存檔不受影響。",
+        // boot stages
+        "初始化顯示", "掛載啟動分割區", "準備遊戲資料", "初始化網路",
+        "初始化音訊", "準備手把輸入", "即將進入介面",
+        // wizard frame
+        "首次設定", "歡迎使用 gameOS", "第 %d / %d 步",
+        "Ⓐ 下一步    Ⓑ 跳過本步    START 全部跳過",
+        "設定完成", "現在可以開始遊戲了。\n之後可在 系統設定 裡重新執行本精靈。",
+        "這一步需要連網，可先按 Ⓑ 跳過", "跳過全部設定",
+        // connectivity test
+        "測試連通性", "正在測試連通性…", "WiFi 關聯", "閘道路由", "網域名稱解析",
+        "網際網路存取", "正常", "失敗", "等待",
+        // timezone
+        "選擇時區", "↑↓ 選擇    Ⓐ 確定    Ⓑ 跳過", "亞洲", "歐洲", "美洲",
+        "非洲", "大洋洲", "標準時間", "目前時間 %s",
+        // machine name
+        "機器名", "Ⓐ 輸入    Ⓑ 跳過", "用於在網路上識別這台機器",
+        "只能用字母、數字和連字號，1-63 個字元，首尾不能是連字號",
+        "機器名已設為 %s",
+        // retroachievements
+        "RetroAchievements 帳號", "登入後即可在支援的遊戲中解鎖成就並上傳進度",
+        "使用者名稱", "密碼", "硬核模式", "開啟後停用即時存檔、讀檔和金手指",
+        "登入", "正在登入…", "登入成功 · %s", "登入失敗：%s",
+        "已登入 · %s", "登出",
+        // covers
+        "從 libretro 封面庫按遊戲名比對下載封面", "開始下載", "正在下載封面…",
+        "%d / %d · 已下載 %d · 未比對 %d", "完成：新增 %d 張，未比對 %d 張",
+        "停止", "沒有需要下載封面的遊戲", "遊戲封面",
+        "繼續",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -188,6 +244,39 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "ネットワークがありません — 設定で WiFi に接続してください", "再起動して適用",
         "現在のバージョン %s", "Ⓐ 確認する",
         "%s に更新しますか？", "空きスロットに書き込み、再起動で適用されます。ゲームとセーブは保持されます。",
+        // boot stages
+        "画面を初期化", "起動パーティションをマウント", "ゲームデータを準備",
+        "ネットワークを初期化", "オーディオを初期化", "ゲームパッド入力を準備",
+        "まもなく画面が表示されます",
+        // wizard frame
+        "初期設定", "gameOS へようこそ", "%d / %d ステップ",
+        "Ⓐ 次へ    Ⓑ この手順をスキップ    START すべてスキップ",
+        "設定完了", "ゲームを始められます。\nあとで 系統設定 からこのウィザードを再実行できます。",
+        "この手順にはネットワークが必要です。Ⓑ でスキップできます",
+        "すべての設定をスキップ",
+        // connectivity test
+        "接続テスト", "接続をテスト中…", "WiFi 関連付け", "ゲートウェイ経路",
+        "名前解決", "インターネット接続", "正常", "失敗", "待機",
+        // timezone
+        "タイムゾーンを選択", "↑↓ 選択    Ⓐ 決定    Ⓑ スキップ", "アジア",
+        "ヨーロッパ", "アメリカ", "アフリカ", "オセアニア", "標準時", "現在時刻 %s",
+        // machine name
+        "マシン名", "Ⓐ 入力    Ⓑ スキップ", "ネットワーク上でこの本体を識別するための名前",
+        "英数字とハイフンのみ、1〜63 文字、先頭と末尾はハイフン不可",
+        "マシン名を %s に設定しました",
+        // retroachievements
+        "RetroAchievements アカウント",
+        "ログインすると対応ゲームで実績を解除し、進捗をアップロードできます",
+        "ユーザー名", "パスワード", "ハードコアモード",
+        "オンにするとステートセーブ・ロードとチートが使えなくなります",
+        "ログイン", "ログイン中…", "ログイン成功 · %s", "ログイン失敗：%s",
+        "ログイン済み · %s", "ログアウト",
+        // covers
+        "libretro のカバーライブラリからゲーム名で照合してダウンロード",
+        "ダウンロード開始", "カバーをダウンロード中…",
+        "%d / %d · 取得 %d · 不一致 %d", "完了：%d 件追加、%d 件は不一致",
+        "停止", "ダウンロードが必要なゲームがありません", "ゲームカバー",
+        "次へ",
     },
     // ------------------------------------------------------------------ en
     {
@@ -251,6 +340,39 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "No network — connect WiFi in Settings", "Restart and apply",
         "Current version %s", "Ⓐ Check for updates",
         "Update to %s?", "Downloads to the idle slot, then restarts to apply. Games and saves are kept.",
+        // boot stages
+        "Initialising display", "Mounting boot partition", "Preparing game data",
+        "Initialising network", "Initialising audio", "Preparing gamepad input",
+        "Starting the interface",
+        // wizard frame
+        "First-time setup", "Welcome to gameOS", "Step %d of %d",
+        "Ⓐ Next    Ⓑ Skip this step    START Skip all",
+        "Setup complete", "You're ready to play.\nYou can run this wizard again from Settings.",
+        "This step needs a network connection — press Ⓑ to skip", "Skip all setup",
+        // connectivity test
+        "Test connectivity", "Testing connectivity…", "WiFi association",
+        "Gateway route", "Name resolution", "Internet access", "OK", "Failed",
+        "Waiting",
+        // timezone
+        "Select time zone", "↑↓ Select    Ⓐ Confirm    Ⓑ Skip", "Asia", "Europe",
+        "Americas", "Africa", "Oceania", "Standard time", "Current time %s",
+        // machine name
+        "Machine name", "Ⓐ Enter    Ⓑ Skip", "Identifies this device on the network",
+        "Letters, digits and hyphens only, 1-63 characters, no leading or trailing hyphen",
+        "Machine name set to %s",
+        // retroachievements
+        "RetroAchievements account",
+        "Sign in to unlock achievements and upload progress in supported games",
+        "Username", "Password", "Hardcore mode",
+        "Disables save states, load state and cheats",
+        "Sign in", "Signing in…", "Sign-in successful · %s", "Sign-in failed: %s",
+        "Signed in · %s", "Sign out",
+        // covers
+        "Download box art from the libretro thumbnail library, matched by game name",
+        "Start download", "Downloading covers…",
+        "%d / %d · downloaded %d · unmatched %d", "Done: %d added, %d unmatched",
+        "Stop", "No games need a cover", "Game covers",
+        "Continue",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -314,6 +436,40 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Нет сети — подключите WiFi в настройках", "Перезагрузить и применить",
         "Версия %s", "Ⓐ Проверить",
         "Обновить до %s?", "Запись в резервный раздел, затем перезагрузка. Игры и сохранения сохранятся.",
+        // boot stages
+        "Инициализация экрана", "Монтирование загрузочного раздела",
+        "Подготовка данных игр", "Инициализация сети", "Инициализация звука",
+        "Подготовка ввода геймпада", "Запуск интерфейса",
+        // wizard frame
+        "Первоначальная настройка", "Добро пожаловать в gameOS", "Шаг %d из %d",
+        "Ⓐ Далее    Ⓑ Пропустить шаг    START Пропустить всё",
+        "Настройка завершена", "Можно играть.\nЭтот мастер можно запустить снова в настройках.",
+        "Для этого шага нужна сеть — нажмите Ⓑ, чтобы пропустить",
+        "Пропустить всю настройку",
+        // connectivity test
+        "Проверить связь", "Проверка связи…", "Подключение WiFi", "Маршрут к шлюзу",
+        "Разрешение имён", "Доступ в интернет", "OK", "Ошибка", "Ожидание",
+        // timezone
+        "Выберите часовой пояс", "↑↓ Выбор    Ⓐ Подтвердить    Ⓑ Пропустить",
+        "Азия", "Европа", "Америка", "Африка", "Океания", "Стандартное время",
+        "Текущее время %s",
+        // machine name
+        "Имя устройства", "Ⓐ Ввести    Ⓑ Пропустить", "Определяет это устройство в сети",
+        "Только буквы, цифры и дефисы, 1-63 символа, без дефиса в начале и конце",
+        "Имя устройства: %s",
+        // retroachievements
+        "Учётная запись RetroAchievements",
+        "Войдите, чтобы получать достижения и отправлять прогресс в поддерживаемых играх",
+        "Имя пользователя", "Пароль", "Хардкорный режим",
+        "Отключает сохранения состояний, загрузку и читы",
+        "Войти", "Вход…", "Вход выполнен · %s", "Ошибка входа: %s",
+        "Вы вошли · %s", "Выйти",
+        // covers
+        "Скачать обложки из библиотеки libretro по имени игры", "Начать загрузку",
+        "Загрузка обложек…", "%d / %d · загружено %d · без совпадения %d",
+        "Готово: добавлено %d, без совпадения %d", "Остановить",
+        "Нет игр, которым нужна обложка", "Обложки игр",
+        "Продолжить",
     },
     // ------------------------------------------------------------------ es
     {
@@ -378,6 +534,43 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Sin red — conecta WiFi en Ajustes", "Reiniciar y aplicar",
         "Versión actual %s", "Ⓐ Buscar actualizaciones",
         "¿Actualizar a %s?", "Se escribe en la ranura libre y se reinicia para aplicar. Juegos y partidas se conservan.",
+        // boot stages
+        "Iniciando pantalla", "Montando partición de arranque",
+        "Preparando datos de juegos", "Iniciando red", "Iniciando audio",
+        "Preparando entrada del mando", "Iniciando la interfaz",
+        // wizard frame
+        "Configuración inicial", "Bienvenido a gameOS", "Paso %d de %d",
+        "Ⓐ Siguiente    Ⓑ Omitir este paso    START Omitir todo",
+        "Configuración completa", "Ya puedes jugar.\nPuedes volver a ejecutar este asistente desde Ajustes.",
+        "Este paso necesita red — pulsa Ⓑ para omitir",
+        "Omitir toda la configuración",
+        // connectivity test
+        "Probar conectividad", "Probando conectividad…", "Asociación WiFi",
+        "Ruta de enlace", "Resolución DNS", "Acceso a Internet",
+        "OK", "Fallo", "Esperando",
+        // timezone
+        "Selecciona la zona horaria", "↑↓ Seleccionar    Ⓐ Confirmar    Ⓑ Omitir",
+        "Asia", "Europa", "América", "África", "Oceanía", "Hora estándar",
+        "Hora actual %s",
+        // machine name
+        "Nombre del equipo", "Ⓐ Introducir    Ⓑ Omitir",
+        "Identifica este dispositivo en la red",
+        "Solo letras, dígitos y guiones, 1-63 caracteres, sin guion al principio ni al final",
+        "Nombre del equipo: %s",
+        // retroachievements
+        "Cuenta de RetroAchievements",
+        "Inicia sesión para desbloquear logros y subir el progreso en juegos compatibles",
+        "Usuario", "Contraseña", "Modo hardcore",
+        "Desactiva los estados guardados, la carga y los trucos",
+        "Iniciar sesión", "Iniciando sesión…", "Sesión iniciada · %s",
+        "Error al iniciar sesión: %s", "Sesión activa · %s", "Cerrar sesión",
+        // covers
+        "Descarga carátulas de la biblioteca de libretro por nombre de juego",
+        "Iniciar descarga", "Descargando carátulas…",
+        "%d / %d · descargadas %d · sin coincidencia %d",
+        "Listo: %d añadidas, %d sin coincidencia", "Detener",
+        "No hay juegos que necesiten carátula", "Carátulas de juegos",
+        "Continuar",
     },
     // ------------------------------------------------------------------ ko
     {
@@ -441,6 +634,37 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "네트워크 없음 — 설정에서 WiFi를 연결하세요", "재시작하여 적용",
         "현재 버전 %s", "Ⓐ 업데이트 확인",
         "%s(으)로 업데이트할까요?", "빈 슬롯에 기록한 뒤 재시작하면 적용됩니다. 게임과 세이브는 유지됩니다.",
+        // boot stages
+        "화면 초기화", "부팅 파티션 마운트", "게임 데이터 준비", "네트워크 초기화",
+        "오디오 초기화", "게임패드 입력 준비", "인터페이스 시작 중",
+        // wizard frame
+        "초기 설정", "gameOS에 오신 것을 환영합니다", "%d / %d 단계",
+        "Ⓐ 다음    Ⓑ 이 단계 건너뛰기    START 모두 건너뛰기",
+        "설정 완료", "이제 게임을 시작할 수 있습니다.\n나중에 설정에서 이 마법사를 다시 실행할 수 있습니다.",
+        "이 단계는 네트워크가 필요합니다 — Ⓑ를 눌러 건너뛰세요", "설정 모두 건너뛰기",
+        // connectivity test
+        "연결 테스트", "연결 테스트 중…", "WiFi 연결", "게이트웨이 경로",
+        "이름 확인", "인터넷 접속", "정상", "실패", "대기",
+        // timezone
+        "시간대 선택", "↑↓ 선택    Ⓐ 확인    Ⓑ 건너뛰기", "아시아", "유럽",
+        "아메리카", "아프리카", "오세아니아", "표준시", "현재 시각 %s",
+        // machine name
+        "기기 이름", "Ⓐ 입력    Ⓑ 건너뛰기", "네트워크에서 이 기기를 식별하는 이름",
+        "영문, 숫자, 하이픈만 사용, 1-63자, 처음과 끝은 하이픈 불가",
+        "기기 이름을 %s(으)로 설정했습니다",
+        // retroachievements
+        "RetroAchievements 계정",
+        "로그인하면 지원 게임에서 업적을 달성하고 진행 상황을 올릴 수 있습니다",
+        "사용자 이름", "비밀번호", "하드코어 모드",
+        "켜면 상태 저장/불러오기와 치트를 사용할 수 없습니다",
+        "로그인", "로그인 중…", "로그인 성공 · %s", "로그인 실패: %s",
+        "로그인됨 · %s", "로그아웃",
+        // covers
+        "libretro 표지 라이브러리에서 게임 이름으로 일치하는 항목 다운로드",
+        "다운로드 시작", "표지 다운로드 중…", "%d / %d · 다운로드 %d · 불일치 %d",
+        "완료: %d장 추가, %d장 불일치", "중지", "표지가 필요한 게임이 없습니다",
+        "게임 표지",
+        "계속",
     },
 };
 

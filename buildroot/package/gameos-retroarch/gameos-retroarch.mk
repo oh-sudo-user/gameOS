@@ -39,6 +39,11 @@ GAMEOS_RETROARCH_DEPENDENCIES = libdrm mesa3d alsa-lib eudev zlib freetype host-
 # path -I/usr/include/alsa in config.mk and the paranoid cross-gcc rejects it
 # at build time. The wrapper resolves sysroot .pc files and emits correct
 # cflags, so check_pkgconf succeeds and the host-dir fallback never runs.
+#
+# RetroAchievements is ON: the first-boot wizard logs the account in and writes
+# /userdata/system/retroarch/cheevos.cfg, which launch.cpp appends last. cheevos
+# only needs networking + SSL (both already enabled, builtin mbedtls) and
+# deps/rcheevos, which ships in the tarball — no extra Buildroot dependency.
 define GAMEOS_RETROARCH_CONFIGURE_CMDS
 	cd $(@D) && $(TARGET_CONFIGURE_OPTS) $(TARGET_MAKE_ENV) \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
@@ -63,7 +68,7 @@ define GAMEOS_RETROARCH_CONFIGURE_CMDS
 		--disable-ffmpeg \
 		--disable-sdl2 \
 		--disable-qt \
-		--disable-cheevos \
+		--enable-cheevos \
 		--disable-discord \
 		--disable-cdrom \
 		--disable-parport \

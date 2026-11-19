@@ -32,8 +32,10 @@ inputd_alive() {
 }
 
 start_inputd
+/usr/bin/gameos-bootstage 92 input
 
 fails=0
+/usr/bin/gameos-bootstage 98 ready
 while true; do
   # respawn the input daemon if it exited/crashed since the last iteration
   if ! inputd_alive; then

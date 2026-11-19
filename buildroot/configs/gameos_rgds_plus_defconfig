@@ -30,6 +30,12 @@ BR2_TARGET_GENERIC_HOSTNAME="gameos"
 BR2_TARGET_GENERIC_ISSUE="gameOS"
 BR2_TARGET_GENERIC_GETTY=n
 BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW=y
+# Timezone database for the first-boot wizard. gameos-setup stores the chosen
+# zone on /userdata and re-applies /etc/localtime at every boot, because OTA
+# replaces the whole rootfs. "default" zonelist is the ~5.5M common set.
+BR2_TARGET_TZ_INFO=y
+BR2_TARGET_TZ_ZONELIST="default"
+BR2_TARGET_LOCALTIME="Asia/Shanghai"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/rootfs-overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-image.sh"

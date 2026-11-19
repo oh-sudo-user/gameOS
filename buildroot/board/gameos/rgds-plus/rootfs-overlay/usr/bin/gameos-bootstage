@@ -1,0 +1,26 @@
+#!/bin/sh
+# Publish boot progress for gameos-splash.
+#
+#   gameos-bootstage <pct> <stage>
+#
+# The init scripts call this at each milestone; the splash daemon polls
+# /run/gameos/boot-stage and renders the localised stage text plus a progress
+# bar. Written with tmp+rename so the splash never reads a half-written file.
+# A missing/invalid argument must not break boot, so everything is clamped
+# rather than rejected.
+
+RUN=/run/gameos
+mkdir -p "$RUN" 2>/dev/null
+
+pct=${1:-0}
+stage=${2:-display}
+case $pct in ''|*[!0-9]*) pct=0 ;; esac
+[ "$pct" -gt 100 ] && pct=100
+case $stage in
+display|storage|data|network|audio|input|ready) ;;
+*) stage=display ;;
+esac
+
+printf 'pct=%s\nstage=%s\n' "$pct" "$stage" > "$RUN/boot-stage.new" 2>/dev/null \
+    && mv -f "$RUN/boot-stage.new" "$RUN/boot-stage" 2>/dev/null
+exit 0

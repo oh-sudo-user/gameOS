@@ -5,6 +5,7 @@
 # saved network the supplicant stays down and Settings > WiFi drives it.
 case "$1" in
     start)
+        /usr/bin/gameos-bootstage 85 network
         # /userdata is mounted by S20gameos; wait briefly if it is still busy
         i=0
         while ! mountpoint -q /userdata && [ $i -lt 50 ]; do

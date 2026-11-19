@@ -1,0 +1,225 @@
+#!/bin/sh
+# gameOS first-boot / system settings persistence.
+#
+#   gameos-setup status                 key=value lines
+#   gameos-setup timezone <Zone/Sub>    validate, persist, apply
+#   gameos-setup hostname <name>        validate, persist, apply
+#   gameos-setup ra-login               reads /run/gameos/setup-arg:
+#                                       line 1 username, line 2 password
+#                                       (empty = reuse stored token),
+#                                       line 3 hardcore (0|1)
+#                                       last line "OK <user>" / "ERROR <why>"
+#   gameos-setup ra-clear               drop the RetroAchievements config
+#   gameos-setup apply                  re-apply timezone + hostname at boot
+#
+# WHY a separate ini: gameos.ini is rewritten wholesale by the front-end's
+# save_settings(), so keys it does not know about would be dropped. This file
+# is owned by this script alone.
+#
+# WHY "apply" exists: OTA replaces the whole rootfs, so /etc/localtime and
+# /etc/hostname cannot be the source of truth. Both are re-derived from
+# /userdata at every boot (S20gameos, after the data partition is mounted).
+#
+# The RetroAchievements password is never stored and never placed in a command
+# line: it goes to curl through a 0600 temp file via --data-urlencode p@file,
+# so it cannot leak through /proc/<pid>/cmdline or the shell history. Only the
+# returned token is kept.
+
+RUN=/run/gameos
+INI=/userdata/system/setup.ini
+RA_DIR=/userdata/system/retroarch
+RA_CFG=$RA_DIR/cheevos.cfg
+ARG=$RUN/setup-arg
+ZONEINFO=/usr/share/zoneinfo
+CA=/etc/ssl/certs/ca-certificates.crt
+RA_URL=https://retroachievements.org/dorequest.php
+
+mkdir -p "$RUN" 2>/dev/null
+
+case ${1:-} in
+timezone|hostname|ra-login|ra-clear|apply) exec 9>"$RUN/setup.lock"; flock 9 ;;
+esac
+
+ini_get() { sed -n "s/^$1=//p" "$INI" 2>/dev/null | head -n 1; }
+
+ini_set() { # $1 key, $2 value — rewrite the file, keeping the other key
+    tz=$(ini_get timezone)
+    hn=$(ini_get hostname)
+    [ "$1" = timezone ] && tz=$2
+    [ "$1" = hostname ] && hn=$2
+    mkdir -p /userdata/system
+    { printf 'timezone=%s\n' "$tz"; printf 'hostname=%s\n' "$hn"; } \
+        > "$INI.tmp" && mv -f "$INI.tmp" "$INI"
+}
+
+cfg_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+cfg_get() { sed -n "s/^$1 *= *\"\(.*\)\"$/\1/p" "$RA_CFG" 2>/dev/null | head -n 1; }
+
+valid_zone() {
+    z=$1
+    [ -n "$z" ] || return 1
+    case $z in /*|*..*) return 1 ;; esac
+    case $z in *[!A-Za-z0-9_+/-]*) return 1 ;; esac
+    [ -f "$ZONEINFO/$z" ] || return 1
+    return 0
+}
+
+valid_hostname() {
+    h=$1
+    [ -n "$h" ] || return 1
+    [ ${#h} -le 63 ] || return 1
+    case $h in -*|*-) return 1 ;; esac
+    case $h in *[!A-Za-z0-9-]*) return 1 ;; esac
+    return 0
+}
+
+apply_tz() {
+    valid_zone "$1" || return 1
+    # relative link, exactly like Buildroot's BR2_TARGET_LOCALTIME
+    ln -sf "../usr/share/zoneinfo/$1" /etc/localtime 2>/dev/null || return 1
+    printf '%s\n' "$1" > /etc/timezone 2>/dev/null
+    return 0
+}
+
+apply_hostname() {
+    valid_hostname "$1" || return 1
+    printf '%s\n' "$1" > /etc/hostname 2>/dev/null
+    hostname "$1" 2>/dev/null
+    return 0
+}
+
+do_apply() {
+    [ -f "$INI" ] || return 0
+    z=$(ini_get timezone)
+    h=$(ini_get hostname)
+    [ -n "$z" ] && apply_tz "$z"
+    [ -n "$h" ] && apply_hostname "$h"
+    return 0
+}
+
+do_timezone() {
+    z=${2:-}
+    valid_zone "$z" || { echo "ERROR invalid-timezone"; return 1; }
+    apply_tz "$z" || { echo "ERROR apply-failed"; return 1; }
+    ini_set timezone "$z"
+    echo "OK $z"
+}
+
+do_hostname() {
+    h=${2:-}
+    valid_hostname "$h" || { echo "ERROR invalid-hostname"; return 1; }
+    apply_hostname "$h" || { echo "ERROR apply-failed"; return 1; }
+    ini_set hostname "$h"
+    echo "OK $h"
+}
+
+do_ra_login() {
+    u=$(sed -n '1p' "$ARG" 2>/dev/null)
+    p=$(sed -n '2p' "$ARG" 2>/dev/null)
+    hc=$(sed -n '3p' "$ARG" 2>/dev/null)
+    # the secret only needs to live until it is read; curl gets its own 0600
+    # copy below, so drop the UI's hand-off file on every path from here on
+    rm -f "$ARG"
+    [ -n "$u" ] || { echo "ERROR no-username"; return 1; }
+    [ "$hc" = 1 ] || hc=0
+
+    # empty password = re-authenticate with the token we already hold
+    tok=$(cfg_get cheevos_token)
+    if [ -z "$p" ] && [ -z "$tok" ]; then
+        echo "ERROR no-password"; return 1
+    fi
+
+    d=$(mktemp -d "$RUN/ra.XXXXXX") || { echo "ERROR tmp-failed"; return 1; }
+    chmod 700 "$d"
+    printf '%s' "$u" > "$d/u"
+    if [ -n "$p" ]; then printf '%s' "$p" > "$d/p"; else printf '%s' "$tok" > "$d/t"; fi
+    chmod 600 "$d"/u "$d"/p "$d"/t 2>/dev/null
+
+    set -- --data-urlencode "r=login2" --data-urlencode "u@$d/u"
+    if [ -n "$p" ]; then
+        set -- "$@" --data-urlencode "p@$d/p"
+    else
+        set -- "$@" --data-urlencode "t@$d/t"
+    fi
+
+    resp=$(curl -sS --max-time 25 --connect-timeout 10 --cacert "$CA" \
+                "$@" "$RA_URL" 2>"$d/err")
+    rc=$?
+    rm -rf "$d"
+
+    if [ $rc -ne 0 ]; then
+        case $rc in
+        6)  echo "ERROR dns-failed" ;;
+        7)  echo "ERROR connect-failed" ;;
+        28) echo "ERROR timeout" ;;
+        35|60) echo "ERROR tls-failed" ;;
+        *)  echo "ERROR network ($rc)" ;;
+        esac
+        return 1
+    fi
+
+    ok=$(printf '%s' "$resp" | sed -n 's/.*"Success"[[:space:]]*:[[:space:]]*true.*/1/p')
+    if [ "$ok" != 1 ]; then
+        why=$(printf '%s' "$resp" | sed -n 's/.*"Error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        echo "ERROR ${why:-login-failed}"
+        return 1
+    fi
+    tok=$(printf '%s' "$resp" | sed -n 's/.*"Token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [ -n "$tok" ] || { echo "ERROR no-token"; return 1; }
+    # the API echoes the canonical account name back
+    ru=$(printf '%s' "$resp" | sed -n 's/.*"User"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [ -n "$ru" ] || ru=$u
+
+    hcval=false
+    [ "$hc" = 1 ] && hcval=true
+    mkdir -p "$RA_DIR"
+    {
+        printf 'cheevos_enable = "true"\n'
+        printf 'cheevos_username = "%s"\n' "$(cfg_escape "$ru")"
+        printf 'cheevos_token = "%s"\n' "$(cfg_escape "$tok")"
+        printf 'cheevos_hardcore_mode_enable = "%s"\n' "$hcval"
+        printf 'cheevos_leaderboards_enable = "true"\n'
+        printf 'cheevos_verbose_enable = "true"\n'
+        printf 'cheevos_challenge_indicators = "true"\n'
+        printf 'cheevos_unlock_sound_enable = "true"\n'
+        printf 'cheevos_auto_screenshot = "false"\n'
+        printf 'cheevos_badges_enable = "false"\n'
+        printf 'cheevos_start_active = "false"\n'
+    } > "$RA_CFG.tmp" && mv -f "$RA_CFG.tmp" "$RA_CFG"
+    chmod 600 "$RA_CFG" 2>/dev/null
+    echo "OK $ru"
+}
+
+do_ra_clear() {
+    rm -f "$RA_CFG"
+    echo OK
+}
+
+do_status() {
+    echo "timezone=$(ini_get timezone)"
+    echo "hostname=$(ini_get hostname)"
+    if [ -f "$RA_CFG" ]; then
+        echo "ra=1"
+        echo "ra_user=$(cfg_get cheevos_username)"
+        echo "ra_hardcore=$(cfg_get cheevos_hardcore_mode_enable)"
+    else
+        echo "ra=0"
+        echo "ra_user="
+        echo "ra_hardcore=false"
+    fi
+    if [ -f /userdata/system/setup-done ]; then
+        echo "setup_done=1"
+    else
+        echo "setup_done=0"
+    fi
+}
+
+case ${1:-status} in
+status)   do_status ;;
+apply)    do_apply ;;
+timezone) do_timezone "$@" ;;
+hostname) do_hostname "$@" ;;
+ra-login) do_ra_login ;;
+ra-clear) do_ra_clear ;;
+*) echo "Usage: $0 {status|apply|timezone <zone>|hostname <name>|ra-login|ra-clear}"; exit 1 ;;
+esac

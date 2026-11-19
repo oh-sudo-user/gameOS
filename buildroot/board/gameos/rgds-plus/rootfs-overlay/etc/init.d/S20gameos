@@ -5,6 +5,7 @@
 LOG=/tmp/gameos-setup.log
 log() { echo "[gameos-setup] $*" >> "$LOG"; }
 log "start"
+/usr/bin/gameos-bootstage 10 storage
 
 # --- locate the boot disk from the ROOT partition (NOT a fixed mmcblk0) -----
 # RG DS Plus: eMMC = mmc0 (sdhci, non-removable), TF slot = mmc1 (sdmmc0).
@@ -43,6 +44,7 @@ mkdir -p /boot
 if ! mountpoint -q /boot; then
   mount -t vfat ${DEV}p1 /boot 2>>"$LOG" || log "WARN: could not mount /boot"
 fi
+/usr/bin/gameos-bootstage 20 storage
 
 # --- wait for the disk node (already present since we booted from it) ------
 i=0
@@ -54,6 +56,8 @@ if [ ! -b "$DEV" ]; then
   log "ERROR: $DEV never appeared"
   exit 0
 fi
+
+/usr/bin/gameos-bootstage 30 data
 
 # --- first boot: create the GAMEOS-DATA exFAT partition filling the card ---
 # The firstboot marker is cleared ONLY after the partition exists AND is
@@ -147,6 +151,7 @@ if ! mountpoint -q /userdata; then
     || mount -t exfat ${DEV}p4 /userdata 2>>"$LOG" \
     || log "WARN: could not mount GAMEOS-DATA"
 fi
+/usr/bin/gameos-bootstage 45 data
 
 # --- ROM / save / BIOS directory skeleton ----------------------------------
 # Only build the skeleton and write emulator configs when /userdata is REALLY
@@ -178,6 +183,10 @@ GlobalVolume = 8
 EOF
     log "wrote default ppsspp.ini"
   fi
+
+  # Timezone and hostname live on /userdata: OTA replaces the whole rootfs,
+  # so /etc/localtime and /etc/hostname are re-derived from it every boot.
+  /usr/bin/gameos-setup apply >>"$LOG" 2>&1
 else
   log "WARN: /userdata not mounted; skipping data skeleton (rootfs protected)"
 fi
@@ -189,6 +198,7 @@ if [ -x /usr/bin/gameos-tf2 ]; then
   /usr/bin/gameos-tf2 auto >>"$LOG" 2>&1
   log "tf2: $(sed -n 's/^state=//p' /run/gameos/tf2 2>/dev/null)"
 fi
+/usr/bin/gameos-bootstage 60 data
 
 # --- performance: CPU and GPU governors ------------------------------------
 for p in /sys/devices/system/cpu/cpufreq/policy*; do

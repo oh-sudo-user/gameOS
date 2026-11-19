@@ -12,8 +12,8 @@ all: gameos-ui gameos-splash
 gameos-ui: $(SRCS) gameos.hpp i18n.hpp sound.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LIBS)
 
-gameos-splash: splash.cpp
-	$(CXX) $(CXXFLAGS) -o $@ splash.cpp $(LIBS)
+gameos-splash: splash.cpp i18n.cpp i18n.hpp
+	$(CXX) $(CXXFLAGS) -o $@ splash.cpp i18n.cpp $(LIBS)
 
 clean:
 	rm -f gameos-ui gameos-splash

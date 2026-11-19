@@ -12,6 +12,9 @@ chmod +x "$TARGET_DIR/usr/bin/gameos-bt" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-wifi" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-update" 2>/dev/null || true
 chmod +x "$TARGET_DIR/usr/bin/gameos-tf2" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-bootstage" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-setup" 2>/dev/null || true
+chmod +x "$TARGET_DIR/usr/bin/gameos-covers" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/wpa_action.sh" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/sleep.d/"* 2>/dev/null || true
 

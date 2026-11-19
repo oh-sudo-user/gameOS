@@ -3,9 +3,12 @@
 # brand screen before anything else can print. The daemon double-forks
 # and returns at once; gameos-ui asks it to leave via
 # /run/gameos/splash.stop right before taking over DRM master.
+# Later milestones are published by the other init scripts through
+# gameos-bootstage, which the splash renders as a stage line + progress bar.
 case "$1" in
   start)
     /usr/bin/gameos-splash
+    /usr/bin/gameos-bootstage 5 display
     ;;
   stop)
     mkdir -p /run/gameos

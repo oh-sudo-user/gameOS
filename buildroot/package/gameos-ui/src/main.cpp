@@ -23,6 +23,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <fcntl.h>
 #include <unistd.h>
 #include <vector>
 
@@ -42,7 +43,7 @@ const SDL_Color C_BG     = {  11,  16,  32, 255 };
 const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
 
-enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Msg, Confirm };
+enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update };
 
 struct BtDev {
@@ -119,6 +120,14 @@ struct App {
     bool wifi_kb = false;
     std::string wifi_target, wifi_pw;
     int kb_r = 1, kb_c = 0, kb_shift = 0;
+    // the same keyboard also edits wizard fields; kb_buf then points at one of
+    // the App strings below instead of wifi_pw
+    bool kb_generic = false;
+    std::string* kb_buf = nullptr;
+    std::string kb_orig, kb_title;
+    int kb_limit = 63;
+    bool kb_empty_ok = false;
+    bool kb_mask = false;
 
     // system update screen (gameos-update runs in the background)
     std::string upd_state, upd_version, upd_msg;
@@ -132,6 +141,27 @@ struct App {
 
     // second microSD slot (gameos-tf2 mounts it at /mnt/tf2; refreshed 1/s)
     bool tf2_mounted = false;
+
+    // first-boot wizard (gameos-setup / gameos-covers run in the background)
+    int  setup_step = 0;               // 0 lang, 1 wifi, 2 tz, 3 name, 4 ra, 5 covers, 6 done
+    int  setup_sel = 0;                // row inside the current step
+    int  setup_scroll = 0;
+    int  setup_col = 0;                // timezone step: 0 region, 1 zone
+    int  setup_region = 0;             // region whose zones are listed
+    bool setup_busy = false;
+    std::string setup_op;              // timezone/hostname/ra-login/ra-clear/wifi-test/covers
+    std::string setup_status;          // one-line feedback
+    Uint32 setup_poll_at = 0;
+    Uint32 setup_op_at = 0;
+    std::string setup_test[4];         // link/route/dns/net -> ok|fail|wait
+    std::string setup_tz;              // zone currently applied
+    std::string setup_name;            // hostname being edited
+    std::string setup_ra_user, setup_ra_pass;
+    bool setup_ra_hardcore = false;
+    bool setup_ra_logged = false;
+    std::string setup_ra_name;         // account reported by the last login
+    int  cov_total = 0, cov_done = 0, cov_ok = 0, cov_miss = 0, cov_fail = 0;
+    std::string cov_state, cov_current;
 
     bool running = true;
     int exit_code = 0;
@@ -970,6 +1000,37 @@ const std::vector<std::vector<std::string>>& kb_rows()
     return rows;
 }
 
+void setup_kb_done(std::string* target);   // defined with the wizard below
+
+void kb_close()
+{
+    app.wifi_kb = false;
+    app.kb_generic = false;
+    app.kb_buf = nullptr;
+}
+
+void kb_cancel()
+{
+    if (app.kb_generic && app.kb_buf) *app.kb_buf = app.kb_orig;
+    kb_close();
+}
+
+// Point the shared keyboard at a wizard field. buf must outlive the keyboard
+// (all callers pass an App member).
+void kb_open(std::string& buf, const std::string& title, int limit,
+             bool empty_ok, bool mask)
+{
+    app.kb_generic = true;
+    app.kb_buf = &buf;
+    app.kb_orig = buf;
+    app.kb_title = title;
+    app.kb_limit = limit;
+    app.kb_empty_ok = empty_ok;
+    app.kb_mask = mask;
+    app.wifi_kb = true;
+    app.kb_r = 1; app.kb_c = 0; app.kb_shift = 0;
+}
+
 void kb_press()
 {
     const auto& rows = kb_rows();
@@ -977,27 +1038,38 @@ void kb_press()
     const auto& row = rows[app.kb_r];
     if (app.kb_c < 0 || app.kb_c >= (int)row.size()) return;
     const std::string k = row[app.kb_c];
+    std::string& buf = app.kb_generic ? *app.kb_buf : app.wifi_pw;
+    const int limit = app.kb_generic ? app.kb_limit : 63;
     if (k == "ABC") { app.kb_shift ^= 1; return; }
-    if (k == "DEL") { if (!app.wifi_pw.empty()) app.wifi_pw.pop_back(); return; }
-    if (k == " ")   { if (app.wifi_pw.size() < 63) app.wifi_pw += " "; return; }
-    if (k == "X")   { app.wifi_kb = false; return; }
+    if (k == "DEL") { if (!buf.empty()) buf.pop_back(); return; }
+    if (k == " ")   { if ((int)buf.size() < limit) buf += " "; return; }
+    if (k == "X")   { kb_cancel(); return; }
     if (k == "OK") {
-        if (app.wifi_pw.empty()) return;     // a WPA key cannot be empty
+        // a WPA key cannot be empty; wizard fields opt in via kb_empty_ok
+        if (buf.empty() && !(app.kb_generic && app.kb_empty_ok)) return;
+        if (app.kb_generic) {
+            std::string* target = app.kb_buf;
+            kb_close();
+            setup_kb_done(target);
+            return;
+        }
         wifi_begin_connect(app.wifi_target, app.wifi_pw);
-        app.wifi_kb = false;
+        kb_close();
         return;
     }
     std::string ch = k;
     if (app.kb_shift && ch.size() == 1 && ch[0] >= 'a' && ch[0] <= 'z')
         ch[0] = (char)(ch[0] - 'a' + 'A');
-    if (app.wifi_pw.size() < 63) app.wifi_pw += ch;
+    if ((int)buf.size() < limit) buf += ch;
 }
 
 void wifi_poll()
 {
     Uint32 now = SDL_GetTicks();
     // live link status while the page is open (wpa_cli is cheap)
-    if (app.screen == Screen::Wifi && now - app.wifi_status_at > 2000) {
+    if ((app.screen == Screen::Wifi ||
+         (app.screen == Screen::Setup && app.setup_step == 1)) &&
+        now - app.wifi_status_at > 2000) {
         app.wifi_status_at = now;
         wifi_refresh_status();
     }
@@ -1052,7 +1124,7 @@ void wifi_poll()
 void wifi_enter()
 {
     app.wifi_status.clear();
-    app.wifi_kb = false;
+    kb_close();
     app.wifi_pw.clear();
     app.wifi_target.clear();
     app.wifi_sel = 0;
@@ -1065,6 +1137,730 @@ void wifi_enter()
         app.wifi_status = tr(T_WIFI_SCANNING);
         wifi_start("scan");
     }
+}
+
+// ---------------------------------------------------------------------------
+// first-boot wizard
+//
+// Six questions then a done page. A (right button) acts on the highlighted row,
+// B (bottom button) skips the current step, START skips the whole wizard. The
+// marker on /userdata is what makes this a *first*-boot experience; Settings
+// can run it again at any time.
+// ---------------------------------------------------------------------------
+constexpr int SETUP_STEPS = 7;                 // 6 questions + the done page
+const char* SETUP_MARKER = "/userdata/system/setup-done";
+
+struct TzRegion { TKey name; std::vector<const char*> zones; };
+
+// Curated from the tzdata "default" zonelist, so every entry is really present
+// in the image and gameos-setup's valid_zone() will accept it.
+const std::vector<TzRegion>& tz_regions()
+{
+    static const std::vector<TzRegion> r = {
+        { T_TZ_ASIA,    { "Asia/Shanghai", "Asia/Tokyo", "Asia/Seoul",
+                          "Asia/Singapore", "Asia/Kolkata", "Asia/Dubai" } },
+        { T_TZ_EUROPE,  { "Europe/London", "Europe/Berlin", "Europe/Madrid",
+                          "Europe/Moscow" } },
+        { T_TZ_AMERICA, { "America/New_York", "America/Chicago", "America/Denver",
+                          "America/Los_Angeles", "America/Sao_Paulo" } },
+        { T_TZ_AFRICA,  { "Africa/Cairo", "Africa/Johannesburg" } },
+        { T_TZ_OCEANIA, { "Australia/Sydney", "Pacific/Auckland" } },
+        { T_TZ_UTC,     { "UTC" } },
+    };
+    return r;
+}
+
+int tz_index_of(const std::string& z, int region)
+{
+    const auto& zs = tz_regions()[region].zones;
+    for (int i = 0; i < (int)zs.size(); i++) if (z == zs[i]) return i;
+    return 0;
+}
+
+bool userdata_mounted()
+{
+    return read_file("/proc/self/mounts").find(" /userdata ") != std::string::npos;
+}
+
+// Mirrors gameos-setup valid_hostname(). Rejecting everything outside
+// [A-Za-z0-9-] here also means the value can be safely single-quoted into the
+// shell command below.
+bool valid_name_ui(const std::string& h)
+{
+    if (h.empty() || h.size() > 63) return false;
+    if (h.front() == '-' || h.back() == '-') return false;
+    for (char c : h)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-')) return false;
+    return true;
+}
+
+// Wall clock in another zone without leaving the process TZ changed: the
+// top-bar clock calls localtime_r() every frame.
+std::string zone_time(const std::string& zone)
+{
+    const char* old = getenv("TZ");
+    std::string save = old ? old : "";
+    setenv("TZ", zone.c_str(), 1);
+    tzset();
+    time_t t = time(nullptr);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    char b[48];
+    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d",
+             lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
+    if (old) setenv("TZ", save.c_str(), 1); else unsetenv("TZ");
+    tzset();
+    return b;
+}
+
+std::string last_line(const std::string& out)
+{
+    std::istringstream ss(out);
+    std::string line, last;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) last = line;
+    }
+    return last;
+}
+
+int setup_rows()
+{
+    switch (app.setup_step) {
+    case 0:  return (int)LANG_COUNT;
+    case 1:  return (int)app.wifi_nets.size() + 2;   // networks + test + next
+    case 2:  return app.setup_col == 0
+                 ? (int)tz_regions().size()
+                 : (int)tz_regions()[app.setup_region].zones.size();
+    case 3:  return 2;                               // name + next
+    case 4:  return 6;                               // user/pass/hardcore/login/logout/next
+    case 5:  return 2;                               // start-stop + next
+    default: return 1;
+    }
+}
+
+// One result file pair PER OP, not one shared pair: skipping a step with B
+// leaves its script running, and the next step's script would otherwise
+// overwrite the same .out/.rc and have its result read as the wrong op's.
+std::string setup_op_base(const std::string& op)
+{
+    return "/run/gameos/op-" + op;
+}
+
+void setup_run(const std::string& op, const std::string& cmd)
+{
+    const std::string base = setup_op_base(op);
+    unlink((base + ".rc").c_str());
+    std::string full = "mkdir -p /run/gameos; " + cmd +
+        " > " + base + ".out 2>&1; echo $? > " + base + ".rc &";
+    system(full.c_str());
+    app.setup_op = op;
+    app.setup_busy = true;
+    app.setup_op_at = SDL_GetTicks();
+}
+
+void setup_finish()
+{
+    FILE* f = fopen(SETUP_MARKER, "w");
+    if (f) { fputs("1\n", f); fclose(f); }
+    kb_close();
+    app.setup_busy = false;
+    app.setup_op.clear();
+    clear_cover_cache();
+    for (int i = 0; i < (int)consoles().size(); i++) invalidate_games(i);
+    app.screen = Screen::Home;
+}
+
+void setup_next()
+{
+    app.setup_step++;
+    app.setup_sel = 0;
+    app.setup_scroll = 0;
+    app.setup_col = 0;
+    app.setup_status.clear();
+    // Skipping a step while its op is in flight: the script still runs to
+    // completion and persists the choice, but its result must not land on the
+    // next step (a timezone result would otherwise advance twice).
+    app.setup_busy = false;
+    app.setup_op.clear();
+    if (app.setup_step >= SETUP_STEPS) { setup_finish(); return; }
+    if (app.setup_step == 1) {
+        wifi_refresh_status();
+        wifi_load_known();
+        if (app.wifi_state != "NOHW" && !app.wifi_busy) {
+            app.wifi_status = tr(T_WIFI_SCANNING);
+            wifi_start("scan");
+        }
+    } else if (app.setup_step == 5) {
+        unlink("/run/gameos/covers-state");
+        app.cov_state.clear();
+        app.cov_current.clear();
+        app.cov_total = app.cov_done = app.cov_ok = app.cov_miss = app.cov_fail = 0;
+        setup_run("covers-count", "gameos-covers count");
+    }
+}
+
+void setup_poll()
+{
+    if (app.screen != Screen::Setup) return;
+    Uint32 now = SDL_GetTicks();
+    if (now - app.setup_poll_at < 200) return;
+    app.setup_poll_at = now;
+
+    // A rescan can shrink the network list under the cursor, leaving setup_sel
+    // past the last row where A would silently do nothing.
+    int rows = setup_rows();
+    if (rows > 0 && app.setup_sel >= rows) app.setup_sel = rows - 1;
+
+    // cover progress is published continuously, not just at the end
+    if (app.setup_step == 5) {
+        std::istringstream ss(read_file("/run/gameos/covers-state"));
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+            if      (k == "state")   app.cov_state = v;
+            else if (k == "current") app.cov_current = v;
+            else if (k == "total")   app.cov_total = atoi(v.c_str());
+            else if (k == "done")    app.cov_done = atoi(v.c_str());
+            else if (k == "ok")      app.cov_ok = atoi(v.c_str());
+            else if (k == "miss")    app.cov_miss = atoi(v.c_str());
+            else if (k == "fail")    app.cov_fail = atoi(v.c_str());
+        }
+    }
+
+    if (!app.setup_busy) return;
+    // a cover run can legitimately take many minutes; the user stops it with A
+    if (app.setup_op != "covers" && now - app.setup_op_at > 60000) {
+        app.setup_busy = false;
+        app.setup_op.clear();
+        app.setup_status = tr(T_OP_FAIL);
+        return;
+    }
+    const std::string base = setup_op_base(app.setup_op);
+    FILE* f = fopen((base + ".rc").c_str(), "r");
+    if (!f) return;
+    int rc = 1;
+    if (fscanf(f, "%d", &rc) != 1) rc = 1;
+    fclose(f);
+    app.setup_busy = false;
+    std::string out = read_file(base + ".out");
+    std::string op = app.setup_op;
+    app.setup_op.clear();
+    std::string last = last_line(out);
+    char b[256];
+
+    if (op == "timezone") {
+        if (rc == 0 && last.rfind("OK", 0) == 0) {
+            if (last.size() > 3) app.setup_tz = last.substr(3);
+            tzset();                       // the top-bar clock follows at once
+            setup_next();
+        } else {
+            app.setup_status = tr(T_OP_FAIL);
+        }
+    } else if (op == "hostname") {
+        if (rc == 0 && last.rfind("OK", 0) == 0) {
+            snprintf(b, sizeof(b), tr(T_NAME_APPLIED_FMT), app.setup_name.c_str());
+            app.setup_status = b;
+        } else {
+            app.setup_status = tr(T_NAME_INVALID);
+        }
+    } else if (op == "ra-login") {
+        if (rc == 0 && last.rfind("OK", 0) == 0) {
+            app.setup_ra_logged = true;
+            app.setup_ra_name = last.size() > 3 ? last.substr(3) : app.setup_ra_user;
+            app.setup_ra_pass.clear();     // only the token is kept, on disk
+            snprintf(b, sizeof(b), tr(T_RA_OK_FMT), app.setup_ra_name.c_str());
+            app.setup_status = b;
+        } else {
+            std::string why = last.rfind("ERROR ", 0) == 0 ? last.substr(6) : last;
+            if (why.empty()) why = "login-failed";
+            snprintf(b, sizeof(b), tr(T_RA_FAIL_FMT), why.c_str());
+            app.setup_status = b;
+        }
+    } else if (op == "ra-clear") {
+        app.setup_ra_logged = false;
+        app.setup_ra_name.clear();
+        app.setup_status = tr(T_RA_LOGOUT);
+    } else if (op == "wifi-test") {
+        const char* keys[4] = { "link", "route", "dns", "net" };
+        for (int i = 0; i < 4; i++) app.setup_test[i] = "wait";
+        std::istringstream ss(out);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+            for (int i = 0; i < 4; i++) if (k == keys[i]) app.setup_test[i] = v;
+        }
+        app.setup_status = rc == 0 ? std::string() : std::string(tr(T_SETUP_NEED_NET));
+    } else if (op == "covers-count") {
+        app.cov_total = atoi(last.c_str());
+    } else if (op == "covers") {
+        clear_cover_cache();
+        if (last.rfind("OK", 0) == 0 || last.rfind("STOPPED", 0) == 0) {
+            snprintf(b, sizeof(b), tr(T_COVER_DONE_FMT), app.cov_ok, app.cov_miss);
+            app.setup_status = b;
+        } else {
+            app.setup_status = tr(T_SETUP_NEED_NET);
+        }
+    }
+}
+
+void setup_activate()
+{
+    // the cover download stays stoppable while it is in flight
+    if (app.setup_step == 5 && app.setup_sel == 0 &&
+        app.setup_busy && app.setup_op == "covers") {
+        FILE* f = fopen("/run/gameos/covers.stop", "w");
+        if (f) fclose(f);
+        return;
+    }
+    if (app.setup_busy || app.wifi_busy) return;
+    int n = setup_rows();
+    if (app.setup_sel < 0 || app.setup_sel >= n) return;
+
+    switch (app.setup_step) {
+    case 0:                                        // language
+        app.settings.language = app.setup_sel;
+        g_lang = (Lang)app.setup_sel;
+        save_settings(app.settings);
+        reload_fonts();                            // Korean uses another font
+        setup_next();
+        break;
+    case 1: {                                      // wifi + connectivity test
+        int nets = (int)app.wifi_nets.size();
+        if (app.setup_sel < nets) {
+            app.wifi_sel = app.setup_sel;
+            wifi_press_net();
+        } else if (app.setup_sel == nets) {
+            for (int i = 0; i < 4; i++) app.setup_test[i] = "wait";
+            app.setup_status = tr(T_WIFI_TESTING);
+            setup_run("wifi-test", "gameos-wifi test");
+        } else {
+            setup_next();
+        }
+        break;
+    }
+    case 2:                                        // timezone
+        if (app.setup_col == 0) {
+            app.setup_region = app.setup_sel;
+            app.setup_col = 1;
+            app.setup_sel = tz_index_of(app.setup_tz, app.setup_region);
+            app.setup_scroll = 0;
+        } else {
+            std::string z = tz_regions()[app.setup_region].zones[app.setup_sel];
+            setup_run("timezone", "gameos-setup timezone '" + z + "'");
+        }
+        break;
+    case 3:                                        // machine name
+        if (app.setup_sel == 0)
+            kb_open(app.setup_name, tr(T_SETUP_NAME_TITLE), 63, false, false);
+        else
+            setup_next();
+        break;
+    case 4:                                        // retroachievements
+        if (app.setup_sel == 0) {
+            kb_open(app.setup_ra_user, tr(T_RA_USER), 63, false, false);
+        } else if (app.setup_sel == 1) {
+            // empty is allowed: it re-authenticates with the stored token
+            kb_open(app.setup_ra_pass, tr(T_RA_PASS), 128, true, true);
+        } else if (app.setup_sel == 2) {
+            app.setup_ra_hardcore = !app.setup_ra_hardcore;
+        } else if (app.setup_sel == 3) {
+            if (app.setup_ra_user.empty()) {
+                kb_open(app.setup_ra_user, tr(T_RA_USER), 63, false, false);
+                break;
+            }
+            // 0600 from creation, not fopen-then-chmod: the password must not
+            // be world-readable even for the instant between the two calls.
+            int fd = open("/run/gameos/setup-arg", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd < 0) { app.setup_status = tr(T_OP_FAIL); break; }
+            FILE* f = fdopen(fd, "w");
+            if (!f) { close(fd); app.setup_status = tr(T_OP_FAIL); break; }
+            fprintf(f, "%s\n%s\n%d\n", app.setup_ra_user.c_str(),
+                    app.setup_ra_pass.c_str(), app.setup_ra_hardcore ? 1 : 0);
+            fclose(f);
+            app.setup_status = tr(T_RA_LOGGING_IN);
+            setup_run("ra-login", "gameos-setup ra-login");
+        } else if (app.setup_sel == 4) {
+            if (app.setup_ra_logged) setup_run("ra-clear", "gameos-setup ra-clear");
+        } else {
+            setup_next();
+        }
+        break;
+    case 5:                                        // covers
+        if (app.setup_sel == 0) {
+            app.setup_status = tr(T_COVER_RUNNING);
+            setup_run("covers", "gameos-covers run");
+        } else {
+            setup_next();
+        }
+        break;
+    default:                                       // done page
+        setup_finish();
+        break;
+    }
+}
+
+// Called by the shared keyboard when OK is pressed on a wizard field. The RA
+// fields need no action here; the machine name is applied straight away.
+void setup_kb_done(std::string* target)
+{
+    if (target != &app.setup_name) return;
+    if (!valid_name_ui(app.setup_name)) {
+        app.setup_status = tr(T_NAME_INVALID);
+        return;
+    }
+    setup_run("hostname", "gameos-setup hostname '" + app.setup_name + "'");
+}
+
+void setup_nav(int dx, int dy)
+{
+    if (app.setup_step == 2 && dx) {               // region <-> zone column
+        if (dx > 0 && app.setup_col == 0) {
+            app.setup_region = app.setup_sel;
+            app.setup_col = 1;
+            app.setup_sel = tz_index_of(app.setup_tz, app.setup_region);
+            app.setup_scroll = 0;
+        } else if (dx < 0 && app.setup_col == 1) {
+            app.setup_col = 0;
+            app.setup_sel = app.setup_region;
+            app.setup_scroll = 0;
+        }
+        return;
+    }
+    int n = setup_rows();
+    int d = dy ? dy : dx;
+    if (n <= 0 || !d) return;
+    app.setup_sel = std::clamp(app.setup_sel + d, 0, n - 1);
+}
+
+void setup_enter()
+{
+    system("mkdir -p /run/gameos");
+    app.setup_step = 0;
+    app.setup_sel = 0;
+    app.setup_scroll = 0;
+    app.setup_col = 0;
+    app.setup_region = 0;
+    app.setup_busy = false;
+    app.setup_op.clear();
+    app.setup_status.clear();
+    for (int i = 0; i < 4; i++) app.setup_test[i] = "wait";
+    app.setup_ra_pass.clear();
+    app.cov_state.clear();
+    app.cov_current.clear();
+    app.cov_total = app.cov_done = app.cov_ok = app.cov_miss = app.cov_fail = 0;
+    kb_close();
+
+    // prefill from what is already persisted, so re-running from Settings
+    // shows the current values instead of blanks
+    app.setup_tz.clear();
+    app.setup_name.clear();
+    app.setup_ra_logged = false;
+    app.setup_ra_name.clear();
+    app.setup_ra_hardcore = false;
+    std::istringstream ss(run_cmd("gameos-setup status"));
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if      (k == "timezone")    app.setup_tz = v;
+        else if (k == "hostname")    app.setup_name = v;
+        else if (k == "ra")          app.setup_ra_logged = (v == "1");
+        else if (k == "ra_user")     app.setup_ra_name = v;
+        else if (k == "ra_hardcore") app.setup_ra_hardcore = (v == "true");
+    }
+    app.setup_ra_user = app.setup_ra_logged ? app.setup_ra_name : std::string();
+    if (app.setup_name.empty()) {
+        char h[64] = {};
+        if (gethostname(h, sizeof(h) - 1) == 0) app.setup_name = h;
+    }
+    if (app.setup_tz.empty()) {
+        std::string z = read_file("/etc/timezone");
+        while (!z.empty() && (z.back() == '\n' || z.back() == '\r')) z.pop_back();
+        app.setup_tz = z;
+    }
+    for (int i = 0; i < (int)tz_regions().size(); i++) {
+        const auto& zs = tz_regions()[i].zones;
+        for (int j = 0; j < (int)zs.size(); j++)
+            if (app.setup_tz == zs[j]) app.setup_region = i;
+    }
+    app.screen = Screen::Setup;
+}
+
+// ---------------------------------------------------------------------------
+// wizard drawing
+// ---------------------------------------------------------------------------
+void draw_kb(SDL_Renderer* r);   // defined with the WiFi screen below
+
+void setup_row(SDL_Renderer* r, int x, int y, int w, int h, bool sel,
+               const std::string& label, const std::string& value,
+               SDL_Color vc = C_DIM)
+{
+    if (sel) {
+        fill_rect(r, x, y, w, h - 6, C_PANEL);
+        fill_rect(r, x, y, 5, h - 6, g_accent);
+    }
+    text(r, app.f_body, label, x + 24, y + 12, sel ? C_TEXT : C_DIM);
+    if (!value.empty())
+        text(r, app.f_body, ellipsize(app.f_body, value, w - 400),
+             x + w - 24, y + 12, vc, Align::Right);
+}
+
+void setup_scroll_into_view(int vis)
+{
+    if (app.setup_sel < app.setup_scroll) app.setup_scroll = app.setup_sel;
+    if (app.setup_sel >= app.setup_scroll + vis)
+        app.setup_scroll = app.setup_sel - vis + 1;
+    if (app.setup_scroll < 0) app.setup_scroll = 0;
+}
+
+void draw_setup_lang(SDL_Renderer* r)
+{
+    const int rowh = 62, top = 126;
+    setup_scroll_into_view(7);
+    for (int i = 0; i < (int)LANG_COUNT; i++) {
+        int idx = app.setup_scroll + i;
+        if (idx >= (int)LANG_COUNT) break;
+        int y = top + i * rowh;
+        bool sel = idx == app.setup_sel;
+        setup_row(r, 32, y, W - 64, rowh, sel, lang_name(idx), "");
+        if (idx == app.settings.language)
+            fill_rect(r, W - 72, y + 22, 16, 16, g_accent);
+    }
+}
+
+void draw_setup_wifi(SDL_Renderer* r)
+{
+    const int rowh = 56, top = 116, vis = 6;
+    int nets = (int)app.wifi_nets.size();
+    int n = nets + 2;
+    setup_scroll_into_view(vis);
+    for (int i = 0; i < vis; i++) {
+        int idx = app.setup_scroll + i;
+        if (idx >= n) break;
+        int y = top + i * rowh;
+        bool sel = idx == app.setup_sel;
+        if (idx < nets) {
+            const WifiNet& w = app.wifi_nets[idx];
+            setup_row(r, 32, y, W - 64, rowh, sel, w.ssid, "");
+            if (w.saved)
+                text(r, app.f_small, tr(T_WIFI_SAVED), W - 140, y + 16,
+                     C_GREEN, Align::Right);
+            else if (!w.secure)
+                text(r, app.f_small, tr(T_WIFI_OPEN), W - 140, y + 16,
+                     C_DIM, Align::Right);
+            int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3
+                     : w.signal >= -78 ? 2 : 1;
+            for (int b = 0; b < 4; b++) {
+                int h = 6 + b * 5;
+                fill_rect(r, W - 104 + b * 13, y + 34 - h, 8, h,
+                          b < bars ? g_accent : SDL_Color{ 60, 68, 96, 160 });
+            }
+        } else {
+            setup_row(r, 32, y, W - 64, rowh, sel,
+                      idx == nets ? tr(T_WIFI_TEST) : tr(T_NEXT), "");
+        }
+    }
+    // On its own line below the action rows: centred on the first row it
+    // collides with the "test connectivity" label in ru/es.
+    if (nets == 0 && !app.wifi_busy)
+        text(r, app.f_small, tr(T_WIFI_NO_NETS), W / 2, top + n * rowh + 24,
+             C_DIM, Align::Center);
+
+    // four staged results: association, route, DNS, real internet access
+    const TKey lab[4] = { T_TEST_LINK, T_TEST_ROUTE, T_TEST_DNS, T_TEST_NET };
+    for (int i = 0; i < 4; i++) {
+        int x = 40 + i * 245;
+        const std::string& v = app.setup_test[i];
+        SDL_Color c = v == "ok" ? C_GREEN : v == "fail" ? C_RED : C_DIM;
+        text(r, app.f_small, tr(lab[i]), x, 478, C_DIM);
+        text(r, app.f_body,
+             v == "ok" ? tr(T_TEST_OK) : v == "fail" ? tr(T_TEST_FAIL) : tr(T_TEST_WAIT),
+             x, 506, c);
+    }
+
+    std::string link = tr(T_WIFI_DISCONNECTED);
+    SDL_Color lc = C_DIM;
+    if (app.wifi_state == "NOHW") {
+        link = tr(T_WIFI_UNAVAILABLE);
+    } else if (!app.wifi_ip.empty()) {
+        char b[96];
+        snprintf(b, sizeof(b), tr(T_WIFI_CONNECTED_FMT), app.wifi_ip.c_str());
+        link = b;
+        lc = C_GREEN;
+    }
+    text(r, app.f_body, link, W / 2, 566, lc, Align::Center);
+    if (app.wifi_busy || !app.wifi_status.empty())
+        text(r, app.f_small, app.wifi_busy ? tr(T_PROCESSING) : app.wifi_status,
+             W / 2, 610, C_AMBER, Align::Center);
+}
+
+void draw_setup_tz(SDL_Renderer* r)
+{
+    const int rowh = 56, top = 126;
+    const auto& regs = tz_regions();
+    for (int i = 0; i < (int)regs.size(); i++) {
+        int y = top + i * rowh;
+        bool sel = app.setup_col == 0 && i == app.setup_sel;
+        bool cur = i == app.setup_region;
+        setup_row(r, 32, y, 328, rowh, sel, tr(regs[i].name), "");
+        if (cur) fill_rect(r, 348, y + 20, 8, 8, g_accent);
+    }
+    const auto& zs = regs[app.setup_region].zones;
+    setup_scroll_into_view(6);
+    for (int i = 0; i < 6; i++) {
+        int idx = app.setup_scroll + i;
+        if (idx >= (int)zs.size()) break;
+        int y = top + i * rowh;
+        bool sel = app.setup_col == 1 && idx == app.setup_sel;
+        setup_row(r, 392, y, W - 424, rowh, sel, zs[idx], "");
+        if (app.setup_tz == zs[idx])
+            fill_rect(r, W - 72, y + 20, 14, 14, g_accent);
+    }
+    std::string preview = app.setup_col == 0
+        ? zs[0] : zs[std::clamp(app.setup_sel, 0, (int)zs.size() - 1)];
+    char b[128];
+    snprintf(b, sizeof(b), tr(T_TZ_NOW_FMT), zone_time(preview).c_str());
+    text(r, app.f_body, b, W / 2, 500, C_TEXT, Align::Center);
+    if (!app.setup_tz.empty())
+        text(r, app.f_small, app.setup_tz, W / 2, 548, C_DIM, Align::Center);
+    text(r, app.f_small, tr(T_SETUP_TZ_HINT), W / 2, 600, C_DIM, Align::Center);
+}
+
+void draw_setup_name(SDL_Renderer* r)
+{
+    auto lines = wrap(app.f_small, tr(T_SETUP_NAME_HELP), W - 120);
+    int y = 130;
+    for (const auto& l : lines) { text(r, app.f_small, l, 60, y, C_DIM); y += 30; }
+
+    setup_row(r, 32, 230, W - 64, 70, app.setup_sel == 0,
+              tr(T_SETUP_NAME_TITLE), app.setup_name, C_TEXT);
+    setup_row(r, 32, 320, W - 64, 70, app.setup_sel == 1, tr(T_NEXT), "");
+
+    auto rl = wrap(app.f_small, tr(T_NAME_INVALID), W - 120);
+    y = 440;
+    for (const auto& l : rl) { text(r, app.f_small, l, 60, y, C_DIM); y += 30; }
+}
+
+void draw_setup_ra(SDL_Renderer* r)
+{
+    auto lines = wrap(app.f_small, tr(T_SETUP_RA_HELP), W - 120);
+    int y = 122;
+    for (const auto& l : lines) { text(r, app.f_small, l, 60, y, C_DIM); y += 28; }
+
+    const int rowh = 62, top = 190;
+    char b[192];
+    std::string login = tr(T_RA_LOGIN);
+    if (app.setup_ra_logged) {
+        snprintf(b, sizeof(b), tr(T_RA_LOGGED_FMT), app.setup_ra_name.c_str());
+        login = b;
+    }
+    setup_row(r, 32, top + 0 * rowh, W - 64, rowh, app.setup_sel == 0,
+              tr(T_RA_USER), app.setup_ra_user, C_TEXT);
+    setup_row(r, 32, top + 1 * rowh, W - 64, rowh, app.setup_sel == 1,
+              tr(T_RA_PASS), std::string(app.setup_ra_pass.size(), '*'), C_TEXT);
+    setup_row(r, 32, top + 2 * rowh, W - 64, rowh, app.setup_sel == 2,
+              tr(T_RA_HARDCORE),
+              app.setup_ra_hardcore ? tr(T_ON) : tr(T_OFF),
+              app.setup_ra_hardcore ? C_AMBER : C_DIM);
+    setup_row(r, 32, top + 3 * rowh, W - 64, rowh, app.setup_sel == 3,
+              login, "", C_GREEN);
+    setup_row(r, 32, top + 4 * rowh, W - 64, rowh, app.setup_sel == 4,
+              tr(T_RA_LOGOUT), "");
+    setup_row(r, 32, top + 5 * rowh, W - 64, rowh, app.setup_sel == 5,
+              tr(T_NEXT), "");
+
+    auto hl = wrap(app.f_small, tr(T_RA_HARDCORE_HELP), W - 120);
+    y = 580;
+    for (const auto& l : hl) { text(r, app.f_small, l, 60, y, C_DIM); y += 28; }
+}
+
+void draw_setup_covers(SDL_Renderer* r)
+{
+    auto lines = wrap(app.f_small, tr(T_SETUP_COVER_HELP), W - 120);
+    int y = 126;
+    for (const auto& l : lines) { text(r, app.f_small, l, 60, y, C_DIM); y += 28; }
+
+    char b[192];
+    if (app.setup_busy && app.setup_op == "covers-count") {
+        text(r, app.f_body, tr(T_PROCESSING), W / 2, 220, C_DIM, Align::Center);
+    } else if (app.cov_total == 0 && !app.setup_busy) {
+        text(r, app.f_body, tr(T_COVER_NONE), W / 2, 220, C_DIM, Align::Center);
+    } else {
+        snprintf(b, sizeof(b), tr(T_COVER_PROGRESS_FMT),
+                 app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
+        text(r, app.f_body, b, W / 2, 210, C_TEXT, Align::Center);
+        int bw = W - 160, bx = 80, by = 268;
+        fill_rect(r, bx, by, bw, 12, { 28, 38, 58, 255 });
+        int fw = app.cov_total > 0 ? bw * app.cov_done / app.cov_total : 0;
+        if (fw > 0) fill_rect(r, bx, by, fw, 12, g_accent);
+        if (!app.cov_current.empty())
+            text(r, app.f_small, ellipsize(app.f_small, app.cov_current, bw),
+                 W / 2, 300, C_DIM, Align::Center);
+    }
+
+    bool running = app.setup_busy && app.setup_op == "covers";
+    setup_row(r, 32, 400, W - 64, 70, app.setup_sel == 0,
+              running ? tr(T_COVER_STOP) : tr(T_COVER_START), "");
+    setup_row(r, 32, 490, W - 64, 70, app.setup_sel == 1, tr(T_NEXT), "");
+}
+
+void draw_setup(SDL_Renderer* r)
+{
+    draw_background(r);
+    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    const char* title = tr(T_SETUP_TITLE);
+    switch (app.setup_step) {
+    case 0: title = tr(T_LANGUAGE); break;
+    case 1: title = tr(T_WIFI); break;
+    case 2: title = tr(T_SETUP_TZ_TITLE); break;
+    case 3: title = tr(T_SETUP_NAME_TITLE); break;
+    case 4: title = tr(T_SETUP_RA_TITLE); break;
+    case 5: title = tr(T_COVERS); break;
+    default: break;
+    }
+    text(r, app.f_title, title, 32, 26, C_TEXT);
+    char sb[64];
+    snprintf(sb, sizeof(sb), tr(T_SETUP_STEP_FMT),
+             app.setup_step + 1, SETUP_STEPS - 1);
+    text(r, app.f_body, sb, W - 32, 34, C_DIM, Align::Right);
+    fill_rect(r, 0, 96, W, 3, g_accent);
+
+    switch (app.setup_step) {
+    case 0: draw_setup_lang(r); break;
+    case 1: draw_setup_wifi(r); break;
+    case 2: draw_setup_tz(r); break;
+    case 3: draw_setup_name(r); break;
+    case 4: draw_setup_ra(r); break;
+    case 5: draw_setup_covers(r); break;
+    default: {
+        text(r, app.f_title, tr(T_SETUP_DONE_TITLE), W / 2, 250,
+             g_accent, Align::Center);
+        auto lines = wrap(app.f_body, tr(T_SETUP_DONE_BODY), W - 200);
+        int y = 350;
+        for (const auto& l : lines) {
+            text(r, app.f_body, l, W / 2, y, C_TEXT, Align::Center);
+            y += 44;
+        }
+        break;
+    }
+    }
+
+    if (!app.setup_status.empty())
+        text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 80),
+             W / 2, H - 96, C_AMBER, Align::Center);
+    draw_hint(r, app.setup_step >= SETUP_STEPS - 1
+              ? tr(T_CONFIRM_HINT) : tr(T_SETUP_HINT));
+    if (app.wifi_kb) draw_kb(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -1209,11 +2005,14 @@ void draw_kb(SDL_Renderer* r)
     fill_rect(r, 0, 0, W, H, { 5, 8, 18, 205 });    int pw = 944, ph = 476, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, g_accent);
-    text(r, app.f_title, tr(T_WIFI_PASSWORD), W / 2, py + 22, C_TEXT, Align::Center);
-    text(r, app.f_small, app.wifi_target, W / 2, py + 78, C_DIM, Align::Center);
+    const std::string& buf = app.kb_generic ? *app.kb_buf : app.wifi_pw;
+    text(r, app.f_title, app.kb_generic ? app.kb_title : tr(T_WIFI_PASSWORD),
+         W / 2, py + 22, C_TEXT, Align::Center);
+    text(r, app.f_small, app.kb_generic ? std::string() : app.wifi_target,
+         W / 2, py + 78, C_DIM, Align::Center);
 
     fill_rect(r, px + 56, py + 108, pw - 112, 52, { 60, 68, 96, 120 });
-    std::string disp = app.wifi_pw;
+    std::string disp = app.kb_mask ? std::string(buf.size(), '*') : buf;
     if (disp.size() > 42) disp = disp.substr(disp.size() - 42);
     text(r, app.f_body, disp + "_", px + 72, py + 120, C_TEXT);
 
@@ -1377,36 +2176,36 @@ void draw_settings(SDL_Renderer* r)
 
     const char* rows[] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
                            tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
-                           tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT) };
-    const int rowh = 54, top = 104;
-    for (int i = 0; i < 11; i++) {
+                           tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP) };
+    const int rowh = 50, top = 100;
+    for (int i = 0; i < 12; i++) {
         int y = top + i * rowh;
         if (i == app.set_sel) {
             fill_rect(r, 120, y, W - 240, rowh - 8, C_PANEL);
             fill_rect(r, 120, y, 5, rowh - 8, g_accent);
         }
         SDL_Color tc = (i == app.set_sel) ? C_TEXT : C_DIM;
-        text(r, app.f_body, rows[i], 150, y + 14, tc);
+        text(r, app.f_body, rows[i], 150, y + 10, tc);
         if (i == 0 || i == 1) {
             int v = (i == 0) ? app.settings.brightness : app.settings.volume;
-            fill_rect(r, 560, y + 22, 240, 12, { 60, 68, 96, 160 });
-            fill_rect(r, 560, y + 22, 240 * v / 100, 12, g_accent);
+            fill_rect(r, 560, y + 20, 240, 12, { 60, 68, 96, 160 });
+            fill_rect(r, 560, y + 20, 240 * v / 100, 12, g_accent);
             char b[16];
             snprintf(b, sizeof(b), "%d%%", v);
-            text(r, app.f_body, b, 860, y + 10, tc, Align::Right);
+            text(r, app.f_body, b, 860, y + 6, tc, Align::Right);
         } else if (i == 2) {
-            text(r, app.f_body, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED), 860, y + 14,
+            text(r, app.f_body, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED), 860, y + 10,
                  app.bt_on ? C_GREEN : C_DIM, Align::Right);
         } else if (i == 3) {
             const char* w = app.wifi_state == "NOHW" ? tr(T_WIFI_UNAVAILABLE)
                           : !app.wifi_link.empty() ? app.wifi_link.c_str()
                           : tr(T_WIFI_DISCONNECTED);
-            text(r, app.f_body, w, 860, y + 14,
+            text(r, app.f_body, w, 860, y + 10,
                  !app.wifi_link.empty() ? C_GREEN : C_DIM, Align::Right);
         } else if (i == 4) {
-            text(r, app.f_body, theme_name(app.settings.theme), 860, y + 14, g_accent, Align::Right);
+            text(r, app.f_body, theme_name(app.settings.theme), 860, y + 10, g_accent, Align::Right);
         } else if (i == 5) {
-            text(r, app.f_body, lang_name(app.settings.language), 860, y + 14, g_accent, Align::Right);
+            text(r, app.f_body, lang_name(app.settings.language), 860, y + 10, g_accent, Align::Right);
         } else if (i == 6) {
             char u[96];
             const char* s;
@@ -1430,11 +2229,11 @@ void draw_settings(SDL_Renderer* r)
             } else {
                 s = tr(T_UPDATE_IDLE);
             }
-            text(r, app.f_small, s, 860, y + 14, uc, Align::Right);
+            text(r, app.f_small, s, 860, y + 10, uc, Align::Right);
         } else if (i == 7) {
             char b[32];
             snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size());
-            text(r, app.f_body, b, 860, y + 14, tc, Align::Right);
+            text(r, app.f_body, b, 860, y + 10, tc, Align::Right);
         }
     }
     draw_hint(r, tr(T_SETTINGS_HINT));
@@ -1702,8 +2501,13 @@ void go_back()
         app.screen = Screen::Home;
         break;
     case Screen::Wifi:
-        if (app.wifi_kb) { app.wifi_kb = false; break; }
+        if (app.wifi_kb) { kb_cancel(); break; }
         app.screen = Screen::Settings;
+        break;
+    case Screen::Setup:
+        // B skips the current step; an open keyboard is cancelled first
+        if (app.wifi_kb) { kb_cancel(); break; }
+        setup_next();
         break;
     case Screen::Saves:
         app.screen = Screen::Settings;
@@ -1751,6 +2555,11 @@ void confirm_btn()
         else if (app.set_sel == 9) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
         else if (app.set_sel == 10)
             show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
+        else if (app.set_sel == 11) setup_enter();
+        break;
+    case Screen::Setup:
+        if (app.wifi_kb) kb_press();
+        else setup_activate();
         break;
     case Screen::Wifi:
         if (app.wifi_kb) kb_press();
@@ -1819,6 +2628,10 @@ void start_btn()
         app.screen = Screen::Settings;
         app.set_sel = 0;
     }
+    else if (app.screen == Screen::Setup) {
+        sound_play(SND_BACK);
+        setup_finish();          // START skips the whole wizard
+    }
     else if (app.screen != Screen::Confirm) {
         sound_play(SND_BACK);
         app.screen = Screen::Home;
@@ -1842,7 +2655,7 @@ void navigate(int dx, int dy)
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 10);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 11);
         if (dx) {
             if (app.set_sel == 0) {
                 app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
@@ -1871,6 +2684,19 @@ void navigate(int dx, int dy)
         } else if (dy && !app.wifi_nets.empty()) {
             app.wifi_sel = std::clamp(app.wifi_sel + dy, 0,
                                       (int)app.wifi_nets.size() - 1);
+        }
+        break;
+    case Screen::Setup:
+        if (app.wifi_kb) {
+            const auto& rows = kb_rows();
+            if (dy) {
+                app.kb_r = std::clamp(app.kb_r + dy, 0, (int)rows.size() - 1);
+                app.kb_c = std::min(app.kb_c, (int)rows[app.kb_r].size() - 1);
+            }
+            if (dx) app.kb_c = std::clamp(app.kb_c + dx, 0,
+                                          (int)rows[app.kb_r].size() - 1);
+        } else {
+            setup_nav(dx, dy);
         }
         break;
     case Screen::Bluetooth:
@@ -1907,6 +2733,13 @@ void handle_button(SDL_ControllerButtonEvent& b)
             }
         } else if (app.screen == Screen::Update) {
             if (!app.upd_busy) { sound_play(SND_SWITCH); update_start("check"); }
+        } else if (app.screen == Screen::Setup) {
+            if (app.setup_step == 1 && !app.wifi_busy && !app.setup_busy &&
+                !app.wifi_kb && app.wifi_state != "NOHW") {
+                sound_play(SND_SWITCH);
+                app.wifi_status = tr(T_WIFI_SCANNING);
+                wifi_start("scan");
+            }
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -1931,7 +2764,9 @@ void handle_button(SDL_ControllerButtonEvent& b)
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: toggle_fav_only(); break; // physical R
     case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
     case SDL_CONTROLLER_BUTTON_GUIDE:  // physical MENU (BTN_MODE)
-        if (app.screen != Screen::Confirm) app.screen = Screen::Home;
+        // leaving the wizard by any deliberate exit means "do not ask again"
+        if (app.screen == Screen::Setup) setup_finish();
+        else if (app.screen != Screen::Confirm) app.screen = Screen::Home;
         break;
     case SDL_CONTROLLER_BUTTON_DPAD_UP:    navigate(0, -1); break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  navigate(0, 1); break;
@@ -1959,6 +2794,13 @@ void handle_key(SDL_KeyboardEvent& k)
             }
         } else if (app.screen == Screen::Update) {
             if (!app.upd_busy) { sound_play(SND_SWITCH); update_start("check"); }
+        } else if (app.screen == Screen::Setup) {
+            if (app.setup_step == 1 && !app.wifi_busy && !app.setup_busy &&
+                !app.wifi_kb && app.wifi_state != "NOHW") {
+                sound_play(SND_SWITCH);
+                app.wifi_status = tr(T_WIFI_SCANNING);
+                wifi_start("scan");
+            }
         } else refresh_games();
         break;
     case SDLK_f:
@@ -2069,6 +2911,11 @@ int main(int, char**)
         return 1;
     }
 
+    // First boot only, and only with /userdata really mounted: without it the
+    // completion marker cannot be persisted and the wizard would return every
+    // boot. Settings > 首次设置 runs it again on demand.
+    if (userdata_mounted() && access(SETUP_MARKER, F_OK) != 0) setup_enter();
+
     while (app.running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -2116,6 +2963,7 @@ int main(int, char**)
         wifi_poll();
         update_poll();
         tf2_poll();
+        setup_poll();
 
         // Tell S99update the UI really got on screen: boot.scr only clears the
         // boot counter once this marker exists, so a rootfs whose session
@@ -2136,6 +2984,7 @@ int main(int, char**)
         case Screen::Bluetooth: draw_bluetooth(r); break;
         case Screen::Saves:     draw_saves(r); break;
         case Screen::Update:    draw_update(r); break;
+        case Screen::Setup:     draw_setup(r); break;
         case Screen::Msg:       draw_msg(r); break;
         case Screen::Confirm:   draw_confirm(r); break;
         }

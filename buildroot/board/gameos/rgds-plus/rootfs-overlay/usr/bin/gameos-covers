@@ -1,0 +1,184 @@
+#!/bin/sh
+# gameOS cover art downloader (libretro-thumbnails, Named_Boxarts).
+#
+#   gameos-covers count   number of games that still have no cover
+#   gameos-covers run     download them, oldest console first
+#
+# The UI runs "run" in the background and polls /run/gameos/covers-state:
+#   state=running|done|stopped  total=  done=  ok=  miss=  fail=  current=
+# Touch /run/gameos/covers.stop to abort between games.
+#
+# Matching is by ROM file name stem, exactly the title the front-end shows
+# (library.cpp scan_dir does not strip region tags), and the file name is
+# sanitised the same way RetroArch does it in gfx_thumbnail_path.c:
+# & * / : ` " < > ? \ |  ->  _
+#
+# thumbnails.libretro.com is dead (404 for every path), so the two mirrors
+# below are used instead, raw.githubusercontent first and jsDelivr as fallback.
+# A download only counts when it really is a PNG: jsDelivr answers some errors
+# with a 200 HTML page, which would otherwise be saved as a broken cover.
+#
+# The target has no stat(1) and no timeout(1): sizes come from wc -c, the PNG
+# signature from head+od, and curl's own limits are the watchdog.
+
+RUN=/run/gameos
+STATE=$RUN/covers-state
+STOP=$RUN/covers.stop
+COVERS=/userdata/covers
+CA=/etc/ssl/certs/ca-certificates.crt
+SYS_LIST="nds gba gbc ps1 psp"
+
+mkdir -p "$RUN" 2>/dev/null
+
+repo_of() {
+    case $1 in
+    nds) echo "Nintendo_-_Nintendo_DS" ;;
+    gba) echo "Nintendo_-_Game_Boy_Advance" ;;
+    gbc) echo "Nintendo_-_Game_Boy_Color" ;;
+    ps1) echo "Sony_-_PlayStation" ;;
+    psp) echo "Sony_-_PlayStation_Portable" ;;
+    *)   echo "" ;;
+    esac
+}
+
+# percent-encode every byte outside the unreserved set. LC_ALL=C is required:
+# in a UTF-8 locale awk counts characters, not bytes, and a multi-byte title
+# would encode to garbage.
+urlencode() {
+    LC_ALL=C awk 'BEGIN { ORS=""; for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+         { n = length($0)
+           for (i = 1; i <= n; i++) {
+               c = substr($0, i, 1)
+               if (c ~ /^[A-Za-z0-9._~-]$/) printf "%s", c
+               else printf "%%%02X", ord[c]
+           }
+           printf "\n" }'
+}
+
+# Same roots, depth cap and extension sets as library.cpp rom_roots()/consoles().
+build_list() {
+    TOTAL=0
+    for sys in $SYS_LIST; do
+        raw=$RUN/covers.$sys.raw
+        out=$RUN/covers.$sys
+        : > "$raw"
+        for root in "/userdata/roms/$sys" "/mnt/tf2/roms/$sys" \
+                    "/mnt/tf2/ROMS/$sys" "/mnt/tf2/$sys"; do
+            [ -d "$root" ] || continue
+            find "$root" -maxdepth 5 -name '.*' -prune -o -type f -print 2>/dev/null \
+            | awk -v sys="$sys" '
+                { n = $0; sub(/.*\//, "", n)
+                  if (substr(n, 1, 1) == ".") next
+                  low = tolower(n); ok = 0
+                  if (sys == "nds") ok = (low ~ /\.(nds|dsi|ids|srl)$/)
+                  else if (sys == "gba") ok = (low ~ /\.(gba|agb|mb)$/)
+                  else if (sys == "gbc") ok = (low ~ /\.(gbc|gb|sgb)$/)
+                  else if (sys == "ps1") ok = (low ~ /\.(bin|cue|iso|img|chd|pbp|m3u)$/)
+                  else if (sys == "psp") ok = (low ~ /\.(iso|cso|pbp|elf)$/)
+                  if (!ok) next
+                  t = n; sub(/\.[^.]*$/, "", t)
+                  if (t != "") print t }' >> "$raw"
+        done
+        : > "$out"
+        if [ -s "$raw" ]; then
+            sort -u "$raw" | while IFS= read -r t; do
+                [ -n "$t" ] || continue
+                [ -f "$COVERS/$sys/$t.png" ] && continue
+                [ -f "$COVERS/$sys/$t.jpg" ] && continue
+                printf '%s\n' "$t" >> "$out"
+            done
+        fi
+        rm -f "$raw"
+        n=$(wc -l < "$out" 2>/dev/null)
+        case $n in ''|*[!0-9]*) n=0 ;; esac
+        TOTAL=$((TOTAL + n))
+    done
+}
+
+write_state() { # $1 state, $2 current title
+    {
+        printf 'state=%s\n' "$1"
+        printf 'total=%s\n' "$TOTAL"
+        printf 'done=%s\n' "$DONE"
+        printf 'ok=%s\n' "$OK"
+        printf 'miss=%s\n' "$MISS"
+        printf 'fail=%s\n' "$FAIL"
+        printf 'current=%s\n' "$2"
+    } > "$STATE.new" 2>/dev/null && mv -f "$STATE.new" "$STATE" 2>/dev/null
+}
+
+do_count() { build_list; echo "$TOTAL"; }
+
+do_run() {
+    rm -f "$STOP"
+    DONE=0; OK=0; MISS=0; FAIL=0
+    build_list
+    write_state running ""
+    if [ "$TOTAL" -eq 0 ]; then
+        write_state done ""
+        echo "OK 0 0"
+        return 0
+    fi
+
+    for sys in $SYS_LIST; do
+        list=$RUN/covers.$sys
+        [ -s "$list" ] || continue
+        repo=$(repo_of "$sys")
+        [ -n "$repo" ] || continue
+        mkdir -p "$COVERS/$sys"
+        while IFS= read -r title; do
+            [ -n "$title" ] || continue
+            if [ -f "$STOP" ]; then
+                write_state stopped "$title"
+                echo "STOPPED $OK $MISS"
+                return 0
+            fi
+            DONE=$((DONE + 1))
+            write_state running "$title"
+
+            name=$(printf '%s' "$title" | LC_ALL=C tr '&*/:`"<>?\\|' '___________')
+            enc=$(printf '%s' "$name" | urlencode)
+            tmp=$RUN/covers.dl
+            got=0
+            for base in \
+"https://raw.githubusercontent.com/libretro-thumbnails/$repo/master/Named_Boxarts" \
+"https://cdn.jsdelivr.net/gh/libretro-thumbnails/$repo@master/Named_Boxarts"; do
+                rm -f "$tmp"
+                curl -fsSL --connect-timeout 8 --max-time 45 --cacert "$CA" \
+                     -o "$tmp" "$base/$enc.png" 2>/dev/null
+                rc=$?
+                if [ $rc -eq 0 ]; then
+                    sig=$(head -c 4 "$tmp" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+                    if [ "$sig" = "89504e47" ] \
+                       && mv -f "$tmp" "$COVERS/$sys/$title.png" 2>/dev/null; then
+                        got=1
+                    fi
+                elif [ $rc -ne 22 ]; then
+                    FAIL=$((FAIL + 1))   # transport/TLS error, not a 404
+                fi
+                rm -f "$tmp"
+                [ $got -eq 1 ] && break
+            done
+            if [ $got -eq 1 ]; then
+                OK=$((OK + 1))
+            else
+                MISS=$((MISS + 1))
+            fi
+        done < "$list"
+    done
+
+    write_state done ""
+    # nothing at all came through and every attempt was a transport error:
+    # report a network problem instead of claiming the whole library unmatched
+    if [ "$OK" -eq 0 ] && [ "$FAIL" -gt 0 ] && [ "$MISS" -eq "$TOTAL" ]; then
+        echo "ERROR network"
+        return 1
+    fi
+    echo "OK $OK $MISS"
+}
+
+case ${1:-count} in
+count) do_count ;;
+run)   do_run ;;
+*)     echo "Usage: $0 {count|run}"; exit 1 ;;
+esac
