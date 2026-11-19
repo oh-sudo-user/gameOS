@@ -8,6 +8,9 @@ SUBSYSTEM=="input", ATTRS{name}=="adc-joystick", ENV{ID_INPUT_JOYSTICK}="0", ENV
 # reserved. Hide both so RetroArch doesn't grab them as phantom joypads.
 SUBSYSTEM=="input", ATTRS{name}=="adc-keys-home", ENV{ID_INPUT_JOYSTICK}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_KEY}="0"
 SUBSYSTEM=="input", ATTRS{name}=="adc-keys-play", ENV{ID_INPUT_JOYSTICK}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_KEY}="0"
+# gameos-inputd drives ALSA from gpio-keys-volume. Hide the raw device too,
+# otherwise SDL/RetroArch see a second keyboard and double-handle the keys.
+SUBSYSTEM=="input", ATTRS{name}=="gpio-keys-volume", ENV{ID_INPUT_JOYSTICK}="0", ENV{ID_INPUT_KEYBOARD}="0", ENV{ID_INPUT_KEY}="0"
 # Make sure the merged pad is always tagged as a joystick: SDL's udev backend
 # only enumerates devices with ID_INPUT_JOYSTICK=1, and eudev's input_id
 # builtin may not tag uinput devices reliably on this setup.

@@ -157,12 +157,24 @@ static int battery_pct(void)
     return pct;
 }
 
+// The pid file lives in tmpfs and outlives a crashed UI, so a stale pid may
+// have been reused by an unrelated process. Only ever signal the group when
+// the pid still belongs to one of the emulators launch.cpp starts.
+static int game_comm_ok(pid_t p)
+{
+    char path[64], comm[64];
+    snprintf(path, sizeof path, "/proc/%d/comm", (int)p);
+    read_str(path, comm, sizeof comm);
+    return strcmp(comm, "retroarch") == 0 || strcmp(comm, "PPSSPPSDL") == 0;
+}
+
 static pid_t game_pgid(void)
 {
     char v[32];
     read_str(GAME_PID, v, sizeof v);
     pid_t p = atoi(v);
     if (p <= 0 || kill(p, 0) != 0) return 0;
+    if (!game_comm_ok(p)) return 0;
     pid_t pg = getpgid(p);
     return pg > 0 ? pg : 0;
 }
