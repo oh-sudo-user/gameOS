@@ -55,6 +55,26 @@ part_dev() {  # part_dev GAMEOS-ROOT-B -> /dev/... or nothing
     [ -n "$nr" ] && echo "${disk}p$nr"
 }
 
+# ver_cmp <release> <current> -> 1 newer, 0 same, -1 older. Compares numeric
+# major.minor.patch and ignores the "+g<sha>" build suffix, so a rebuild of the
+# same release is never offered as an update and an older release is not
+# either. An unknown/empty current version counts as 0.0.0.
+ver_cmp() {
+    a=$(echo "$1" | sed 's/+.*$//')
+    b=$(echo "$2" | sed 's/+.*$//')
+    i=1
+    while [ $i -le 3 ]; do
+        x=$(echo "$a" | cut -d. -f$i)
+        y=$(echo "$b" | cut -d. -f$i)
+        case "$x" in ''|*[!0-9]*) x=0 ;; esac
+        case "$y" in ''|*[!0-9]*) y=0 ;; esac
+        [ "$x" -gt "$y" ] && { echo 1; return 0; }
+        [ "$x" -lt "$y" ] && { echo -1; return 0; }
+        i=$((i + 1))
+    done
+    echo 0
+}
+
 fetch() {  # fetch <url> <file> <expected-size> ; progress goes to update-state
     rm -f "$2.part"
     curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 20 \
@@ -91,10 +111,10 @@ do_check() {
     RELVER=$(jget "$MANIFEST" version)
     [ -n "$RELVER" ] || { state "state=failed" "msg=bad manifest"; return 1; }
     CUR=$(cat /etc/gameos-version 2>/dev/null)
-    if [ "$RELVER" = "$CUR" ]; then
-        state "state=uptodate" "pct=0" "version=$RELVER" "msg="
-    else
+    if [ "$(ver_cmp "$RELVER" "$CUR")" = 1 ]; then
         state "state=available" "pct=0" "version=$RELVER" "msg=current $CUR"
+    else
+        state "state=uptodate" "pct=0" "version=$RELVER" "msg="
     fi
     return 0
 }
@@ -103,7 +123,9 @@ do_apply() {
     [ -f "$MANIFEST" ] || do_check || return 1
     RELVER=$(jget "$MANIFEST" version)
     CUR=$(cat /etc/gameos-version 2>/dev/null)
-    [ "$RELVER" = "$CUR" ] && { state "state=uptodate" "version=$RELVER"; return 0; }
+    # only ever install something NEWER than what is running
+    [ "$(ver_cmp "$RELVER" "$CUR")" = 1 ] || {
+        state "state=uptodate" "pct=0" "version=$RELVER" "msg="; return 0; }
 
     online || { state "state=nowifi" "version=$RELVER" "msg=no network"; return 1; }
     mountpoint -q /userdata || { state "state=failed" "version=$RELVER" "msg=no data partition"; return 1; }

@@ -66,6 +66,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "更新已就绪，重启后生效", "更新失败：%s",
         "没有网络连接，请先在设置里连接 WiFi", "重启并应用更新",
         "当前版本 %s", "Ⓐ 检查更新",
+        "确认更新到 %s？", "下载后写入空闲分区，重启生效；游戏和存档不受影响。",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -121,6 +122,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "更新已就緒，重啟後生效", "更新失敗：%s",
         "沒有網路連線，請先在設定裡連接 WiFi", "重啟並套用更新",
         "目前版本 %s", "Ⓐ 檢查更新",
+        "確認更新到 %s？", "下載後寫入閒置分割區，重啟生效；遊戲和存檔不受影響。",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -182,6 +184,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "再起動で適用されます", "失敗：%s",
         "ネットワークがありません — 設定で WiFi に接続してください", "再起動して適用",
         "現在のバージョン %s", "Ⓐ 確認する",
+        "%s に更新しますか？", "空きスロットに書き込み、再起動で適用されます。ゲームとセーブは保持されます。",
     },
     // ------------------------------------------------------------------ en
     {
@@ -243,6 +246,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Ready — restart to apply", "Update failed: %s",
         "No network — connect WiFi in Settings", "Restart and apply",
         "Current version %s", "Ⓐ Check for updates",
+        "Update to %s?", "Downloads to the idle slot, then restarts to apply. Games and saves are kept.",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -304,6 +308,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Готово — перезагрузите", "Ошибка обновления: %s",
         "Нет сети — подключите WiFi в настройках", "Перезагрузить и применить",
         "Версия %s", "Ⓐ Проверить",
+        "Обновить до %s?", "Запись в резервный раздел, затем перезагрузка. Игры и сохранения сохранятся.",
     },
     // ------------------------------------------------------------------ es
     {
@@ -366,6 +371,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Listo — reinicia para aplicar", "Error de actualización: %s",
         "Sin red — conecta WiFi en Ajustes", "Reiniciar y aplicar",
         "Versión actual %s", "Ⓐ Buscar actualizaciones",
+        "¿Actualizar a %s?", "Se escribe en la ranura libre y se reinicia para aplicar. Juegos y partidas se conservan.",
     },
     // ------------------------------------------------------------------ ko
     {
@@ -427,6 +433,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "재시작하면 적용됩니다", "업데이트 실패: %s",
         "네트워크 없음 — 설정에서 WiFi를 연결하세요", "재시작하여 적용",
         "현재 버전 %s", "Ⓐ 업데이트 확인",
+        "%s(으)로 업데이트할까요?", "빈 슬롯에 기록한 뒤 재시작하면 적용됩니다. 게임과 세이브는 유지됩니다.",
     },
 };
 

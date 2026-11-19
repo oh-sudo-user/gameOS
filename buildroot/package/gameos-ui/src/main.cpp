@@ -43,7 +43,7 @@ const SDL_Color C_RED    = { 255,  99,  99, 255 };
 const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Msg, Confirm };
-enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave };
+enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update };
 
 struct BtDev {
     std::string mac, name, kind;
@@ -1469,6 +1469,19 @@ void draw_confirm(SDL_Renderer* r)
     int pw = 640, ph = 300, px = (W - pw) / 2, py = (H - ph) / 2;
     fill_rect(r, px, py, pw, ph, C_PANEL);
     fill_rect(r, px, py, pw, 4, C_RED);
+    if (app.confirm == ConfirmAct::Update) {
+        // second confirmation before anything is downloaded or written
+        char b[192];
+        snprintf(b, sizeof(b), tr(T_UPDATE_CONFIRM), app.upd_version.c_str());
+        text(r, app.f_title, b, W / 2, py + 48, C_TEXT, Align::Center);
+        int y = py + 116;
+        for (const auto& l : wrap(app.f_small, tr(T_UPDATE_CONFIRM_BODY), pw - 96)) {
+            text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
+            y += 30;
+        }
+        text(r, app.f_body, tr(T_CONFIRM_HINT), W / 2, py + 236, C_DIM, Align::Center);
+        return;
+    }
     const char* t = (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
                   : (app.confirm == ConfirmAct::Reboot) ? tr(T_CONFIRM_REBOOT)
                   : tr(T_CONFIRM_DEL);
@@ -1653,7 +1666,8 @@ void go_back()
         break;
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
-                                                           : Screen::Settings;
+                   : (app.confirm == ConfirmAct::Update)     ? Screen::Update
+                                                             : Screen::Settings;
         app.confirm = ConfirmAct::None;
         break;
     default:
@@ -1694,7 +1708,11 @@ void confirm_btn()
         break;
     case Screen::Update:
         if (app.upd_busy) break;
-        if (app.upd_state == "available") update_start("apply");
+        if (app.upd_state == "available") {
+            // never write anything without an explicit second confirmation
+            app.confirm = ConfirmAct::Update;
+            app.screen = Screen::Confirm;
+        }
         else if (app.upd_state == "ready") { app.exit_code = 91; app.running = false; }
         else update_start("check");
         break;
@@ -1726,6 +1744,10 @@ void confirm_btn()
             app.save_sel = std::clamp(app.save_sel, 0, std::max(0, (int)app.saves.size() - 1));
             app.confirm = ConfirmAct::None;
             app.screen = Screen::Saves;
+        } else if (app.confirm == ConfirmAct::Update) {
+            app.confirm = ConfirmAct::None;
+            app.screen = Screen::Update;
+            update_start("apply");
         } else {
             app.exit_code = (app.confirm == ConfirmAct::PowerOff) ? 90 : 91;
             app.running = false;
