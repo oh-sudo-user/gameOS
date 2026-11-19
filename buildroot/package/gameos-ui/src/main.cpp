@@ -211,9 +211,45 @@ struct App {
     int hold_dir = 0;              // -1 / +1 vertical or horizontal
     Uint32 hold_since = 0;
     Uint32 last_repeat = 0;
+
+    // motion: smoothed positions, glided by damp() each frame so lists and
+    // the carousel move instead of jumping
+    float car_f = 0;
+    float list_sel_f = 0, list_scroll_f = 0;
+    float save_sel_f = 0, save_scroll_f = 0;
+    float quick_sel_f = 0, quick_scroll_f = 0;
+    float act_sel_f = 0, act_scroll_f = 0;
+    float set_sel_f = 0;
+    float act_tab_f = 0, quick_tab_f = 0;
 };
 
 App app;
+
+// seconds since the previous frame, clamped so a stall (SD scan, resume from
+// sleep) never teleports an animation
+float g_dt = 0.016f;
+
+// frame-rate independent exponential approach to a target
+float damp(float cur, float target, float rate = 14.0f)
+{
+    float v = cur + (target - cur) * (1.0f - expf(-rate * g_dt));
+    return fabsf(target - v) < 0.001f ? target : v;
+}
+
+float ease_out(float p)
+{
+    float q = 1.0f - p;
+    return 1.0f - q * q * q;
+}
+
+// Screen transitions: every frame is rendered into one of two scene textures;
+// on a screen change the new scene fades/slides over the previous one instead
+// of hard-cutting. Dialogs pop in with a slight scale.
+SDL_Texture* g_scene_tex[2] = { nullptr, nullptr };
+int g_scene_cur = 0;
+Screen g_last_screen = Screen::Home;
+int g_last_setup_step = -1;
+Uint32 g_trans_start = 0;
 
 // ---------------------------------------------------------------------------
 // per-console game list cache
@@ -658,6 +694,7 @@ void shutdown_gfx()
     sound_quit();          // release ALSA before the emulator takes over
     clear_text_cache();  // text textures belong to the renderers destroyed below
     clear_cover_cache();
+    for (auto& t : g_scene_tex) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
     for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
@@ -769,14 +806,16 @@ void draw_home(SDL_Renderer* r)
     const auto& cons = consoles();
     int total = CAR_N;
 
+    app.car_f = damp(app.car_f, (float)app.carousel, 12.0f);
     for (int i = 0; i < total; i++) {
-        int off = i - app.carousel;
-        if (std::abs(off) > 2) continue;
-        float scale = (off == 0) ? 1.0f : 0.68f;
+        float off = i - app.car_f;
+        if (std::abs(off) > 2.5f) continue;
+        float d = std::min(1.0f, std::abs(off));
+        float scale = 1.0f - 0.32f * d;
         int size = (int)(250 * scale);
-        int cx = W / 2 + off * 270;
+        int cx = W / 2 + (int)(off * 270);
         int cy = 330;
-        Uint8 alpha = (off == 0) ? 255 : 130;
+        Uint8 alpha = (Uint8)(255 - 125 * d);
 
         SDL_Texture* icon = (i < 5) ? app.icons[i]
                           : (i == CAR_ACTIVITY) ? app.icon_activity
@@ -883,14 +922,17 @@ void draw_list(SDL_Renderer* r)
         const int listw = W - 360;   // leave room for the cover panel
         if (app.sel < app.scroll) app.scroll = app.sel;
         if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
-        for (int i = 0; i < vis; i++) {
-            int idx = app.scroll + i;
-            if (idx >= (int)app.games.size()) break;
-            int y = top + i * rowh;
-            if (idx == app.sel) {
-                fill_rect(r, 24, y, listw - 48, rowh - 6, C_PANEL);
-                fill_rect(r, 24, y, 5, rowh - 6, g_accent);
-            }
+        app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll);
+        app.list_sel_f = damp(app.list_sel_f, (float)app.sel);
+        SDL_Rect clip = { 0, top, listw, vis * rowh };
+        SDL_RenderSetClipRect(r, &clip);
+        int hy = top + (int)((app.list_sel_f - app.list_scroll_f) * rowh);
+        fill_rect(r, 24, hy, listw - 48, rowh - 6, C_PANEL);
+        fill_rect(r, 24, hy, 5, rowh - 6, g_accent);
+        for (int i = -1; i <= vis; i++) {
+            int idx = (int)floorf(app.list_scroll_f) + i;
+            if (idx < 0 || idx >= (int)app.games.size()) continue;
+            int y = top + (int)((idx - app.list_scroll_f) * rowh);
             SDL_Color tc = (idx == app.sel) ? C_TEXT : C_DIM;
             const Game& g = app.games[idx];
             std::string label = g.title;
@@ -907,11 +949,12 @@ void draw_list(SDL_Renderer* r)
         if ((int)app.games.size() > vis) {
             int trackh = vis * rowh;
             int barh = std::max(30, trackh * vis / (int)app.games.size());
-            int bary = top + (trackh - barh) * app.scroll /
-                       std::max(1, (int)app.games.size() - vis);
+            int bary = top + (int)((trackh - barh) * app.list_scroll_f /
+                       std::max(1, (int)app.games.size() - vis));
             fill_rect(r, listw - 14, top, 4, trackh, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
             fill_rect(r, listw - 14, bary, 4, barh, g_accent);
         }
+        SDL_RenderSetClipRect(r, nullptr);
         // cover preview for the selected game
         const Game& g = app.games[app.sel];
         int px = W - 320, py = 140, pw = 280, ph = 280;
@@ -2429,12 +2472,12 @@ void draw_settings(SDL_Renderer* r)
                            tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
                            tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP) };
     const int rowh = 50, top = 100;
+    app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
+    int hy = top + (int)(app.set_sel_f * rowh);
+    fill_rect(r, 120, hy, W - 240, rowh - 8, C_PANEL);
+    fill_rect(r, 120, hy, 5, rowh - 8, g_accent);
     for (int i = 0; i < 12; i++) {
         int y = top + i * rowh;
-        if (i == app.set_sel) {
-            fill_rect(r, 120, y, W - 240, rowh - 8, C_PANEL);
-            fill_rect(r, 120, y, 5, rowh - 8, g_accent);
-        }
         SDL_Color tc = (i == app.set_sel) ? C_TEXT : C_DIM;
         std::string val;
         TTF_Font* vf = app.f_body;
@@ -2524,14 +2567,17 @@ void draw_saves(SDL_Renderer* r)
         const int rowh = 60, top = 116, vis = 9;
         if (app.save_sel < app.save_scroll) app.save_scroll = app.save_sel;
         if (app.save_sel >= app.save_scroll + vis) app.save_scroll = app.save_sel - vis + 1;
-        for (int i = 0; i < vis; i++) {
-            int idx = app.save_scroll + i;
-            if (idx >= (int)app.saves.size()) break;
-            int y = top + i * rowh;
-            if (idx == app.save_sel) {
-                fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
-                fill_rect(r, 24, y, 5, rowh - 6, g_accent);
-            }
+        app.save_scroll_f = damp(app.save_scroll_f, (float)app.save_scroll);
+        app.save_sel_f = damp(app.save_sel_f, (float)app.save_sel);
+        SDL_Rect clip = { 0, top, W, vis * rowh };
+        SDL_RenderSetClipRect(r, &clip);
+        int hy = top + (int)((app.save_sel_f - app.save_scroll_f) * rowh);
+        fill_rect(r, 24, hy, W - 48, rowh - 6, C_PANEL);
+        fill_rect(r, 24, hy, 5, rowh - 6, g_accent);
+        for (int i = -1; i <= vis; i++) {
+            int idx = (int)floorf(app.save_scroll_f) + i;
+            if (idx < 0 || idx >= (int)app.saves.size()) continue;
+            int y = top + (int)((idx - app.save_scroll_f) * rowh);
             SDL_Color tc = (idx == app.save_sel) ? C_TEXT : C_DIM;
             char kb[32];
             snprintf(kb, sizeof(kb), "%ld KB", app.saves[idx].size / 1024);
@@ -2540,6 +2586,7 @@ void draw_saves(SDL_Renderer* r)
                  48, y + 10, tc);
             text(r, app.f_small, kb, W - 48, y + 16, C_DIM, Align::Right);
         }
+        SDL_RenderSetClipRect(r, nullptr);
     }
     draw_hint(r, tr(T_SAVES_HINT));
 }
@@ -2547,38 +2594,49 @@ void draw_saves(SDL_Renderer* r)
 // ---------------------------------------------------------------------------
 // activity statistics / favorites / history
 // ---------------------------------------------------------------------------
-void draw_tabbar(SDL_Renderer* r, const std::vector<std::string>& names, int active)
+void draw_tabbar(SDL_Renderer* r, const std::vector<std::string>& names, float active_f)
 {
+    std::vector<std::pair<int, int>> rects;
     int x = 32;
     for (int i = 0; i < (int)names.size(); i++) {
         int w = text_width(app.f_body, names[i]) + 32;
-        if (i == active) {
-            fill_rect(r, x, 104, w, 46, C_PANEL);
-            fill_rect(r, x, 146, w, 4, g_accent);
-        }
-        text(r, app.f_body, names[i], x + 16, 112, (i == active) ? C_TEXT : C_DIM);
+        rects.push_back({ x, w });
         x += w + 10;
     }
+    int n = (int)rects.size();
+    int a0 = std::clamp((int)floorf(active_f), 0, n - 1);
+    int a1 = std::clamp(a0 + 1, 0, n - 1);
+    float f = std::clamp(active_f - a0, 0.0f, 1.0f);
+    int hx = (int)(rects[a0].first + (rects[a1].first - rects[a0].first) * f);
+    int hw = (int)(rects[a0].second + (rects[a1].second - rects[a0].second) * f);
+    fill_rect(r, hx, 104, hw, 46, C_PANEL);
+    fill_rect(r, hx, 146, hw, 4, g_accent);
+    for (int i = 0; i < n; i++)
+        text(r, app.f_body, names[i], rects[i].first + 16, 112,
+             fabsf(i - active_f) < 0.5f ? C_TEXT : C_DIM);
 }
 
-void draw_scrollbar(SDL_Renderer* r, int top, int vis, int rowh, int n, int scroll, int w)
+void draw_scrollbar(SDL_Renderer* r, int top, int vis, int rowh, int n, float scroll, int w)
 {
     if (n <= vis) return;
     int trackh = vis * rowh;
     int barh = std::max(30, trackh * vis / n);
-    int bary = top + (trackh - barh) * scroll / std::max(1, n - vis);
+    int bary = top + (int)((trackh - barh) * scroll / std::max(1, n - vis));
     fill_rect(r, w - 14, top, 4, trackh, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
     fill_rect(r, w - 14, bary, 4, barh, g_accent);
 }
 
 // Two-line selectable row: title above, dim meta below, one value on the right.
+// hy overrides the highlight position so it can glide between rows.
 void draw_row(SDL_Renderer* r, int y, int w, bool sel, const std::string& title,
-              const std::string& meta, const std::string& right, SDL_Color rightc)
+              const std::string& meta, const std::string& right, SDL_Color rightc,
+              int hy = -1)
 {
     const int rowh = 76;
     if (sel) {
-        fill_rect(r, 24, y, w - 48, rowh - 6, C_PANEL);
-        fill_rect(r, 24, y, 5, rowh - 6, g_accent);
+        int yy = hy >= 0 ? hy : y;
+        fill_rect(r, 24, yy, w - 48, rowh - 6, C_PANEL);
+        fill_rect(r, 24, yy, 5, rowh - 6, g_accent);
     }
     int rw = text_width(app.f_small, right);
     text(r, app.f_body, ellipsize(app.f_body, title, w - 100 - rw),
@@ -2605,10 +2663,13 @@ void draw_activity(SDL_Renderer* r)
     text(r, app.f_title, tr(T_ACTIVITY), 32, 26, C_TEXT);
     text(r, app.f_body, fmt_duration(app.act_total), W - 32, 34, C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
+    app.act_tab_f = damp(app.act_tab_f, (float)app.act_tab, 12.0f);
     draw_tabbar(r, { tr(T_TAB_OVERVIEW), tr(T_TAB_TIMELINE),
-                     tr(T_TAB_TREND), tr(T_TAB_PICKS) }, app.act_tab);
+                     tr(T_TAB_TREND), tr(T_TAB_PICKS) }, app.act_tab_f);
 
     const int top = 164, rowh = 76, vis = 7;
+    app.act_scroll_f = damp(app.act_scroll_f, (float)app.act_scroll);
+    app.act_sel_f = damp(app.act_sel_f, (float)app.act_sel);
 
     if (app.act_tab == 0) {
         long long today = app.act_daily.empty() ? 0 : app.act_daily.back();
@@ -2648,14 +2709,13 @@ void draw_activity(SDL_Renderer* r)
                 y += 32;
             }
         } else {
+            int hy = 466 + (int)(app.act_sel_f * 48);
+            fill_rect(r, 24, hy, W - 48, 44, C_PANEL);
+            fill_rect(r, 24, hy, 5, 44, g_accent);
             for (int i = 0; i < act_row_count(); i++) {
                 const GameStat& g = app.act_games[i];
                 int y = 466 + i * 48;
                 bool sel = (i == app.act_sel);
-                if (sel) {
-                    fill_rect(r, 24, y, W - 48, 44, C_PANEL);
-                    fill_rect(r, 24, y, 5, 44, g_accent);
-                }
                 char rk[8], ss[64];
                 snprintf(rk, sizeof(rk), "%d", i + 1);
                 snprintf(ss, sizeof(ss), tr(T_ACT_SESSIONS_FMT), g.sessions);
@@ -2679,16 +2739,21 @@ void draw_activity(SDL_Renderer* r)
         } else {
             if (app.act_sel < app.act_scroll) app.act_scroll = app.act_sel;
             if (app.act_sel >= app.act_scroll + vis) app.act_scroll = app.act_sel - vis + 1;
-            for (int i = 0; i < vis; i++) {
-                int idx = app.act_scroll + i;
-                if (idx >= (int)app.act_sessions.size()) break;
+            SDL_Rect clip = { 0, top, W, vis * rowh };
+            SDL_RenderSetClipRect(r, &clip);
+            int hy = top + (int)((app.act_sel_f - app.act_scroll_f) * rowh);
+            for (int i = -1; i <= vis; i++) {
+                int idx = (int)floorf(app.act_scroll_f) + i;
+                if (idx < 0 || idx >= (int)app.act_sessions.size()) continue;
                 const PlaySession& s = app.act_sessions[idx];
-                draw_row(r, top + i * rowh, W, idx == app.act_sel, s.title,
+                draw_row(r, top + (int)((idx - app.act_scroll_f) * rowh), W,
+                         idx == app.act_sel, s.title,
                          fmt_when(s.start) + " · " + console_badge(s.sys),
-                         fmt_duration(s.seconds), g_accent);
+                         fmt_duration(s.seconds), g_accent, hy);
             }
             draw_scrollbar(r, top, vis, rowh, (int)app.act_sessions.size(),
-                           app.act_scroll, W);
+                           app.act_scroll_f, W);
+            SDL_RenderSetClipRect(r, nullptr);
         }
     } else if (app.act_tab == 2) {
         long long mx = 0;
@@ -2753,9 +2818,12 @@ void draw_activity(SDL_Renderer* r)
             const char* reasons[] = { tr(T_PICK_FAV_NEW), tr(T_PICK_FAV_BACK),
                                       tr(T_PICK_NEW), tr(T_PICK_BACK),
                                       tr(T_PICK_REGULAR) };
-            for (int i = 0; i < vis; i++) {
-                int idx = app.act_scroll + i;
-                if (idx >= (int)app.act_picks.size()) break;
+            SDL_Rect clip = { 0, top, W, vis * rowh };
+            SDL_RenderSetClipRect(r, &clip);
+            int hy = top + (int)((app.act_sel_f - app.act_scroll_f) * rowh);
+            for (int i = -1; i <= vis; i++) {
+                int idx = (int)floorf(app.act_scroll_f) + i;
+                if (idx < 0 || idx >= (int)app.act_picks.size()) continue;
                 const Pick& p = app.act_picks[idx];
                 std::string right;
                 if (p.idle_days > 0) {
@@ -2765,11 +2833,13 @@ void draw_activity(SDL_Renderer* r)
                 } else if (p.seconds > 0) {
                     right = fmt_duration(p.seconds);
                 }
-                draw_row(r, top + i * rowh, W, idx == app.act_sel, p.title,
+                draw_row(r, top + (int)((idx - app.act_scroll_f) * rowh), W,
+                         idx == app.act_sel, p.title,
                          std::string(reasons[p.reason]) + " · " + console_badge(p.sys),
-                         right, C_AMBER);
+                         right, C_AMBER, hy);
             }
-            draw_scrollbar(r, top, vis, rowh, (int)app.act_picks.size(), app.act_scroll, W);
+            draw_scrollbar(r, top, vis, rowh, (int)app.act_picks.size(), app.act_scroll_f, W);
+            SDL_RenderSetClipRect(r, nullptr);
         }
     }
     draw_hint(r, tr(T_ACTIVITY_HINT));
@@ -2784,10 +2854,13 @@ void draw_quick(SDL_Renderer* r)
     snprintf(b, sizeof(b), tr(T_QUICK_COUNT_FMT), app.quick.size());
     text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
-    draw_tabbar(r, { tr(T_TAB_FAV), tr(T_TAB_HISTORY) }, app.quick_tab);
+    app.quick_tab_f = damp(app.quick_tab_f, (float)app.quick_tab, 12.0f);
+    draw_tabbar(r, { tr(T_TAB_FAV), tr(T_TAB_HISTORY) }, app.quick_tab_f);
 
     const int top = 164, rowh = 76, vis = 7;
     const int listw = W - 360;   // leave room for the cover panel
+    app.quick_scroll_f = damp(app.quick_scroll_f, (float)app.quick_scroll);
+    app.quick_sel_f = damp(app.quick_sel_f, (float)app.quick_sel);
 
     if (app.quick.empty()) {
         text(r, app.f_body,
@@ -2805,9 +2878,12 @@ void draw_quick(SDL_Renderer* r)
     } else {
         if (app.quick_sel < app.quick_scroll) app.quick_scroll = app.quick_sel;
         if (app.quick_sel >= app.quick_scroll + vis) app.quick_scroll = app.quick_sel - vis + 1;
-        for (int i = 0; i < vis; i++) {
-            int idx = app.quick_scroll + i;
-            if (idx >= (int)app.quick.size()) break;
+        SDL_Rect clip = { 0, top, listw, vis * rowh };
+        SDL_RenderSetClipRect(r, &clip);
+        int hy = top + (int)((app.quick_sel_f - app.quick_scroll_f) * rowh);
+        for (int i = -1; i <= vis; i++) {
+            int idx = (int)floorf(app.quick_scroll_f) + i;
+            if (idx < 0 || idx >= (int)app.quick.size()) continue;
             const QuickEntry& e = app.quick[idx];
             std::string title = e.game.title;
             if (fav_contains(e.sys, title)) title = "★ " + title;
@@ -2819,10 +2895,11 @@ void draw_quick(SDL_Renderer* r)
             }
             // No right-hand value column: the meta line already carries the
             // duration, and duplicating it would cost the title 156px.
-            draw_row(r, top + i * rowh, listw, idx == app.quick_sel, title, meta,
-                     "", C_DIM);
+            draw_row(r, top + (int)((idx - app.quick_scroll_f) * rowh), listw,
+                     idx == app.quick_sel, title, meta, "", C_DIM, hy);
         }
-        draw_scrollbar(r, top, vis, rowh, (int)app.quick.size(), app.quick_scroll, listw);
+        draw_scrollbar(r, top, vis, rowh, (int)app.quick.size(), app.quick_scroll_f, listw);
+        SDL_RenderSetClipRect(r, nullptr);
 
         const QuickEntry& e = app.quick[app.quick_sel];
         int px = W - 320, py = 190, pw = 280, ph = 280;
@@ -3201,6 +3278,9 @@ static void launch_one(const Console& c, const Game& g)
         app.exit_code = 1;
         return;
     }
+    // fresh scene textures after re-init: fade back in from black
+    g_scene_cur ^= 1;
+    g_trans_start = SDL_GetTicks();
 
     if (rc == 127) {
         sound_play(SND_ERROR);
@@ -3650,6 +3730,24 @@ void poll_repeat()
     }
 }
 
+void draw_current(SDL_Renderer* r)
+{
+    switch (app.screen) {
+    case Screen::Home:      draw_home(r); break;
+    case Screen::List:      draw_list(r); break;
+    case Screen::Settings:  draw_settings(r); break;
+    case Screen::Wifi:      draw_wifi(r); break;
+    case Screen::Bluetooth: draw_bluetooth(r); break;
+    case Screen::Saves:     draw_saves(r); break;
+    case Screen::Activity:  draw_activity(r); break;
+    case Screen::Quick:     draw_quick(r); break;
+    case Screen::Update:    draw_update(r); break;
+    case Screen::Setup:     draw_setup(r); break;
+    case Screen::Msg:       draw_msg(r); break;
+    case Screen::Confirm:   draw_confirm(r); break;
+    }
+}
+
 } // namespace
 
 int main(int, char**)
@@ -3756,23 +3854,74 @@ int main(int, char**)
         }
 
         SDL_Renderer* r = app.ren_top;
-        switch (app.screen) {
-        case Screen::Home:      draw_home(r); break;
-        case Screen::List:      draw_list(r); break;
-        case Screen::Settings:  draw_settings(r); break;
-        case Screen::Wifi:      draw_wifi(r); break;
-        case Screen::Bluetooth: draw_bluetooth(r); break;
-        case Screen::Saves:     draw_saves(r); break;
-        case Screen::Activity:  draw_activity(r); break;
-        case Screen::Quick:     draw_quick(r); break;
-        case Screen::Update:    draw_update(r); break;
-        case Screen::Setup:     draw_setup(r); break;
-        case Screen::Msg:       draw_msg(r); break;
-        case Screen::Confirm:   draw_confirm(r); break;
+        Uint32 now = SDL_GetTicks();
+        static Uint32 last_frame = now;
+        g_dt = std::min(0.05f, (now - last_frame) / 1000.0f);
+        last_frame = now;
+
+        // screen (or wizard step) change: snap the motion state of the screen
+        // being entered, then fade/slide the new scene over the old one
+        if (app.screen != g_last_screen || app.setup_step != g_last_setup_step) {
+            switch (app.screen) {
+            case Screen::Home:     app.car_f = (float)app.carousel; break;
+            case Screen::List:     app.list_sel_f = (float)app.sel;
+                                   app.list_scroll_f = (float)app.scroll; break;
+            case Screen::Settings: app.set_sel_f = (float)app.set_sel; break;
+            case Screen::Saves:    app.save_sel_f = (float)app.save_sel;
+                                   app.save_scroll_f = (float)app.save_scroll; break;
+            case Screen::Quick:    app.quick_sel_f = (float)app.quick_sel;
+                                   app.quick_scroll_f = (float)app.quick_scroll;
+                                   app.quick_tab_f = (float)app.quick_tab; break;
+            case Screen::Activity: app.act_sel_f = (float)app.act_sel;
+                                   app.act_scroll_f = (float)app.act_scroll;
+                                   app.act_tab_f = (float)app.act_tab; break;
+            default: break;
+            }
+            g_last_screen = app.screen;
+            g_last_setup_step = app.setup_step;
+            g_scene_cur ^= 1;
+            g_trans_start = now;
+        }
+
+        if (!g_scene_tex[0]) {
+            for (auto& t : g_scene_tex)
+                t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888,
+                                      SDL_TEXTUREACCESS_TARGET, W, H);
+            SDL_SetTextureBlendMode(g_scene_tex[0], SDL_BLENDMODE_BLEND);
+            SDL_SetTextureBlendMode(g_scene_tex[1], SDL_BLENDMODE_BLEND);
+        }
+        SDL_SetRenderTarget(r, g_scene_tex[g_scene_cur]);
+        draw_current(r);
+        SDL_SetRenderTarget(r, nullptr);
+
+        const bool dialog = app.screen == Screen::Msg || app.screen == Screen::Confirm;
+        const Uint32 dur = dialog ? 160 : 200;
+        Uint32 te = now - g_trans_start;
+        SDL_Rect full = { 0, 0, W, H };
+        if (te < dur) {
+            float p = ease_out(te / (float)dur);
+            SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur ^ 1], 255);
+            SDL_RenderCopy(r, g_scene_tex[g_scene_cur ^ 1], nullptr, &full);
+            SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur], (Uint8)(255 * p));
+            SDL_Rect dst;
+            if (dialog) {
+                int dw = (int)(W * (0.92f + 0.08f * p));
+                int dh = (int)(H * (0.92f + 0.08f * p));
+                dst = { (W - dw) / 2, (H - dh) / 2, dw, dh };
+            } else {
+                dst = { 0, (int)((1 - p) * 26), W, H };
+            }
+            SDL_RenderCopy(r, g_scene_tex[g_scene_cur], nullptr, &dst);
+        } else {
+            SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur], 255);
+            SDL_RenderCopy(r, g_scene_tex[g_scene_cur], nullptr, &full);
         }
         SDL_RenderPresent(r);
         draw_ambient();
-        SDL_Delay(1);
+        // cap at ~60 fps: uncapped rendering burned CPU and battery for no
+        // visible gain on a 60 Hz panel
+        Uint32 frame_ms = SDL_GetTicks() - now;
+        if (frame_ms < 16) SDL_Delay(16 - frame_ms);
     }
 
     // Only a console tile is a "last console"; Activity/Quick/Settings would
