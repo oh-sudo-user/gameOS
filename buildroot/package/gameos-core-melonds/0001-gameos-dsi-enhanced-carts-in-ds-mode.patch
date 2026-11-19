@@ -1,0 +1,36 @@
+DS mode: boot DSi-enhanced carts through the DS path
+
+On DS hardware a DSi-enhanced cart (header unitcode bit 1) still runs
+in DS mode. melonDS set the DSi cart-ID bit unconditionally and, with
+DirectBoot, took the DSi boot path (NWRAM/MBK setup from the DSi header
+region), which stalls without DSi BIOS/NAND: uniform white screens.
+Gate both decisions on the console type so DS mode matches real DS
+hardware. Fixes Pokemon White 2 (and other DSi-enhanced carts) hanging
+on a white screen in game nds.
+
+--- a/src/DSi.cpp
++++ b/src/DSi.cpp
+@@ -296,8 +296,9 @@
+ {
+     bool dsmode = false;
+ 
+-    // TODO: add controls for forcing DS or DSi mode?
+-    if (!(NDSCart::Header.UnitCode & 0x02))
++    // DSi-enhanced carts run in DS mode on DS hardware: boot them
++    // through the DS path, not the DSi one (which needs DSi BIOS/NAND).
++    if (!(NDSCart::Header.UnitCode & 0x02) || NDS::ConsoleType == 0)
+         dsmode = true;
+ 
+     // TODO: RAM size!!
+--- a/src/NDSCart.cpp
++++ b/src/NDSCart.cpp
+@@ -1549,7 +1549,8 @@
+                    (u32)Header.GameCode[0];
+ 
+     u8 unitcode = Header.UnitCode;
+-    CartIsDSi = (unitcode & 0x02) != 0;
++    // In DS mode the cart answers like a plain DS cart (no DSi ID bit).
++    CartIsDSi = (unitcode & 0x02) != 0 && Config::ConsoleType != 0;
+ 
+     ROMListEntry romparams;
+     if (!ReadROMParams(gamecode, &romparams))
