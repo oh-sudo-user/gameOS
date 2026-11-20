@@ -13,7 +13,7 @@
 #   gameos-wifi test            staged connectivity check, key=value lines
 #                               (link, route, dns, net) then OK / ERROR <stage>
 #   gameos-wifi forget          reads wifi-arg line 1 = SSID, drop it from disk
-#   gameos-wifi known           one saved SSID per line
+#   gameos-wifi known           saved SSIDs: SSID <tab> 1 (has key) / 0 (open)
 #   gameos-wifi up | down       bring the supplicant up/down (S30wifi)
 #
 # Saved networks: /userdata/system/wifi/nets/<md5>.net holds the SSID on line 1
@@ -443,6 +443,16 @@ do_connect() {
     if [ -z "$psk" ] && [ -n "$(saved_psk "$ssid")" ]; then
         psk=$(saved_psk "$ssid")
     fi
+    # Keep what is on disk so a failed attempt can restore it. Saving the
+    # attempt unconditionally is what used to leave a secured network marked
+    # as "saved" with an empty key, after which the UI never asked for the
+    # password again and connecting silently failed.
+    had_net=0
+    old_psk=""
+    if [ -f "$(net_file "$ssid")" ]; then
+        had_net=1
+        old_psk=$(saved_psk "$ssid")
+    fi
     log "connect: ssid=\"$ssid\" psk=$( [ -n "$psk" ] && echo provided || echo none ) iface=$enc state=$(state)"
     save_net "$ssid" "$psk"
     regen_conf "$ssid"
@@ -469,6 +479,12 @@ do_connect() {
     log "connect: association finished state=$st t=$(( $(now_s) - start ))s ip=$(link_ip)"
     if [ "$st" != COMPLETED ]; then
         diag_snapshot
+        if [ "$had_net" = 1 ]; then
+            save_net "$ssid" "$old_psk"
+        else
+            drop_net "$ssid"
+        fi
+        regen_conf
         echo "ERROR association-failed ($st)"
         return 1
     fi
@@ -582,7 +598,19 @@ do_forget() {
     echo OK
 }
 
-do_known() { known_nets; }
+do_known() {
+    # SSID <tab> 1 when a passphrase is stored, 0 when it is an open network.
+    # The UI needs this to know whether a "saved" secured network can actually
+    # connect without asking for the key again.
+    known_nets | while IFS= read -r ssid; do
+        [ -n "$ssid" ] || continue
+        if [ -n "$(saved_psk "$ssid")" ]; then
+            printf '%s\t1\n' "$ssid"
+        else
+            printf '%s\t0\n' "$ssid"
+        fi
+    done
+}
 
 case ${1:-status} in
 up)         do_up ;;

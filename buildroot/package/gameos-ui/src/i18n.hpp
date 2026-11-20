@@ -79,6 +79,7 @@ enum TKey {
     // covers
     T_SETUP_COVER_HELP, T_COVER_START, T_COVER_RUNNING, T_COVER_PROGRESS_FMT,
     T_COVER_DONE_FMT, T_COVER_STOP, T_COVER_NONE, T_COVERS,
+    T_COVER_IDLE, T_COVER_QUEUE_FMT,
     // wizard: advance without acting on the current row
     T_NEXT,
     // activity statistics + favorites/history hub

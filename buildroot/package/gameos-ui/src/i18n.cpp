@@ -91,6 +91,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "从 libretro 封面库按游戏名匹配下载封面", "开始下载", "正在下载封面…",
         "%d / %d · 已下载 %d · 未匹配 %d", "完成：新增 %d 张，未匹配 %d 张",
         "停止", "没有需要下载封面的游戏", "游戏封面",
+        "为没有封面的游戏下载封面", "%d 个游戏待补封面",
         "继续",
         // activity statistics + favorites/history
         "游玩统计", "时长 · 时间线 · 趋势 · 推荐",
@@ -204,6 +205,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "從 libretro 封面庫按遊戲名比對下載封面", "開始下載", "正在下載封面…",
         "%d / %d · 已下載 %d · 未比對 %d", "完成：新增 %d 張，未比對 %d 張",
         "停止", "沒有需要下載封面的遊戲", "遊戲封面",
+        "為沒有封面的遊戲下載封面", "%d 個遊戲待補封面",
         "繼續",
         // activity statistics + favorites/history
         "遊玩統計", "時長 · 時間線 · 趨勢 · 推薦",
@@ -328,6 +330,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "ダウンロード開始", "カバーをダウンロード中…",
         "%d / %d · 取得 %d · 不一致 %d", "完了：%d 件追加、%d 件は不一致",
         "停止", "ダウンロードが必要なゲームがありません", "ゲームカバー",
+        "カバーのないゲームのカバーをダウンロード", "カバー未取得 %d 件",
         "次へ",
         // activity statistics + favorites/history
         "プレイ統計", "時間 · タイムライン · 傾向 · おすすめ",
@@ -452,6 +455,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Start download", "Downloading covers…",
         "%d / %d · downloaded %d · unmatched %d", "Done: %d added, %d unmatched",
         "Stop", "No games need a cover", "Game covers",
+        "Download covers for games that have none", "%d games without covers",
         "Continue",
         // activity statistics + favorites/history
         "Activity", "Play time · Timeline · Trends · Next up",
@@ -582,6 +586,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Загрузка обложек…", "%d / %d · загружено %d · без совпадения %d",
         "Готово: добавлено %d, без совпадения %d", "Остановить",
         "Нет игр, которым нужна обложка", "Обложки игр",
+        "Скачать обложки для игр без них", "Без обложек: %d",
         "Продолжить",
         // activity statistics + favorites/history
         "Статистика", "Время · Хроника · Тренды · Рекомендации",
@@ -719,6 +724,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "%d / %d · descargadas %d · sin coincidencia %d",
         "Listo: %d añadidas, %d sin coincidencia", "Detener",
         "No hay juegos que necesiten carátula", "Carátulas de juegos",
+        "Descargar carátulas para juegos sin ellas", "%d juegos sin carátula",
         "Continuar",
         // activity statistics + favorites/history
         "Actividad", "Tiempo · Cronología · Tendencias · Siguiente",

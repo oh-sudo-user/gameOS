@@ -1,0 +1,81 @@
+gameOS: draw every RetroArch RGUI menu page on the top panel
+
+In GAMEOS_DUALSCREEN span mode the content viewport covers the whole
+1024x1536 framebuffer, so an RGUI menu uploaded as a texture and drawn
+into that viewport straddles the seam between the two physical panels.
+Remember the uploaded menu texture size and, for the non-fullscreen
+path, place it aspect-fitted inside the top panel, clearing that half
+first so no stale content shows around the menu.
+
+--- a/gfx/common/gl2_common.h
++++ b/gfx/common/gl2_common.h
+@@ -239,6 +239,8 @@
+    unsigned last_height[GFX_MAX_TEXTURES];
+ 
+    float menu_texture_alpha;
++   unsigned menu_texture_width;  /* gameOS: size of the uploaded menu frame */
++   unsigned menu_texture_height;
+ 
+    GLenum internal_fmt;
+    GLenum texture_type; /* RGB565 or ARGB */
+--- a/gfx/drivers/gl2.c
++++ b/gfx/drivers/gl2.c
+@@ -3137,6 +3137,8 @@
+          base_size);
+ 
+    gl->menu_texture_alpha = alpha;
++   gl->menu_texture_width  = width;
++   gl->menu_texture_height = height;
+    glBindTexture(GL_TEXTURE_2D, gl->texture[gl->tex_index]);
+ 
+    if (gl->flags & GL2_FLAG_SHARED_CONTEXT_USE)
+@@ -3337,7 +3339,48 @@
+       glViewport(gl->vp.x, gl->vp.y, gl->vp.width, gl->vp.height);
+    }
+    else
+-      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++   {
++      /* gameOS dual-screen span: the content viewport is centred on the
++       * whole 1024x1536 (Plus) / 640x960 (DS) framebuffer, so an RGUI menu
++       * drawn into it straddles the seam between the two physical panels.
++       * Draw every menu page on the top panel only: clear that half and
++       * place the menu texture across it, keeping the texture's aspect.
++       * Both panels are the same size, so the top half of the span is the
++       * top panel. The content keeps rendering on the bottom panel. */
++      const char *dual = getenv("GAMEOS_DUALSCREEN");
++      if (dual && dual[0] == '1' && height >= 2 && width > 0)
++      {
++         GLint  top_h = (GLint)(height / 2);
++         GLint  y_top = (GLint)height - top_h;    /* GL rows are bottom-up */
++         GLint  tw    = gl->menu_texture_width
++                      ? (GLint)gl->menu_texture_width  : (GLint)width;
++         GLint  th    = gl->menu_texture_height
++                      ? (GLint)gl->menu_texture_height : top_h;
++         GLint  mw    = (GLint)width;
++         GLint  mh    = top_h;
++
++         /* fit the texture's aspect ratio inside the top panel */
++         if ((double)mw / (double)mh > (double)tw / (double)th)
++            mw = (GLint)((double)mh * (double)tw / (double)th);
++         else
++            mh = (GLint)((double)mw * (double)th / (double)tw);
++         if (mw <= 0) mw = (GLint)width;
++         if (mh <= 0) mh = top_h;
++
++         glEnable(GL_SCISSOR_TEST);
++         glScissor(0, y_top, (GLsizei)width, top_h);
++         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
++         glClear(GL_COLOR_BUFFER_BIT);
++         glDisable(GL_SCISSOR_TEST);
++
++         glViewport((GLint)width / 2 - mw / 2, y_top + top_h / 2 - mh / 2,
++               mw, mh);
++         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++         glViewport(gl->vp.x, gl->vp.y, gl->vp.width, gl->vp.height);
++      }
++      else
++         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++   }
+ 
+    glDisable(GL_BLEND);
+ 

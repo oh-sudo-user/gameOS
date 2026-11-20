@@ -463,17 +463,6 @@ static void apply_perf(const char* profile)
     (void)system(cmd.c_str());
 }
 
-// Set by the UI for dual-screen launches: the emulator reads the ROM before
-// it opens DRM, so the launch animation can run during the read instead of
-// leaving a black screen. The callback returns only once the UI has stopped
-// drawing and written /tmp/gameos-ui-release.
-static void (*g_launch_overlap)(int, const Console&, const Game&) = nullptr;
-
-void set_launch_overlap(void (*fn)(int pid, const Console&, const Game&))
-{
-    g_launch_overlap = fn;
-}
-
 static int run_emu(const Console& c, const Game& g,
                    const std::string& override_cfg, long& seconds,
                    Diag& d, int attempt, const std::string& sid)
@@ -536,8 +525,6 @@ static int run_emu(const Console& c, const Game& g,
         logmode = "w";
     append_marker("\n===== gameos attempt %d at %s (%s) =====\n",
                   attempt, wall_clock().c_str(), g.path.c_str());
-    if (c.dual)
-        unlink("/tmp/gameos-ra-ready"); // stale marker from a previous attempt
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -549,7 +536,11 @@ static int run_emu(const Console& c, const Game& g,
         // ---- child ----
         // Own process group: gameos-sleepd SIGSTOPs the emulator group on
         // lid close; sharing the UI's group would freeze the front-end too.
-        setpgid(0, 0);
+        // The parent repeats this call (one wins, the other gets EACCES), so a
+        // pause request can never race the fork and hit the UI's group.
+        if (setpgid(0, 0) != 0)
+            dprintf(2, "%s: child setpgid failed (errno %d)\n",
+                    subsystem_name(c), errno);
         setenv("SDL_VIDEODRIVER", "kmsdrm", 1);
         setenv("XDG_RUNTIME_DIR", "/tmp/gameos-runtime", 1);
 
@@ -566,14 +557,10 @@ static int run_emu(const Console& c, const Game& g,
             setenv("GAMEOS_TOUCH_Y_OFFSET", ph.c_str(), 1);
             setenv("GAMEOS_TOUCH_PANEL_H", ph.c_str(), 1);
             setenv("LIBGL_DEBUG", "verbose", 1);
-            // RetroArch reports the ROM is read and waits for the UI to drop
-            // DRM master before its first modeset (drm_ctx.c launch gate).
-            setenv("GAMEOS_LAUNCH_GATE", "1", 1);
         } else {
             unsetenv("GAMEOS_DUALSCREEN");
             unsetenv("GAMEOS_TOUCH_Y_OFFSET");
             unsetenv("GAMEOS_TOUCH_PANEL_H");
-            unsetenv("GAMEOS_LAUNCH_GATE");
             unsetenv("LIBGL_DEBUG");
         }
 
@@ -584,20 +571,38 @@ static int run_emu(const Console& c, const Game& g,
 
     // ---- parent ----
     d.line("forked child pid=%d", (int)pid);
+    // Mirror the child's setpgid. Whichever call lands first wins; the loser
+    // gets EACCES/ESRCH once the child has exec'd. Doing it on both sides
+    // closes the fork window in which gameos-sleepd could still see the
+    // emulator inside the UI's process group.
+    if (setpgid(pid, pid) != 0 && errno != EACCES && errno != ESRCH)
+        d.line("parent setpgid(%d) failed errno=%d", (int)pid, errno);
     // The parent owns the performance profile switch (never the child): apply
     // the console's tier now and restore the UI tier on EVERY exit path,
     // including exec failure (child _exit(127)) and waitpid errors.
     apply_perf(perf_profile(c));
-    // Publish the emulator pid for gameos-sleepd (lid-close pause/resume).
-    mkdir("/run/gameos", 0755);
-    write_file("/run/gameos/game.pid", std::to_string(pid));
-
-    // Dual-screen: keep the launch animation running while the core reads the
-    // whole ROM (~8 s for a 512 MiB NDS image) and only then hand the panels
-    // over. The emulator is already started but holds its first modeset until
-    // /tmp/gameos-ui-release appears, so the two never fight over DRM.
-    if (c.dual && g_launch_overlap)
-        g_launch_overlap((int)pid, c, g);
+    // Publish game.pid only once the child is visibly its own group leader; a
+    // pause request that raced the fork would otherwise SIGSTOP the UI. A
+    // short retry covers the instant between fork and the child's setpgid.
+    bool pg_ok = false;
+    for (int i = 0; i < 50; i++) {
+        if (getpgid(pid) == pid) { pg_ok = true; break; }
+        usleep(1000);
+    }
+    if (pg_ok) {
+        mkdir("/run/gameos", 0755);
+        const std::string tmp = "/run/gameos/game.pid.tmp";
+        if (write_file(tmp, std::to_string(pid)) &&
+            rename(tmp.c_str(), "/run/gameos/game.pid") == 0) {
+            d.line("published game.pid pid=%d", (int)pid);
+        } else {
+            unlink(tmp.c_str());
+            d.line("ERROR: cannot publish game.pid errno=%d", errno);
+        }
+    } else {
+        d.line("ERROR: child %d never became a group leader; game.pid not published",
+               (int)pid);
+    }
 
     struct timespec ts0 = {}, ts1 = {};
     clock_gettime(CLOCK_MONOTONIC, &ts0);

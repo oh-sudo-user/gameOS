@@ -177,7 +177,11 @@ static pid_t game_pgid(void)
     if (p <= 0 || kill(p, 0) != 0) return 0;
     if (!game_comm_ok(p)) return 0;
     pid_t pg = getpgid(p);
-    return pg > 0 ? pg : 0;
+    // Only a group leader is safe to signal: launch.cpp publishes the file
+    // after confirming the child moved into its own group, so pg != p means
+    // a stale or half-published entry — refuse rather than hit the UI group.
+    if (pg != p) return 0;
+    return pg;
 }
 
 // True while any process still belongs to the group. kill(-pg, 0) succeeds for

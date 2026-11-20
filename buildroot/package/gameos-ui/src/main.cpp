@@ -51,7 +51,7 @@ constexpr int CAR_SETTINGS = 7;
 // The definitions live in ui.cpp; this file reads them through ui.hpp.
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
-                    Activity, Quick, Msg, Confirm };
+                    Covers, Activity, Quick, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt };
 
 // Every tappable region on the bottom deck. `a` (and `b`) carry the row /
@@ -63,8 +63,9 @@ enum HitId {
     HIT_HUB,              // a = 0 activity, 1 quick, 2 settings
     HIT_RECENT,
     HIT_LIST_ROWS, HIT_LIST_ROW,        // row: a = index
-    HIT_SET_TILE, HIT_SET_SLIDER,       // tile a = 0..11; slider a = 0 bright, 1 volume
+    HIT_SET_TILE, HIT_SET_SLIDER,       // tile a = 0..12; slider a = 0 bright, 1 volume
     HIT_WIFI_NET, HIT_WIFI_SCAN, HIT_WIFI_TEST,
+    HIT_COVER_ACTION,
     HIT_BT_TOGGLE, HIT_BT_DEV, HIT_BT_SCAN, HIT_BT_FORGET,
     HIT_SAVE_ROW, HIT_SAVE_DEL,
     HIT_UPD_CHECK, HIT_UPD_APPLY, HIT_UPD_REBOOT,
@@ -97,6 +98,7 @@ struct WifiNet {
     int  signal = 0;      // dBm
     bool secure = false;
     bool saved = false;
+    bool keyed = false;   // saved with a non-empty passphrase
 };
 
 struct App {
@@ -223,6 +225,7 @@ struct App {
     std::string setup_ra_name;         // account reported by the last login
     int  cov_total = 0, cov_done = 0, cov_ok = 0, cov_miss = 0, cov_fail = 0;
     std::string cov_state, cov_current;
+    Uint32 cov_poll_at = 0;
 
     // activity statistics screen
     int act_tab = 0;                   // 0 overview, 1 timeline, 2 trends, 3 picks
@@ -1108,10 +1111,29 @@ std::string run_cmd(const char* cmd)
     return out;
 }
 
+// gameos-wifi known prints "SSID<TAB>1" when a passphrase is stored and
+// "SSID<TAB>0" for an open network. The bare-SSID form is accepted too so an
+// older helper still works.
 bool wifi_saved(const std::string& ssid)
 {
-    return std::find(app.wifi_known.begin(), app.wifi_known.end(), ssid)
-           != app.wifi_known.end();
+    for (const auto& k : app.wifi_known) {
+        if (k == ssid) return true;
+        if (k.size() > ssid.size() + 1 &&
+            k.compare(0, ssid.size(), ssid) == 0 && k[ssid.size()] == '\t')
+            return true;
+    }
+    return false;
+}
+
+bool wifi_keyed(const std::string& ssid)
+{
+    const size_t n = ssid.size();
+    for (const auto& k : app.wifi_known) {
+        if (k.size() == n + 2 && k.compare(0, n, ssid) == 0 &&
+            k[n] == '\t' && k[n + 1] == '1')
+            return true;
+    }
+    return false;
 }
 
 void wifi_apply_known(const std::string& out)
@@ -1123,7 +1145,10 @@ void wifi_apply_known(const std::string& out)
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (!line.empty()) app.wifi_known.push_back(line);
     }
-    for (auto& n : app.wifi_nets) n.saved = wifi_saved(n.ssid);
+    for (auto& n : app.wifi_nets) {
+        n.saved = wifi_saved(n.ssid);
+        n.keyed = wifi_keyed(n.ssid);
+    }
 }
 
 void wifi_apply_status(const std::string& out)
@@ -1142,7 +1167,10 @@ void wifi_apply_status(const std::string& out)
         else if (k == "ssid") app.wifi_link = v;
         else if (k == "ip") app.wifi_ip = v;
     }
-    for (auto& n : app.wifi_nets) n.saved = wifi_saved(n.ssid);
+    for (auto& n : app.wifi_nets) {
+        n.saved = wifi_saved(n.ssid);
+        n.keyed = wifi_keyed(n.ssid);
+    }
 }
 
 void wifi_start(const std::string& op)
@@ -1242,6 +1270,7 @@ void wifi_parse_nets(const std::string& out)
         n.ssid = line.substr(t2 + 1);
         if (n.ssid.empty()) continue;
         n.saved = wifi_saved(n.ssid);
+        n.keyed = wifi_keyed(n.ssid);
         bool dup = false;
         for (auto& e : app.wifi_nets)
             if (e.ssid == n.ssid) { dup = true; if (n.signal > e.signal) e = n; break; }
@@ -1265,9 +1294,21 @@ void wifi_press_net()
 {
     if (app.wifi_sel < 0 || app.wifi_sel >= (int)app.wifi_nets.size()) return;
     const WifiNet& n = app.wifi_nets[app.wifi_sel];
-    if (n.secure && !n.saved) {          // ask for the passphrase
+    // A secured network needs a real key. An entry saved with an empty
+    // passphrase (legacy failed attempt) is not usable: prompt again instead
+    // of silently connecting with key_mgmt=NONE and flipping back with an
+    // error. A saved network whose key is known reconnects without asking.
+    if (n.secure && !n.keyed) {
         app.wifi_target = n.ssid;
         app.wifi_pw.clear();
+        // the shared keyboard outlives wizard fields: reset every mode flag so
+        // a stale generic target cannot swallow the keystrokes
+        app.kb_generic = false;
+        app.kb_buf = nullptr;
+        app.kb_title = tr(T_WIFI_PASSWORD);
+        app.kb_limit = 63;
+        app.kb_empty_ok = false;
+        app.kb_mask = true;
         app.wifi_kb = true;
         app.kb_r = 1; app.kb_c = 0; app.kb_shift = 0;
     } else {
@@ -1628,6 +1669,26 @@ void setup_prev()
     }
 }
 
+// The wizard's cover step and the Settings cover page read the same file.
+void covers_load_state()
+{
+    std::istringstream ss(read_file("/run/gameos/covers-state"));
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if      (k == "state")   app.cov_state = v;
+        else if (k == "current") app.cov_current = v;
+        else if (k == "total")   app.cov_total = atoi(v.c_str());
+        else if (k == "done")    app.cov_done = atoi(v.c_str());
+        else if (k == "ok")      app.cov_ok = atoi(v.c_str());
+        else if (k == "miss")    app.cov_miss = atoi(v.c_str());
+        else if (k == "fail")    app.cov_fail = atoi(v.c_str());
+    }
+}
+
 void setup_poll()
 {
     if (app.screen != Screen::Setup) return;
@@ -1641,23 +1702,8 @@ void setup_poll()
     if (rows > 0 && app.setup_sel >= rows) app.setup_sel = rows - 1;
 
     // cover progress is published continuously, not just at the end
-    if (app.setup_step == 5) {
-        std::istringstream ss(read_file("/run/gameos/covers-state"));
-        std::string line;
-        while (std::getline(ss, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            size_t eq = line.find('=');
-            if (eq == std::string::npos) continue;
-            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-            if      (k == "state")   app.cov_state = v;
-            else if (k == "current") app.cov_current = v;
-            else if (k == "total")   app.cov_total = atoi(v.c_str());
-            else if (k == "done")    app.cov_done = atoi(v.c_str());
-            else if (k == "ok")      app.cov_ok = atoi(v.c_str());
-            else if (k == "miss")    app.cov_miss = atoi(v.c_str());
-            else if (k == "fail")    app.cov_fail = atoi(v.c_str());
-        }
-    }
+    if (app.setup_step == 5)
+        covers_load_state();
 
     if (!app.setup_busy) return;
     // a cover run can legitimately take many minutes; the user stops it with A
@@ -1923,6 +1969,113 @@ void setup_enter()
 }
 
 // ---------------------------------------------------------------------------
+// box-art scraping from Settings (same helper and state file as the wizard)
+// ---------------------------------------------------------------------------
+void covers_enter()
+{
+    app.cov_state.clear();
+    app.cov_current.clear();
+    app.cov_total = app.cov_done = app.cov_ok = app.cov_miss = app.cov_fail = 0;
+    app.setup_status.clear();
+    app.setup_busy = false;
+    app.setup_op.clear();
+    app.screen = Screen::Covers;
+
+    // A run started from the wizard may still be downloading. Adopt it from
+    // the state file instead of counting: count rewrites the same /run lists
+    // the running downloader is reading.
+    covers_load_state();
+    if (app.cov_state == "running") return;
+    setup_run("covers-count", "gameos-covers count");
+}
+
+void covers_toggle()
+{
+    bool running = app.cov_state == "running" ||
+                   (app.setup_busy && app.setup_op == "covers");
+    if (running) {
+        FILE* f = fopen("/run/gameos/covers.stop", "w");
+        if (f) fclose(f);
+        sound_play(SND_BACK);
+        return;
+    }
+    if (app.setup_busy) return;           // the count is still in flight
+    unlink("/run/gameos/covers-state");
+    app.cov_state.clear();
+    app.cov_current.clear();
+    app.cov_total = app.cov_done = app.cov_ok = app.cov_miss = app.cov_fail = 0;
+    app.setup_status.clear();
+    setup_run("covers", "gameos-covers run");
+    sound_play(SND_CONFIRM);
+}
+
+// Runs on every screen (except the wizard, whose setup_poll owns the op):
+// entering this page while a wizard download is still going shows its
+// progress, and its completion refreshes the cached cover textures.
+void covers_poll()
+{
+    if (app.screen == Screen::Setup) return;
+    Uint32 now = SDL_GetTicks();
+    if (now - app.cov_poll_at < 250) return;
+    app.cov_poll_at = now;
+
+    std::string prev = app.cov_state;
+    covers_load_state();
+    if (prev == "running" && app.cov_state != "running") {
+        clear_cover_cache();
+        // a run adopted from the wizard has no op result to read; report the
+        // outcome from the state file so leaving/returning still feels final
+        if (!app.setup_busy) {
+            char b[256];
+            if (app.cov_state == "stopped")
+                snprintf(b, sizeof(b), tr(T_COVER_PROGRESS_FMT),
+                         app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
+            else
+                snprintf(b, sizeof(b), tr(T_COVER_DONE_FMT),
+                         app.cov_ok, app.cov_miss);
+            app.setup_status = b;
+        }
+    }
+
+    if (!app.setup_busy) return;
+    if (app.setup_op != "covers" && now - app.setup_op_at > 60000) {
+        app.setup_busy = false;
+        app.setup_op.clear();
+        app.setup_status = tr(T_OP_FAIL);
+        return;
+    }
+    const std::string base = setup_op_base(app.setup_op);
+    FILE* f = fopen((base + ".rc").c_str(), "r");
+    if (!f) return;
+    int rc = 1;
+    if (fscanf(f, "%d", &rc) != 1) rc = 1;
+    fclose(f);
+    app.setup_busy = false;
+    std::string out = read_file(base + ".out");
+    std::string op = app.setup_op;
+    app.setup_op.clear();
+    std::string last = last_line(out);
+    char b[256];
+
+    if (op == "covers-count") {
+        if (rc != 0) {
+            app.setup_status = tr(T_OP_FAIL);
+        } else {
+            app.cov_total = atoi(last.c_str());
+            if (app.cov_total == 0) app.setup_status = tr(T_COVER_NONE);
+        }
+    } else if (op == "covers") {
+        clear_cover_cache();
+        if (last.rfind("OK", 0) == 0 || last.rfind("STOPPED", 0) == 0) {
+            snprintf(b, sizeof(b), tr(T_COVER_DONE_FMT), app.cov_ok, app.cov_miss);
+            app.setup_status = b;
+        } else {
+            app.setup_status = tr(T_SETUP_NEED_NET);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // wizard drawing
 // ---------------------------------------------------------------------------
 
@@ -1963,9 +2116,18 @@ void draw_setup(SDL_Renderer* r)
         bool connected = !app.wifi_ip.empty();
         bool nohw = app.wifi_state == "NOHW";
         bool busy = app.wifi_busy;
+        bool prompt = app.wifi_kb && !app.kb_generic;
         icon_wifi(r, W / 2 - 62, 228, 124,
-                  connected ? C_ACCENT : with_alpha(C_DIM, 210),
-                  connected ? 4 : 3);
+                  prompt ? C_ACCENT
+                         : connected ? C_ACCENT : with_alpha(C_DIM, 210),
+                  prompt || connected ? 4 : 3);
+        if (prompt) {
+            name = tr(T_WIFI_PASSWORD);
+            status = app.wifi_target;
+            sc = C_ACCENT;
+            detail = std::string(app.wifi_pw.size(), '*') + "   " + tr(T_KB_DECK_HINT);
+            break;
+        }
         name = connected && !app.wifi_link.empty() ? app.wifi_link : tr(T_WIFI);
         if (nohw) {
             status = tr(T_WIFI_UNAVAILABLE); sc = C_AMBER;
@@ -2180,6 +2342,20 @@ void draw_wifi(SDL_Renderer* r)
     draw_background(r);
     draw_topbar(r);
 
+    // The keyboard lives on the deck; mirror the prompt on the top panel so
+    // it is obvious that the tap opened a password entry instead of doing
+    // nothing (or looking like a jump back to Settings).
+    if (app.wifi_kb && !app.kb_generic) {
+        top_plate(r, W / 2, 290, 142);
+        icon_keyboard(r, W / 2 - 62, 228, 124, C_ACCENT);
+        std::string masked(app.wifi_pw.size(), '*');
+        if (masked.empty()) masked = "· · ·";
+        top_hero(r, tr(T_WIFI), tr(T_WIFI_PASSWORD), app.wifi_target,
+                 C_ACCENT,
+                 masked + "   " + std::string(tr(T_KB_DECK_HINT)));
+        return;
+    }
+
     bool connected = !app.wifi_ip.empty();
     bool nohw = app.wifi_state == "NOHW";
     bool busy = app.wifi_busy;
@@ -2204,6 +2380,47 @@ void draw_wifi(SDL_Renderer* r)
     }
     std::string detail = busy ? std::string() : app.wifi_status;
     top_hero(r, tr(T_WIFI), tr(T_WIFI), status, sc, detail);
+}
+
+void draw_covers(SDL_Renderer* r)
+{
+    draw_background(r);
+    draw_topbar(r);
+
+    bool running = app.cov_state == "running" ||
+                   (app.setup_busy && app.setup_op == "covers");
+    bool counting = app.setup_busy && app.setup_op == "covers-count";
+    top_plate(r, W / 2, 290, 142);
+    icon_image(r, W / 2 - 62, 228, 124,
+               app.cov_total > 0 ? C_ACCENT : with_alpha(C_DIM, 210));
+
+    std::string name, status, detail;
+    SDL_Color sc = C_DIM;
+    if (app.cov_total > 0) {
+        int pct = app.cov_done * 100 / app.cov_total;
+        char pb[16], b[192];
+        snprintf(pb, sizeof(pb), "%d%%", pct);
+        name = pb;
+        if (running) {
+            status = tr(T_COVER_RUNNING); sc = C_AMBER;
+        } else {
+            snprintf(b, sizeof(b), tr(T_COVER_PROGRESS_FMT),
+                     app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
+            status = b; sc = C_ACCENT;
+        }
+        detail = app.cov_current;
+        SDL_Rect track = { 262, 688, 500, 10 };
+        rrect(r, track, 5, with_alpha(C_DIM, 70));
+        if (pct > 0)
+            rrect(r, { track.x, track.y, 500 * pct / 100, 10 }, 5, C_ACCENT);
+    } else {
+        name = tr(T_COVERS);
+        if (counting) status = tr(T_PROCESSING);
+        else if (!app.setup_status.empty()) status = app.setup_status;
+        else status = tr(T_COVER_IDLE);
+        detail = tr(T_SETUP_COVER_HELP);
+    }
+    top_hero(r, tr(T_COVERS), name, status, sc, detail);
 }
 
 const char* bt_kind_name(const std::string& k)
@@ -2257,6 +2474,9 @@ void draw_settings(SDL_Renderer* r)
     if (app.set_sel == 3) vc = app.wifi_link.empty() ? C_DIM : C_GREEN;
     if (app.set_sel == 4 || app.set_sel == 5) vc = C_ACCENT;
     if (app.set_sel == 8) vc = C_RED;
+    if (app.set_sel == 12)
+        vc = (app.cov_state == "running" ||
+              (app.setup_busy && app.setup_op == "covers")) ? C_AMBER : C_DIM;
     top_hero(r, tr(T_SETTINGS), settings_label(app.set_sel),
              settings_value(app.set_sel), vc, "");
 
@@ -2267,7 +2487,7 @@ void draw_settings(SDL_Renderer* r)
         if (pct > 0) rrect(r, { track.x, track.y, 500 * pct / 100, 10 }, 5, C_ACCENT);
         circle(r, track.x + 500 * pct / 100, track.y + 5, 11, C_TEXT);
     }
-    top_dots(r, 12, app.set_sel, 712);
+    top_dots(r, 13, app.set_sel, 712);
 }
 
 void draw_saves(SDL_Renderer* r)
@@ -2762,11 +2982,14 @@ static std::string log_tail_line()
 // ---------------------------------------------------------------------------
 // Launch animation. The top panel shows the game card dropping into the
 // handheld's slot; the deck reports the read (percent, sectors, activity).
-// ~2.6 s, ending on black so the DRM handoff to the emulator is invisible.
+// The timeline is 2.6 animation seconds but runs at 1.7x, so the wall-clock
+// cost is ~1.5 s: the UI is torn down first and the emulator starts only
+// afterwards (a shared DRM master is what made the old gate fail).
 // Host preview: GAMEOS_LAUNCH_SHOT=<dir> dumps both panels at the times in
-// GAMEOS_LAUNCH_AT (comma separated, seconds).
+// GAMEOS_LAUNCH_AT (animation seconds).
 // ---------------------------------------------------------------------------
-constexpr float LAUNCH_DUR = 2.6f;
+constexpr float LAUNCH_DUR = 2.6f;           // animation seconds, not wall
+constexpr float LAUNCH_SPEED = 1.7f;         // animation seconds per real second
 constexpr float LAUNCH_HIT = 0.82f;          // card reaches the slot
 
 void anim_save_panel(SDL_Renderer* r, const std::string& path)
@@ -3312,11 +3535,9 @@ void draw_launch_bot(SDL_Renderer* r, const Console& c, const Game& g, float t,
     if (out < 1.f) fill_rect(r, 0, 0, W, H, rgba(0, 0, 0, (Uint8)((1.f - out) * 255)));
 }
 
-// gate_pid > 0: dual-screen launch. The emulator is already reading the ROM
-// (melonDS need_fullpath reads the whole image before opening DRM), so hold
-// the animation on its last visible frame until /tmp/gameos-ra-ready appears
-// or the child exits, then play the fade-out and return.
-void launch_anim(const Console& c, const Game& g, int gate_pid = 0)
+// Runs before the emulator starts, on every console. Stops on black so the
+// DRM hand-off to the emulator is invisible.
+void launch_anim(const Console& c, const Game& g)
 {
     if (!app.ren_top) return;
 
@@ -3345,34 +3566,10 @@ void launch_anim(const Console& c, const Game& g, int gate_pid = 0)
     size_t shot_i = 0;
 
     SDL_ShowCursor(SDL_DISABLE);
-    const float hold_t = LAUNCH_DUR - 0.24f;   // last frame before the fade
     Uint32 t0 = SDL_GetTicks();
-    Uint32 now = t0;
-    bool released = gate_pid <= 0;
     for (;;) {
-        now = SDL_GetTicks();
-        float t = (now - t0) / 1000.f;
-        if (!released) {
-            bool child_gone = kill(gate_pid, 0) != 0 && errno == ESRCH;
-            bool ready = access("/tmp/gameos-ra-ready", F_OK) == 0;
-            if (ready || child_gone || t >= 20.f) {
-                const char* why = child_gone ? " [child gone]"
-                                : (t >= 20.f ? " [timeout]" : "");
-                float waited = t;
-                released = true;
-                if (t > hold_t) {
-                    t0 = now - (Uint32)(hold_t * 1000.f);  // fade from here
-                    t = hold_t;
-                }
-                char dbg[160];
-                snprintf(dbg, sizeof dbg,
-                         "gameos-ui: launch gate open after %.1fs%s\n",
-                         (double)waited, why);
-                ui_dbg(dbg);
-            } else if (t > hold_t) {
-                t = hold_t;                            // stay readable
-            }
-        }
+        Uint32 now = SDL_GetTicks();
+        float t = ((now - t0) / 1000.f) * LAUNCH_SPEED;
         draw_launch_top(app.ren_top, c, g, t, card, cover_t, icon_t);
         if (app.ren_bot)
             draw_launch_bot(app.ren_bot, c, g, t, cover_b, icon_b);
@@ -3396,27 +3593,6 @@ void launch_anim(const Console& c, const Game& g, int gate_pid = 0)
 
 // Launch one game from any screen (console list, favorites, history, a
 // recommendation). Records the session; the caller refreshes its own list.
-// Dual-screen overlap, called by launch_game right after the emulator fork:
-// the animation keeps the panels busy during the core's ROM read, then the
-// UI drops DRM master and writes /tmp/gameos-ui-release, which releases
-// RetroArch's first modeset (drm_ctx.c launch gate). A retry reaches this
-// with the UI already torn down; then the release is immediate.
-static void launch_gate_anim(int pid, const Console& c, const Game& g)
-{
-    unlink("/tmp/gameos-ui-release");
-    if (app.ren_top) {
-        Uint32 t0 = SDL_GetTicks();
-        launch_anim(c, g, pid);
-        shutdown_gfx();
-        char dbg[160];
-        snprintf(dbg, sizeof dbg,
-                 "gameos-ui: launch overlap: UI released DRM after %us\n",
-                 (unsigned)((SDL_GetTicks() - t0 + 500) / 1000));
-        ui_dbg(dbg);
-    }
-    write_file("/tmp/gameos-ui-release", "1");
-}
-
 static void launch_one(const Console& c, const Game& g)
 {
     long long wall_start = (long long)time(nullptr);
@@ -3426,21 +3602,18 @@ static void launch_one(const Console& c, const Game& g)
                  c.id, g.title.c_str(), g.path.c_str());
         ui_dbg(dbg);
     }
-    if (!c.dual) {
-        launch_anim(c, g);             // card-insert read animation
-        shutdown_gfx();                // release DRM master
-    } else {
-        // Dual screen: launch_game starts the emulator first and then calls
-        // launch_gate_anim, so the ROM read happens behind this animation.
-        set_launch_overlap(launch_gate_anim);
-    }
+    // Every console, NDS included: play the animation and drop DRM master
+    // BEFORE the emulator starts. The old dual-screen overlap ran RetroArch
+    // while the UI still held master; its first modeset was denied, it
+    // exited, and the automatic retry produced the black/white flash and a
+    // wasted one to two seconds on every launch.
+    launch_anim(c, g);                 // card-insert read animation
+    shutdown_gfx();                    // release DRM master
     // CLOCK_MONOTONIC, not the wall clock: gameos-sleepd suspends to RAM on lid
     // close and CLOCK_REALTIME jumps forward by the sleep time on resume.
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     int rc = launch_game(c, g);
-    set_launch_overlap(nullptr);
-    if (c.dual && app.ren_top) shutdown_gfx();   // hand-over never happened
     struct timespec t1;
     clock_gettime(CLOCK_MONOTONIC, &t1);
     {
@@ -3525,6 +3698,10 @@ void go_back()
     case Screen::Update:
         app.screen = Screen::Settings;
         break;
+    case Screen::Covers:
+        // the download keeps running in the background if it was started
+        app.screen = Screen::Settings;
+        break;
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
                    : (app.confirm == ConfirmAct::Update)     ? Screen::Update
@@ -3595,6 +3772,7 @@ void confirm_btn()
         else if (app.set_sel == 10)
             show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
         else if (app.set_sel == 11) setup_enter();
+        else if (app.set_sel == 12) covers_enter();
         break;
     case Screen::Setup:
         if (app.wifi_kb) kb_press();
@@ -3613,6 +3791,9 @@ void confirm_btn()
         }
         else if (app.upd_state == "ready") { app.exit_code = 91; app.running = false; }
         else update_start("check");
+        break;
+    case Screen::Covers:
+        covers_toggle();
         break;
     case Screen::Bluetooth:
         if (app.bt_busy) break;
@@ -3757,8 +3938,8 @@ void navigate(int dx, int dy)
             if (dy) app.set_adjust = -1;   // leave adjust, then move
         }
         // two-column tile grid: up/down changes row, left/right changes column
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 2, 0, 11);
-        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 11);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 2, 0, 12);
+        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 12);
         break;
     case Screen::Wifi:
         if (app.wifi_kb) {
@@ -4189,14 +4370,15 @@ void deck_list(SDL_Renderer* r)
 }
 
 // ---------------------------------------------------------------------------
-// settings deck: 12 direct tiles, two columns
+// settings deck: 13 direct tiles, two columns
 // ---------------------------------------------------------------------------
 const char* settings_label(int i)
 {
-    const char* rows[12] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
+    const char* rows[13] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
                              tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
-                             tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP) };
-    return rows[std::clamp(i, 0, 11)];
+                             tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP),
+                             tr(T_COVERS) };
+    return rows[std::clamp(i, 0, 12)];
 }
 
 std::string settings_value(int i)
@@ -4224,6 +4406,15 @@ std::string settings_value(int i)
                        app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
         return tr(T_UPD_CHECK);
     case 7: snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size()); return b;
+    case 12:
+        if (app.cov_state == "running" ||
+            (app.setup_busy && app.setup_op == "covers"))
+            return tr(T_COVER_RUNNING);
+        if (app.cov_total > 0) {
+            snprintf(b, sizeof(b), tr(T_COVER_QUEUE_FMT), app.cov_total);
+            return b;
+        }
+        return "";
     default: return "";
     }
 }
@@ -4242,7 +4433,8 @@ void settings_icon(SDL_Renderer* r, int idx, int x, int y, int size, SDL_Color c
     case 8: icon_power(r, x, y, size, c); break;
     case 9: icon_refresh(r, x, y, size, c); break;
     case 10: icon_gear(r, x, y, size, c); break;
-    default: icon_gamepad(r, x, y, size, c); break;
+    case 11: icon_gamepad(r, x, y, size, c); break;
+    default: icon_image(r, x, y, size, c); break;
     }
 }
 
@@ -4251,8 +4443,8 @@ void deck_settings(SDL_Renderer* r)
     deck_header(r, tr(T_SETTINGS));
     app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
 
-    const int tw = 452, th = 92, gx = 12, gy = 8;
-    for (int i = 0; i < 12; i++) {
+    const int tw = 452, th = 80, gx = 12, gy = 8;
+    for (int i = 0; i < 13; i++) {
         int col = i % 2, row = i / 2;
         SDL_Rect tile = { 48 + col * (tw + gx), 84 + row * (th + gy), tw, th };
         bool sel = i == app.set_sel;
@@ -4265,20 +4457,20 @@ void deck_settings(SDL_Renderer* r)
             rrect(r, tile, 20, rgba(255, 255, 255, 7));
             rrect_stroke(r, tile, 20, rgba(255, 255, 255, 9), 1);
         }
-        settings_icon(r, i, tile.x + 18, tile.y + 18, 28,
+        settings_icon(r, i, tile.x + 18, tile.y + 14, 26,
                       (i == 8) ? C_RED : sel ? C_ACCENT : C_DIM);
-        text(r, app.f_body, settings_label(i), tile.x + 58, tile.y + 14,
+        text(r, app.f_body, settings_label(i), tile.x + 58, tile.y + 10,
              i == 8 ? C_RED : C_TEXT);
         std::string v = settings_value(i);
         if (!v.empty())
             text(r, app.f_small, ellipsize(app.f_small, v, tw - 80),
-                 tile.x + 58, tile.y + 54, vc);
+                 tile.x + 58, tile.y + 46, vc);
         // Tile first, slider second: ui_hit_at() walks the list backwards,
         // so the smaller track must be registered last to win the touch.
         hit_add(tile, HIT_SET_TILE, i);
         if (i == 0 || i == 1) {
             int pct = i == 0 ? app.settings.brightness : app.settings.volume;
-            SDL_Rect track = { tile.x + tw - 190, tile.y + 54, 160, 24 };
+            SDL_Rect track = { tile.x + tw - 190, tile.y + 46, 160, 24 };
             bool adj = app.set_adjust == i;
             if (adj) rrect_stroke(r, { track.x - 8, track.y - 4, track.w + 16, 32 },
                                   16, with_alpha(C_ACCENT, 210), 1);
@@ -4382,8 +4574,9 @@ void deck_wifi(SDL_Renderer* r)
         const WifiNet& w = app.wifi_nets[idx];
         SDL_Rect rc = { 48, y, 928, rowh - 8 };
         bool sel = idx == app.wifi_sel;
+        bool usable = w.saved && (!w.secure || w.keyed);
         deck_row(r, rc, sel, w.ssid,
-                 w.saved ? tr(T_WIFI_SAVED) : !w.secure ? tr(T_WIFI_OPEN) : "",
+                 usable ? tr(T_WIFI_SAVED) : !w.secure ? tr(T_WIFI_OPEN) : "",
                  "", C_DIM);
         int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3 : w.signal >= -78 ? 2 : 1;
         for (int b = 0; b < 4; b++) {
@@ -4391,7 +4584,7 @@ void deck_wifi(SDL_Renderer* r)
             fill_rect(r, rc.x + rc.w - 62 + b * 13, rc.y + rc.h / 2 + 14 - h,
                       8, h, b < bars ? g_accent : with_alpha(C_DIM, 80));
         }
-        if (w.saved) icon_check(r, rc.x + rc.w - 132, rc.y + 26, 26, C_GREEN);
+        if (usable) icon_check(r, rc.x + rc.w - 132, rc.y + 26, 26, C_GREEN);
         hit_add(rc, HIT_WIFI_NET, idx);
     }
     if (n == 0) {
@@ -4420,6 +4613,68 @@ void deck_wifi(SDL_Renderer* r)
     button(r, scan, app.wifi_busy ? tr(T_SCANNING) : tr(T_SCAN), false, false);
     hit_add(scan, HIT_WIFI_SCAN);
     deck_hint(r, tr(T_TOUCH_WIFI));
+}
+
+// ---------------------------------------------------------------------------
+// box-art deck (same layout as the wizard's cover step)
+// ---------------------------------------------------------------------------
+void deck_covers(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_COVERS));
+
+    bool running = app.cov_state == "running" ||
+                   (app.setup_busy && app.setup_op == "covers");
+    bool counting = app.setup_busy && app.setup_op == "covers-count";
+
+    SDL_Rect ringrc = { 48, 100, 280, 280 };
+    card(r, ringrc, 32, false, 230);
+    float p = app.cov_total > 0 ? (float)app.cov_done / app.cov_total : 0;
+    int cx = ringrc.x + ringrc.w / 2, cy = ringrc.y + 120;
+    ring(r, cx, cy, 74, 10, with_alpha(C_DIM, 50));
+    arc(r, cx, cy, 74, -90, -90 + 360 * p, 10, C_ACCENT);
+    char b[256];
+    snprintf(b, sizeof(b), "%d%%", (int)(p * 100));
+    text(r, app.f_title, b, cx, cy - 24, C_TEXT, Align::Center);
+    snprintf(b, sizeof(b), "%d / %d", app.cov_done, app.cov_total);
+    text(r, app.f_small, b, cx, ringrc.y + 230, C_DIM, Align::Center);
+
+    SDL_Rect info = { 356, 100, 620, 280 };
+    rrect(r, info, 30, rgba(255, 255, 255, 7));
+    rrect_stroke(r, info, 30, rgba(255, 255, 255, 10), 1);
+    text(r, app.f_body, tr(T_COVERS), info.x + 32, info.y + 34, C_TEXT);
+    int y = info.y + 90;
+    for (const auto& l : wrap(app.f_small, tr(T_SETUP_COVER_HELP), info.w - 64)) {
+        text(r, app.f_small, l, info.x + 32, y, C_DIM);
+        y += 30;
+    }
+    if (app.cov_total > 0) {
+        snprintf(b, sizeof(b), tr(T_COVER_PROGRESS_FMT),
+                 app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
+        text(r, app.f_small, ellipsize(app.f_small, b, info.w - 64),
+             info.x + 32, info.y + info.h - 66, C_ACCENT);
+    } else {
+        snprintf(b, sizeof(b), tr(T_COVER_QUEUE_FMT), app.cov_total);
+        text(r, app.f_small,
+             counting ? tr(T_PROCESSING) : ellipsize(app.f_small, b, info.w - 64),
+             info.x + 32, info.y + info.h - 66, C_DIM);
+    }
+    if (!app.cov_current.empty())
+        text(r, app.f_small, ellipsize(app.f_small, app.cov_current, info.w - 64),
+             info.x + 32, info.y + info.h - 36, with_alpha(C_DIM, 170));
+
+    SDL_Rect act = { 48, 420, 452, 84 };
+    button(r, act, running ? tr(T_COVER_STOP) : tr(T_COVER_START),
+           true, !counting);
+    hit_add(act, HIT_COVER_ACTION);
+
+    if (!app.setup_status.empty())
+        text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 300),
+             W / 2, 552, C_AMBER, Align::Center);
+
+    deck_round(r, { 48, 672, 64, 64 });
+    icon_chevron(r, 60, 684, 40, C_TEXT, true);
+    hit_add({ 48, 672, 64, 64 }, HIT_BACK);
+    deck_hint(r, tr(T_COVER_IDLE));
 }
 
 // ---------------------------------------------------------------------------
@@ -4881,7 +5136,8 @@ void deck_setup(SDL_Renderer* r)
             bool sel = idx == app.setup_sel;
             if (idx < nets) {
                 const WifiNet& w = app.wifi_nets[idx];
-                std::string meta = w.saved ? tr(T_WIFI_SAVED)
+                bool usable = w.saved && (!w.secure || w.keyed);
+                std::string meta = usable ? tr(T_WIFI_SAVED)
                                  : !w.secure ? tr(T_WIFI_OPEN) : "";
                 deck_row(r, rc, sel, w.ssid, meta, "", C_DIM);
                 int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3
@@ -5159,6 +5415,7 @@ void draw_deck_content(SDL_Renderer* r)
     case Screen::Saves:     deck_saves(r); break;
     case Screen::Update:    deck_update(r); break;
     case Screen::Setup:     deck_setup(r); break;
+    case Screen::Covers:    deck_covers(r); break;
     case Screen::Activity:  deck_activity(r); break;
     case Screen::Quick:     deck_quick(r); break;
     case Screen::Msg:       deck_msg(r); break;
@@ -5261,7 +5518,7 @@ void deck_activate(int id, int a, int b)
         confirm_btn();      // launches the focused row on list/quick/activity
         break;
     case HIT_SET_TILE:
-        app.set_sel = std::clamp(a, 0, 11);
+        app.set_sel = std::clamp(a, 0, 12);
         if (a <= 1) {
             app.set_adjust = a;
             sound_play(SND_ADJUST);
@@ -5282,7 +5539,11 @@ void deck_activate(int id, int a, int b)
         else if (a == 9) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
         else if (a == 10) show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
         else if (a == 11) setup_enter();
+        else if (a == 12) covers_enter();
         else sound_play(SND_MOVE);
+        break;
+    case HIT_COVER_ACTION:
+        covers_toggle();
         break;
     case HIT_WIFI_NET:
         if (a >= 0 && a < (int)app.wifi_nets.size()) {
@@ -5747,6 +6008,7 @@ void draw_current(SDL_Renderer* r)
     case Screen::Quick:     draw_quick(r); break;
     case Screen::Update:    draw_update(r); break;
     case Screen::Setup:     draw_setup(r); break;
+    case Screen::Covers:    draw_covers(r); break;
     case Screen::Msg:       draw_msg(r); break;
     case Screen::Confirm:   draw_confirm(r); break;
     }
@@ -5846,6 +6108,7 @@ int main(int, char**)
         update_poll();
         tf2_poll();
         setup_poll();
+        covers_poll();
 
         TouchEvent te;
         while (touch_poll(te)) deck_touch(te);
@@ -5870,6 +6133,13 @@ int main(int, char**)
 
         // screen (or wizard step) change: snap the motion state of the screen
         // being entered, then fade/slide the new scene over the old one
+        // A missing texture pair means there is no previous scene to fade
+        // FROM: first frame after boot, or the first frame after the emulator
+        // exited and shutdown_gfx() destroyed the targets. Without this check
+        // the transition below draws g_scene_tex[cur ^ 1] while it still holds
+        // uninitialized GPU memory, which showed up as the boot splash
+        // flashing back for 200 ms right before the home screen.
+        const bool had_scene = g_scene_tex[0] != nullptr;
         if (app.screen != g_last_screen || app.setup_step != g_last_setup_step) {
             switch (app.screen) {
             case Screen::Home:     app.car_f = (float)app.carousel; break;
@@ -5907,7 +6177,7 @@ int main(int, char**)
         const Uint32 dur = dialog ? 160 : 200;
         Uint32 trans_elapsed = now - g_trans_start;
         SDL_Rect full = { 0, 0, W, H };
-        if (trans_elapsed < dur) {
+        if (had_scene && trans_elapsed < dur) {
             float p = ease_out(trans_elapsed / (float)dur);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur ^ 1], 255);
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur ^ 1], nullptr, &full);

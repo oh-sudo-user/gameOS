@@ -182,6 +182,17 @@ fetch() {  # fetch <url> <file> <expected-size> <label> ; progress to update-sta
         # busybox has no stat(1); wc -c is the portable size query here.
         cur=$(wc -c < "$2.part" 2>/dev/null)
         case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+        # The manifest size is a hard cap, not just a progress denominator:
+        # a server that keeps sending past the declared byte count is already
+        # wrong, so stop it now instead of filling /userdata and only failing
+        # the hash check minutes later.
+        if [ "$3" -gt 0 ] 2>/dev/null && [ "$cur" -gt "$3" ]; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            rm -f "$2.part"
+            state "state=failed" "pct=0" "version=$RELVER" "msg=$4 larger than declared"
+            return 1
+        fi
         pct=0
         [ "$3" -gt 0 ] 2>/dev/null && pct=$((cur * 100 / $3))
         [ $pct -gt 99 ] && pct=99
@@ -189,6 +200,15 @@ fetch() {  # fetch <url> <file> <expected-size> <label> ; progress to update-sta
         sleep 1
     done
     wait "$pid" || { rm -f "$2.part"; return 1; }
+    # Exact size, not just "curl exited 0": a truncated transfer must never
+    # reach the write step with a hash mismatch masked by retry logic.
+    got=$(wc -c < "$2.part" 2>/dev/null)
+    case "$got" in ''|*[!0-9]*) got=0 ;; esac
+    if [ "$3" -gt 0 ] 2>/dev/null && [ "$got" -ne "$3" ]; then
+        rm -f "$2.part"
+        state "state=failed" "pct=0" "version=$RELVER" "msg=$4 size $got != $3"
+        return 1
+    fi
     mv -f "$2.part" "$2"
 }
 
@@ -199,10 +219,21 @@ do_check() {
         return 1
     fi
     rm -f "$MANIFEST.part"
+    # 1 MiB ceiling: the manifest is a handful of lines. --max-filesize aborts
+    # at the transport layer; the size re-check below also covers servers that
+    # send a chunked body without Content-Length.
     if ! curl -fsSL --retry 2 --connect-timeout 20 --cacert "$CACERT" \
+            --max-filesize 1048576 \
             -o "$MANIFEST.part" "$BASE/manifest.json" 9>&-; then
         rm -f "$MANIFEST.part"
         state "state=failed" "pct=0" "version=" "msg=manifest download failed"
+        return 1
+    fi
+    msz=$(wc -c < "$MANIFEST.part" 2>/dev/null)
+    case "$msz" in ''|*[!0-9]*) msz=0 ;; esac
+    if [ "$msz" -le 0 ] || [ "$msz" -gt 1048576 ]; then
+        rm -f "$MANIFEST.part"
+        state "state=failed" "pct=0" "version=" "msg=manifest size $msz"
         return 1
     fi
     mv -f "$MANIFEST.part" "$MANIFEST"

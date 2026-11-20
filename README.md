@@ -3,7 +3,7 @@
 A game system built from scratch for the Anbernic RG DS Plus and RG DS.
 为 Anbernic RG DS Plus 与 RG DS 从零打造的游戏系统。
 
-**v1.0.0 — first official release / 第一个正式版本**
+**v1.0.1 — bug-fix release / 问题修复版**
 
 ![gameOS](docs/assets/preview.png)
 
@@ -18,6 +18,12 @@ gameOS turns the RG DS / RG DS Plus into a dedicated retro handheld: power on, l
 Bootloader, kernel, root filesystem, front-end and device patches are all built from source in this repository. The front-end — icons, backgrounds, themes — is original C++17 on SDL2. There is no display server, no package manager, and no background service beyond the few this device actually needs.
 
 Both models share one kernel and root filesystem and identify themselves at boot; the Plus drives dual 1024×768 panels, the DS dual 640×480 with the interface scaled. These handhelds have no internal storage and gameOS never writes to any — everything lives on the microSD card, so pulling the card leaves the device exactly as it was.
+
+### What's new in 1.0.1
+
+- **In-game menus stay on the top screen.** Every RetroArch (RGUI) page — main menu, settings, subscreens — is now drawn on the top panel only instead of being centred across the seam between the two screens; the bottom panel keeps showing the game.
+- **Wi-Fi asks for the password.** Picking a secured network opens the on-screen keyboard again, and a failed attempt no longer leaves a keyless "saved" entry behind (which made later taps skip the prompt). The prompt, network name and masked input are mirrored on the top screen.
+- **Box-art download from Settings.** The libretro cover scraper that used to be wizard-only now has its own Settings tile, with progress, stop and a status line; it keeps running if you leave the page.
 
 ### What's new in 1.0.0
 
@@ -187,6 +193,12 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机：开机直接�
 引导程序、内核、根文件系统、前端和设备补丁全部从本仓库源码构建。前端——图标、背景、主题——是原创的 C++17 + SDL2 程序。没有显示服务器，没有包管理器，除了这台机器真正需要的几个守护进程之外没有别的后台服务。
 
 两种机型共用同一个内核和根文件系统，开机时自动识别：Plus 驱动两块 1024×768 屏，DS 驱动两块 640×480 屏并缩放界面。这两台掌机没有内置存储，gameOS 也不往里写任何东西——一切都在 microSD 卡上，拔掉卡机器就恢复原样。
+
+### 1.0.1 修复
+
+- **模拟器菜单只在上屏显示。** RetroArch（RGUI）的主菜单、设置、各子页面不再跨两块屏居中、被接缝切开，统一画在上屏；下屏继续显示游戏画面。
+- **Wi-Fi 会正常要求输入密码。** 选中加密网络会弹出屏幕键盘；连接失败不再留下"已保存但没密码"的空记录（那会让之后点同一网络直接跳过密码）。密码提示、网络名和掩码输入会同步显示在上屏。
+- **设置里可以下载游戏封面。** 原来只在首次引导里有的 libretro 封面刮削，现在有独立的"游戏封面"设置项，带进度、停止和状态提示；离开页面后下载继续在后台进行。
 
 ### 1.0.0 新内容
 

@@ -17,6 +17,12 @@ KERNEL_VERSION=7.2.11                                  # mainline, matches the v
 
 NOTO_URL="https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
 ORBITRON_URL="https://github.com/google/fonts/raw/main/ofl/orbitron/Orbitron%5Bwght%5D.ttf"
+# Fonts are committed to git, but a fresh checkout may still trigger the
+# download path. The upstream URLs point at moving branches, so the SHA-256
+# below is the actual pin: a changed/compromised font fails the build instead
+# of silently shipping. Values were taken from the committed files.
+NOTO_SHA256=faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
+ORBITRON_SHA256=f42db2dd16e642258e35782916eceb1dcdbea06fb958d77ad71dc5963587e8fd
 
 echo "==> Fetching vendored kernel support files @ ${VENDOR_PIN:0:12}"
 TMP="$(mktemp -d)"
@@ -98,7 +104,17 @@ echo "    DDR init + BL31 verified"
 echo "==> Fetching fonts (Noto Sans SC for CJK, Orbitron for display)"
 FONTS="$BOARD/rootfs-overlay/usr/share/gameos/fonts"
 mkdir -p "$FONTS"
-[ -f "$FONTS/NotoSansSC-Regular.otf" ] || curl -fL --retry 3 -o "$FONTS/NotoSansSC-Regular.otf" "$NOTO_URL"
-[ -f "$FONTS/Orbitron.ttf" ]           || curl -fL --retry 3 -o "$FONTS/Orbitron.ttf" "$ORBITRON_URL"
+fetch_font() {  # fetch_font <url> <destination> <sha256>
+  if [ ! -s "$2" ]; then
+    echo "    downloading $(basename "$2")"
+    curl -fL --retry 3 -o "$2.part" "$1" || { rm -f "$2.part"; exit 1; }
+    mv -f "$2.part" "$2"
+  fi
+  echo "$3  $2" | sha256sum -c - >/dev/null 2>&1 \
+    || { echo "ERROR: sha256 mismatch for $2 (expected $3)"; exit 1; }
+}
+fetch_font "$NOTO_URL" "$FONTS/NotoSansSC-Regular.otf" "$NOTO_SHA256"
+fetch_font "$ORBITRON_URL" "$FONTS/Orbitron.ttf" "$ORBITRON_SHA256"
+echo "    font hashes verified"
 
 echo "==> Vendor fetch complete."
