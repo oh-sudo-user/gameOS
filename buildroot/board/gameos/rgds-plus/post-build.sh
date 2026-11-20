@@ -20,6 +20,18 @@ chmod +x "$TARGET_DIR/usr/bin/gameos-inputd-supervisor" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/wpa_action.sh" 2>/dev/null || true
 chmod +x "$TARGET_DIR/etc/gameos/sleep.d/"* 2>/dev/null || true
 
+# Refuse to ship files that still carry CRLF (a Windows checkout used to
+# arrive this way): /bin/sh^M is "not found" on the device, inittab and
+# kconfig silently mis-parse, and boot.cmd would bake CRs into boot.scr.
+# Fail the build with an actionable message instead of flashing a dead image.
+if grep -rlI "$(printf '\r')" \
+        "$TARGET_DIR/etc/init.d" "$TARGET_DIR/etc/gameos" "$TARGET_DIR/etc/inittab" \
+        "$TARGET_DIR/etc/udev/rules.d" "$TARGET_DIR/etc/modprobe.d" \
+        "$TARGET_DIR/usr/bin" "$TARGET_DIR/usr/share/gameos" 2>/dev/null | grep -q .; then
+  echo "ERROR: CRLF line endings in shipped files; run 'git checkout -- .' and rebuild" >&2
+  exit 1
+fi
+
 # Bluetooth is off by default: gameos-bt starts bluetoothd on demand, so the
 # package's boot-time init script must not run it behind our back.
 rm -f "$TARGET_DIR/etc/init.d/S40bluetoothd"

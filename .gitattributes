@@ -1,3 +1,8 @@
 # Patches must stay LF: they are applied by GNU patch inside the Linux
 # build tree, and CRLF line endings make context matching fail.
 *.patch text eol=lf
+
+# Everything else is consumed by BusyBox/Linux/U-Boot as-is. A CRLF checkout
+# (Windows) breaks overlay script shebangs, inittab, kconfig fragments and
+# boot.cmd, so pin every text file to LF on all platforms.
+* text=auto eol=lf

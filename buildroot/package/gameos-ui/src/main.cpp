@@ -9,6 +9,7 @@
 //   D-pad / stick    = navigate     START = settings / home
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "displays.hpp"
 #include "gameos.hpp"
 #include "i18n.hpp"
 #include "sound.hpp"
@@ -143,6 +144,12 @@ struct App {
     Uint32 wifi_poll_at = 0;
     Uint32 wifi_op_at = 0;
     Uint32 wifi_status_at = 0;
+    // status+known run in the background and publish files, so a slow (or
+    // hung) helper can never freeze the UI thread
+    bool wifi_probe_busy = false;
+    bool wifi_probe_scan = false;
+    Uint32 wifi_probe_at = 0;
+    Uint32 wifi_probe_poll_at = 0;
     // password keyboard
     bool wifi_kb = false;
     std::string wifi_target, wifi_pw;
@@ -622,18 +629,8 @@ void load_theme_assets()
     app.icon_quick    = load_tex(app.ren_top, dir + "/icon_quick.png");
 }
 
-// DSI-2 is the physical top (lid) panel on both RG DS models; SDL enumerates
-// DSI-1 first, so pick the display by connector name instead of index.
-static int top_display()
-{
-    int n = SDL_GetNumVideoDisplays();
-    for (int i = 0; i < n; i++) {
-        const char *name = SDL_GetDisplayName(i);
-        if (name && strstr(name, "DSI-2")) return i;
-    }
-    return 0;
-}
-
+// The top panel is DSI-2 on both RG DS models; panel_displays() maps the DRM
+// connectors onto SDL's display indices (see displays.cpp).
 bool init_gfx()
 {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
@@ -661,9 +658,9 @@ bool init_gfx()
         return false;
     }
 
-    int ndisp = SDL_GetNumVideoDisplays();
-    int dtop = top_display();
-    int dbot = (ndisp > 1) ? (dtop == 0 ? 1 : 0) : -1;
+    const Panels panels = panel_displays();
+    const int dtop = panels.top;
+    const int dbot = panels.bottom;
     app.win_top = SDL_CreateWindow("gameOS",
         SDL_WINDOWPOS_CENTERED_DISPLAY(dtop), SDL_WINDOWPOS_CENTERED_DISPLAY(dtop),
         W, H, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -1013,9 +1010,11 @@ bool bt_mac_valid(const std::string& m)
 void bt_start(const std::string& op, const std::string& arg = "")
 {
     unlink("/run/gameos/bt-op.rc");
-    std::string cmd = "mkdir -p /run/gameos; gameos-bt " + op;
+    // The whole helper+rc group must be backgrounded: with "cmd; echo $? > rc &"
+    // the shell only backgrounds the echo and system() waits for the helper.
+    std::string cmd = "mkdir -p /run/gameos; ( gameos-bt " + op;
     if (!arg.empty()) cmd += " " + arg;
-    cmd += " > /run/gameos/bt-op.out 2>&1; echo $? > /run/gameos/bt-op.rc &";
+    cmd += " > /run/gameos/bt-op.out 2>&1; echo $? > /run/gameos/bt-op.rc ) &";
     if (system(cmd.c_str()) != 0) { /* ignore */ }
     app.bt_op = op;
     app.bt_busy = true;
@@ -1139,10 +1138,10 @@ bool wifi_saved(const std::string& ssid)
            != app.wifi_known.end();
 }
 
-void wifi_load_known()
+void wifi_apply_known(const std::string& out)
 {
     app.wifi_known.clear();
-    std::istringstream ss(run_cmd("gameos-wifi known 2>/dev/null"));
+    std::istringstream ss(out);
     std::string line;
     while (std::getline(ss, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -1151,9 +1150,8 @@ void wifi_load_known()
     for (auto& n : app.wifi_nets) n.saved = wifi_saved(n.ssid);
 }
 
-void wifi_refresh_status()
+void wifi_apply_status(const std::string& out)
 {
-    std::string out = run_cmd("gameos-wifi status 2>/dev/null");
     std::istringstream ss(out);
     std::string line;
     app.wifi_state.clear();
@@ -1174,12 +1172,63 @@ void wifi_refresh_status()
 void wifi_start(const std::string& op)
 {
     unlink("/run/gameos/wifi-op.rc");
-    std::string cmd = "mkdir -p /run/gameos; gameos-wifi " + op +
-                      " > /run/gameos/wifi-op.out 2>&1; echo $? > /run/gameos/wifi-op.rc &";
+    // Background the helper together with its rc write (see bt_start): a bare
+    // trailing "&" only backgrounds the final echo, leaving the scan/connect
+    // running synchronously inside system().
+    std::string cmd = "mkdir -p /run/gameos; ( gameos-wifi " + op +
+                      " > /run/gameos/wifi-op.out 2>&1; echo $? > /run/gameos/wifi-op.rc ) &";
     if (system(cmd.c_str()) != 0) { /* ignore */ }
     app.wifi_op = op;
     app.wifi_busy = true;
     app.wifi_op_at = SDL_GetTicks();
+}
+
+// gameos-wifi status/known used to be popen()ed right when the wizard moved
+// to the WiFi step (and when Settings opened), so a supplicant that was slow
+// to come up froze the whole UI on the previous screen. They now run in a
+// background shell that publishes two files plus a completion flag.
+const char* WIFI_PROBE_RC = "/run/gameos/wifi-probe.rc";
+
+void wifi_probe_start(bool scan_after = false)
+{
+    if (app.wifi_probe_busy) {
+        if (scan_after) app.wifi_probe_scan = true;
+        return;
+    }
+    unlink(WIFI_PROBE_RC);
+    std::string cmd =
+        "mkdir -p /run/gameos; ( gameos-wifi status 2>/dev/null > /run/gameos/wifi-status.out; "
+        "gameos-wifi known 2>/dev/null > /run/gameos/wifi-known.out; echo 1 > "
+        + std::string(WIFI_PROBE_RC) + " ) >/dev/null 2>&1 &";
+    if (system(cmd.c_str()) != 0) { /* ignore */ }
+    app.wifi_probe_busy = true;
+    app.wifi_probe_scan = scan_after;
+    app.wifi_probe_at = SDL_GetTicks();
+    app.wifi_probe_poll_at = 0;
+}
+
+void wifi_probe_poll(Uint32 now)
+{
+    if (!app.wifi_probe_busy) return;
+    const bool done = access(WIFI_PROBE_RC, F_OK) == 0;
+    const bool timeout = now - app.wifi_probe_at > 15000;
+    if (!done && !timeout) return;
+    if (now - app.wifi_probe_poll_at < 100 && !timeout) return;
+    app.wifi_probe_poll_at = now;
+    app.wifi_probe_busy = false;
+    wifi_apply_status(read_file("/run/gameos/wifi-status.out"));
+    wifi_apply_known(read_file("/run/gameos/wifi-known.out"));
+    // back off when the helper hung; the periodic poll retries later
+    app.wifi_status_at = done ? now : now + 8000;
+    const bool scan = app.wifi_probe_scan;
+    app.wifi_probe_scan = false;
+    if (scan) {
+        if (app.wifi_state == "NOHW") app.wifi_status.clear();
+        else if (!app.wifi_busy) {
+            app.wifi_status = tr(T_WIFI_SCANNING);
+            wifi_start("scan");
+        }
+    }
 }
 
 void wifi_parse_nets(const std::string& out)
@@ -1319,12 +1368,17 @@ void kb_press()
 void wifi_poll()
 {
     Uint32 now = SDL_GetTicks();
-    // live link status while the page is open (wpa_cli is cheap)
+    wifi_probe_poll(now);
+    // A completed probe can start a scan, stamping wifi_op_at after the `now`
+    // captured above; comparing against the stale value underflows and the
+    // 60 s timeout would fire immediately.
+    now = SDL_GetTicks();
+    // live link status while the page is open; the probe itself is async
     if ((app.screen == Screen::Wifi ||
          (app.screen == Screen::Setup && app.setup_step == 1)) &&
+        !app.wifi_busy && !app.wifi_probe_busy &&
         now - app.wifi_status_at > 2000) {
-        app.wifi_status_at = now;
-        wifi_refresh_status();
+        wifi_probe_start();
     }
     if (!app.wifi_busy) return;
     if (now - app.wifi_op_at > 60000) {   // scan/assoc timeout
@@ -1347,7 +1401,7 @@ void wifi_poll()
     if (op == "scan") {
         wifi_parse_nets(out);
         app.wifi_status = app.wifi_nets.empty() ? tr(T_WIFI_NO_NETS) : "";
-        wifi_load_known();
+        wifi_probe_start();           // refresh saved markers off-thread
     } else if (op == "connect") {
         std::string last;
         std::istringstream ss(out);
@@ -1364,13 +1418,10 @@ void wifi_poll()
         } else {
             app.wifi_status = last.empty() ? tr(T_WIFI_CONNECT_FAIL) : last;
         }
-        wifi_load_known();
-        wifi_refresh_status();
+        wifi_probe_start();
     } else if (op == "forget") {
         app.wifi_status = tr(T_WIFI_FORGET_DONE);
-        wifi_load_known();
-        wifi_refresh_status();
-        wifi_start("scan");
+        wifi_probe_start(true);       // refresh known, then rescan
     }
 }
 
@@ -1383,13 +1434,9 @@ void wifi_enter()
     app.wifi_sel = 0;
     app.wifi_scroll = 0;
     app.wifi_nets.clear();
-    wifi_refresh_status();
-    wifi_load_known();
+    app.wifi_status = tr(T_WIFI_SCANNING);
+    wifi_probe_start(true);           // status/known, then a scan if there is hardware
     app.screen = Screen::Wifi;
-    if (app.wifi_state != "NOHW") {
-        app.wifi_status = tr(T_WIFI_SCANNING);
-        wifi_start("scan");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,8 +1552,10 @@ void setup_run(const std::string& op, const std::string& cmd)
 {
     const std::string base = setup_op_base(op);
     unlink((base + ".rc").c_str());
-    std::string full = "mkdir -p /run/gameos; " + cmd +
-        " > " + base + ".out 2>&1; echo $? > " + base + ".rc &";
+    // Background the helper together with its rc write (see bt_start): covers
+    // downloads run for minutes and must never block the wizard.
+    std::string full = "mkdir -p /run/gameos; ( " + cmd +
+        " > " + base + ".out 2>&1; echo $? > " + base + ".rc ) &";
     system(full.c_str());
     app.setup_op = op;
     app.setup_busy = true;
@@ -1539,12 +1588,7 @@ void setup_next()
     app.setup_op.clear();
     if (app.setup_step >= SETUP_STEPS) { setup_finish(); return; }
     if (app.setup_step == 1) {
-        wifi_refresh_status();
-        wifi_load_known();
-        if (app.wifi_state != "NOHW" && !app.wifi_busy) {
-            app.wifi_status = tr(T_WIFI_SCANNING);
-            wifi_start("scan");
-        }
+        wifi_probe_start(true);       // status/known, then a scan if there is hardware
     } else if (app.setup_step == 5) {
         unlink("/run/gameos/covers-state");
         app.cov_state.clear();
@@ -1933,7 +1977,7 @@ void draw_setup_wifi(SDL_Renderer* r)
     }
     // On its own line below the action rows: centred on the first row it
     // collides with the "test connectivity" label in ru/es.
-    if (nets == 0 && !app.wifi_busy)
+    if (nets == 0 && !app.wifi_busy && !app.wifi_probe_busy)
         text(r, app.f_small, tr(T_WIFI_NO_NETS), W / 2, top + n * rowh + 24,
              C_DIM, Align::Center);
 
@@ -1962,9 +2006,10 @@ void draw_setup_wifi(SDL_Renderer* r)
         lc = C_GREEN;
     }
     text(r, app.f_body, ellipsize(app.f_body, link, W - 120), W / 2, 566, lc, Align::Center);
-    if (app.wifi_busy || !app.wifi_status.empty())
+    const bool waiting = app.wifi_busy || app.wifi_probe_busy;
+    if (waiting || !app.wifi_status.empty())
         text(r, app.f_small,
-             ellipsize(app.f_small, app.wifi_busy ? tr(T_PROCESSING) : app.wifi_status, W - 80),
+             ellipsize(app.f_small, waiting ? tr(T_PROCESSING) : app.wifi_status, W - 80),
              W / 2, 610, C_AMBER, Align::Center);
 }
 
@@ -2118,8 +2163,10 @@ void draw_setup(SDL_Renderer* r)
     }
     text(r, app.f_title, title, 32, 26, C_TEXT);
     char sb[64];
-    snprintf(sb, sizeof(sb), tr(T_SETUP_STEP_FMT),
-             app.setup_step + 1, SETUP_STEPS - 1);
+    // the last page is the "done" screen, not a question: clamp so it shows
+    // the final question's number instead of "7 / 6"
+    int shown = std::min(app.setup_step + 1, SETUP_STEPS - 1);
+    snprintf(sb, sizeof(sb), tr(T_SETUP_STEP_FMT), shown, SETUP_STEPS - 1);
     text(r, app.f_body, sb, W - 32, 34, C_DIM, Align::Right);
     fill_rect(r, 0, 96, W, 3, g_accent);
 
@@ -2406,11 +2453,12 @@ void draw_wifi(SDL_Renderer* r)
             fill_rect(r, W - 92 + b * 13, y + 36 - h, 8, h, bc);
         }
     }
-    if (n == 0 && !app.wifi_busy)
+    if (n == 0 && !app.wifi_busy && !app.wifi_probe_busy)
         text(r, app.f_body, ellipsize(app.f_body, tr(T_WIFI_NO_NETS), W - 120),
              W / 2, top + 2 * rowh + 20, C_DIM, Align::Center);
 
-    std::string st = app.wifi_busy ? tr(T_PROCESSING) : app.wifi_status;
+    std::string st = (app.wifi_busy || app.wifi_probe_busy)
+        ? tr(T_PROCESSING) : app.wifi_status;
     if (!st.empty())
         text(r, app.f_small, ellipsize(app.f_small, st, W - 80),
              W / 2, H - 96, C_AMBER, Align::Center);
@@ -3488,7 +3536,7 @@ void start_btn()
     if (app.screen == Screen::Home) {
         sound_play(SND_CONFIRM);
         app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
-        wifi_refresh_status();   // fills in the WiFi row before it is drawn
+        wifi_probe_start();      // fills in the WiFi row when the probe lands
         update_refresh();        // and the update row
         app.screen = Screen::Settings;
         app.set_sel = 0;

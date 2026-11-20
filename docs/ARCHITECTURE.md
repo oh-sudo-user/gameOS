@@ -99,5 +99,5 @@ busybox init
 ## 构建
 
 Buildroot 2026.08 external tree；所有上游组件固定 commit/版本
-（见 `scripts/fetch-vendor.sh` 与 defconfig）。GitHub Actions 云端构建，
+（见 `scripts/fetch-vendor.sh` 与 defconfig）。发布镜像在本地干净构建并验证，
 产物为整盘镜像 `gameOS-rgds-plus.img.gz`。

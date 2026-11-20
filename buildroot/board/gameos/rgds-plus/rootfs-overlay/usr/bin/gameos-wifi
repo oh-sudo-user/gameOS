@@ -213,17 +213,19 @@ do_scan() {
         [ "$(state)" = "" ] && { echo "ERROR supplicant-failed"; return 1; }
     fi
     w scan >/dev/null 2>&1
-    # wpa_cli scan returns at once; poll until results change (max 12 s)
-    prev=""
+    # wpa_cli scan returns at once, and scan_results answers with the header
+    # line even while the BSS table is still empty, so "output changed" was
+    # true after the first 0.5 s sample and the first-ever scan returned an
+    # empty list. Wait for an actual BSS entry (line 2) instead, retrigger the
+    # scan every 4 s in case the trigger hit a busy interface, and give up
+    # after 12 s (no networks in range).
     i=0
     while [ $i -lt 24 ]; do
         sleep 0.5
-        cur=$(w scan_results)
-        case "$cur" in *FAIL*|"") ;; *) [ -n "$cur" ] && [ "$cur" != "$prev" ] && break ;; esac
-        prev=$cur
+        [ -n "$(w scan_results | sed -n '2p')" ] && break
+        [ $((i % 8)) -eq 7 ] && w scan >/dev/null 2>&1
         i=$((i + 1))
     done
-    [ $i -ge 24 ] && sleep 1
     w scan_results | awk -F'\t' '
         NR == 1 { next }                       # header
         $5 == "" { next }                      # hidden SSID

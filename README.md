@@ -183,7 +183,7 @@ make -j$(nproc)
 #   gameOS-rootfs.ext4.gz + gameOS-boot.tar.gz + manifest.json   (OTA payload)
 ```
 
-All upstream components are pinned to exact versions or commits, so the same commit always builds the same software versions. GitHub Actions builds both images on every push to `main` (downloadable as workflow artifacts); official Releases are published manually from verified builds, and a tag build never overwrites a release that already has assets.
+All upstream components are pinned to exact versions or commits, so the same commit always builds the same software versions. Release images are built locally from a clean Buildroot tree, verified, and uploaded to a GitHub Release manually; nothing is built or published automatically.
 
 ### License
 
@@ -369,7 +369,7 @@ make -j$(nproc)
 #   gameOS-rootfs.ext4.gz + gameOS-boot.tar.gz + manifest.json   （OTA 载荷）
 ```
 
-所有上游组件都锁定到确切版本或 commit，同一个 commit 编出来的系统，软件版本完全一致。每次推送到 `main`，GitHub Actions 都会构建两个镜像（可作为工作流产物下载）；正式 Release 由人工从验证过的构建发布，标签构建不会覆盖已有资产的 release。
+所有上游组件都锁定到确切版本或 commit，同一个 commit 编出来的系统，软件版本完全一致。发布镜像在本地干净的 Buildroot 构建树中编译并验证，然后手动上传到 GitHub Release；不再使用云端 CI 自动构建或发布。
 
 ### 许可证
 

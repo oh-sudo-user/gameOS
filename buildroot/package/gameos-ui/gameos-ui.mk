@@ -8,7 +8,7 @@ GAMEOS_UI_VERSION = 1.0
 GAMEOS_UI_SITE = $(BR2_EXTERNAL_GAMEOS_PATH)/package/gameos-ui/src
 GAMEOS_UI_SITE_METHOD = local
 GAMEOS_UI_LICENSE = GPL-3.0+
-GAMEOS_UI_DEPENDENCIES = sdl2 sdl2_ttf sdl2_image host-pkgconf
+GAMEOS_UI_DEPENDENCIES = sdl2 sdl2_ttf sdl2_image libdrm host-pkgconf
 
 define GAMEOS_UI_BUILD_CMDS
 	$(TARGET_MAKE_ENV) $(TARGET_CONFIGURE_OPTS) \

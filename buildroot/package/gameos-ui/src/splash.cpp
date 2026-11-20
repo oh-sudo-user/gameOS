@@ -32,6 +32,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "displays.hpp"
 #include "i18n.hpp"
 
 namespace {
@@ -469,13 +470,9 @@ int main()
     std::string assets = env_dir("GAMEOS_ASSETS", "/usr/share/gameos/assets");
 
     Panel top, bot;
-    // DSI-2 is the physical top (lid) panel; SDL enumerates DSI-1 first.
-    int dtop = 0, ndisp = SDL_GetNumVideoDisplays();
-    for (int i = 0; i < ndisp; i++) {
-        const char *dn = SDL_GetDisplayName(i);
-        if (dn && strstr(dn, "DSI-2")) { dtop = i; break; }
-    }
-    int dbot = (ndisp > 1) ? (dtop == 0 ? 1 : 0) : -1;
+    const gameos::Panels panels = gameos::panel_displays();
+    const int dtop = panels.top;
+    const int dbot = panels.bottom;
     if (!setup_panel(top, dtop, 1.f, fonts, assets, "home_bg.png")) {
         fprintf(stderr, "splash: top panel: %s\n", SDL_GetError());
         teardown(top);
