@@ -3,7 +3,7 @@
 A game system built from scratch for the Anbernic RG DS Plus and RG DS.
 为 Anbernic RG DS Plus 与 RG DS 从零打造的游戏系统。
 
-**v1.3.2 — current release / 当前版本**
+**v1.0.0 — first official release / 第一个正式版本**
 
 ![gameOS](docs/assets/preview.png)
 
@@ -19,11 +19,11 @@ Bootloader, kernel, root filesystem, front-end and device patches are all built 
 
 Both models share one kernel and root filesystem and identify themselves at boot; the Plus drives dual 1024×768 panels, the DS dual 640×480 with the interface scaled. These handhelds have no internal storage and gameOS never writes to any — everything lives on the microSD card, so pulling the card leaves the device exactly as it was.
 
-### Recent releases
+### What's new in 1.0.0
 
-- **v1.3.2** — NDS ROMs are memory-mapped on demand instead of read up front, roughly halving load time in our tests.
-- **v1.3.1** — non-blocking dual-screen page flip; the launch animation hands over to the emulator without a black gap; Wi-Fi and Bluetooth no longer sit on stale locks and timeouts.
-- **v1.3.0** — first official baseline: per-console launch animations, flicker-free home screen, instant language switching.
+- **A faster NDS core.** melonDS's ARM64 JIT now links blocks, caches CPU flags and invalidates 16 bytes at a time, tuned with profile-guided optimisation: 74.5 → 121.3 fps on the host bench (1.63x) — see Performance.
+- **NDS starts at once.** ROM images are memory-mapped on demand, so the 8–10 s cartridge read is gone, and the launch animation hands over to the emulator without a black gap.
+- **A polished shell.** Per-console launch animations, non-blocking dual-screen output, instant language switching, and Wi-Fi / Bluetooth / sleep handling that does not stall.
 
 ### What it plays
 
@@ -45,7 +45,7 @@ Numbers are labelled **measured** when we actually ran them, **calculated** when
 
 | Area | Change | Effect |
 |---|---|---|
-| NDS · CPU core (next image) | melonDS 0.9.3 ARM64 JIT gains block linking, cached host CPU flags and 16-byte memory invalidation, plus a profile-guided (PGO) build | **measured** (host bench, Pokémon White 2, 600 frames): 74.5 → 121.3 fps, 1.63x; video and audio hashes identical to the unoptimised core |
+| NDS · CPU core | melonDS 0.9.3 ARM64 JIT gains block linking, cached host CPU flags and 16-byte memory invalidation, plus a profile-guided (PGO) build | **measured** (host bench, Pokémon White 2, 600 frames): 74.5 → 121.3 fps, 1.63x; video and audio hashes identical to the unoptimised core |
 | NDS · startup | ROM images are memory-mapped on demand instead of read up front | **measured** (host bench): 509 → 256 ms load; **expected** on card: the 8–10 s read becomes sub-second |
 | NDS · rendering | threaded software renderer beside the JIT; dead OpenGL options removed | **expected:** 1.2–1.6x on render-bound scenes |
 | NDS · output | non-blocking dual-screen page flip | removes the per-frame vblank wait; both panels stay in step |
@@ -56,7 +56,7 @@ Numbers are labelled **measured** when we actually ran them, **calculated** when
 | Front-end | instant language switch; cheaper animation path | **measured** (host): switch ~1 ms, was ~14–16 ms; **expected:** 0.2–0.5 ms of animation per frame |
 | Wi-Fi / Bluetooth | busy-waits and long timeouts removed | **measured:** a scan no longer idles ~13 s; actions no longer stall 5 s when the radio is off |
 
-**Reading the table.** NDS and GBA gains are game-dependent: a scene that isn't render-bound, or a game that never idles, will see less. The NDS JIT row is in the current tree and ships with the next image; the v1.3.2 image predates it. An on-device benchmark table is next on the list — nothing here is extrapolated into a device fps we did not measure.
+**Reading the table.** NDS and GBA gains are game-dependent: a scene that isn't render-bound, or a game that never idles, will see less. Every change above ships in this release. An on-device benchmark table is next on the list — nothing here is extrapolated into a device fps we did not measure.
 
 ### Two screens, used properly
 
@@ -188,11 +188,11 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机：开机直接�
 
 两种机型共用同一个内核和根文件系统，开机时自动识别：Plus 驱动两块 1024×768 屏，DS 驱动两块 640×480 屏并缩放界面。这两台掌机没有内置存储，gameOS 也不往里写任何东西——一切都在 microSD 卡上，拔掉卡机器就恢复原样。
 
-### 近期版本
+### 1.0.0 新内容
 
-- **v1.3.2** — NDS ROM 改为按需内存映射，不再一次性读入；在我们的测试里加载时间约减半。
-- **v1.3.1** — 双屏翻页改为非阻塞；启动动画到模拟器之间不再黑屏；Wi-Fi 和蓝牙不再卡在残留锁和超时上。
-- **v1.3.0** — 第一个正式基线：每平台启动动画、主界面不闪、语言即时切换。
+- **更快的 NDS 核心。** melonDS 的 ARM64 JIT 加入块链接、CPU 标志缓存和 16 字节粒度失效，并用按实际运行的剖面优化（PGO）构建：电脑测试台 74.5 → 121.3 帧/秒（1.63 倍），详见"性能"。
+- **NDS 即开即玩。** ROM 改为按需内存映射，8–10 秒的整卡读取没有了，启动动画和模拟器之间也不再黑屏。
+- **打磨过的基线。** 每平台启动动画、双屏非阻塞输出、语言即时切换，以及不再卡顿的 Wi-Fi / 蓝牙 / 休眠处理。
 
 ### 能玩什么
 
@@ -214,7 +214,7 @@ NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现�
 
 | 环节 | 改动 | 效果 |
 |---|---|---|
-| NDS · CPU 核心（下个镜像） | melonDS 0.9.3 的 ARM64 JIT 加入块链接、宿主标志缓存、16 字节内存失效，并做 PGO（按实际运行剖面优化）构建 | **实测**（电脑测试台，宝可梦白 2，600 帧）：74.5 → 121.3 帧/秒，1.63 倍；画面与音频哈希和未优化核心完全一致 |
+| NDS · CPU 核心 | melonDS 0.9.3 的 ARM64 JIT 加入块链接、宿主标志缓存、16 字节内存失效，并做 PGO（按实际运行剖面优化）构建 | **实测**（电脑测试台，宝可梦白 2，600 帧）：74.5 → 121.3 帧/秒，1.63 倍；画面与音频哈希和未优化核心完全一致 |
 | NDS · 启动 | ROM 按需内存映射，不再一次性读入 | **实测**（电脑测试台）：加载 509 → 256 ms；**预期**在卡上：原来 8–10 秒的读取变成亚秒级 |
 | NDS · 渲染 | JIT 旁边跑线程化软件渲染器；删掉无效的 OpenGL 选项 | **预期：**渲染吃紧的场景 1.2–1.6 倍 |
 | NDS · 输出 | 双屏翻页改为非阻塞 | 不再每帧等垂直同步；两屏保持同步 |
@@ -225,7 +225,7 @@ NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现�
 | 前端 | 语言即时切换；每帧动画开销更省 | **实测**（电脑）：切换约 1 ms，此前约 14–16 ms；**预期：**每帧 0.2–0.5 ms 动画开销 |
 | Wi-Fi / 蓝牙 | 去掉忙等和过长的超时 | **实测：**扫描不再空等约 13 秒；蓝牙关闭时操作不再卡 5 秒 |
 
-**怎么读这张表。** NDS 和 GBA 的收益天然看游戏：渲染不吃紧的场景、从不空转的游戏，变化会小。NDS JIT 这一行已在本仓库代码里，随下个镜像发布；v1.3.2 镜像还没有它。掌机实测表是下一步计划，这里不会把没测过的数字冒充设备帧率。
+**怎么读这张表。** NDS 和 GBA 的收益天然看游戏：渲染不吃紧的场景、从不空转的游戏，变化会小。表里的改动全部包含在本版本中。掌机实测表是下一步计划，这里不会把没测过的数字冒充设备帧率。
 
 ### 双屏，用在刀刃上
 
