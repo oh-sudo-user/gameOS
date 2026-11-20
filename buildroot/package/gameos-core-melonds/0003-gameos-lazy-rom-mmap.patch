@@ -1,0 +1,125 @@
+--- a/src/NDSCart.cpp
++++ b/src/NDSCart.cpp
+@@ -18,6 +18,11 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#ifndef _WIN32
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#endif
+ #include "NDS.h"
+ #include "DSi.h"
+ #include "NDSCart.h"
+@@ -1399,6 +1404,26 @@
+ 
+ 
+ 
++// gameOS: CartROM can be an mmap of the ROM file instead of a heap buffer
++// (see LoadROM below), so freeing has to know which one it is.
++static bool CartROMMapped = false;
++
++static void FreeCartROM()
++{
++    if (!CartROM) return;
++#ifndef _WIN32
++    if (CartROMMapped)
++    {
++        munmap(CartROM, CartROMSize);
++        CartROMMapped = false;
++        CartROM = nullptr;
++        return;
++    }
++#endif
++    delete[] CartROM;
++    CartROM = nullptr;
++}
++
+ bool Init()
+ {
+     CartROM = nullptr;
+@@ -1409,15 +1434,14 @@
+ 
+ void DeInit()
+ {
+-    if (CartROM) delete[] CartROM;
++    FreeCartROM();
+     if (Cart) delete Cart;
+ }
+ 
+ void Reset()
+ {
+     CartInserted = false;
+-    if (CartROM) delete[] CartROM;
+-    CartROM = nullptr;
++    FreeCartROM();
+     CartROMSize = 0;
+     CartID = 0;
+     CartIsHomebrew = false;
+@@ -1684,10 +1708,61 @@
+     while (CartROMSize < len)
+         CartROMSize <<= 1;
+ 
+-    CartROM = new u8[CartROMSize];
+-    memset(CartROM, 0, CartROMSize);
+-    fseek(f, 0, SEEK_SET);
+-    fread(CartROM, 1, len, f);
++#ifndef _WIN32
++    // gameOS: don't read the whole cartridge up front. A 512 MiB NDS ROM
++    // took ~8 s off the SD card before the emulator could even start.
++    // Map it instead: the anonymous range stays zero-filled like the old
++    // memset (the tail past the file is padded up to CartROMSize), and the
++    // file's pages are read from storage on demand, the way the cartridge
++    // itself would answer. MAP_PRIVATE keeps every write (the secure-area
++    // re-encryption below) in a private page, never on the card.
++    // (The libretro build redefines FILE as RFILE, so no fileno() here:
++    // reopen the path with plain open() for the mapping only.)
++    CartROM = nullptr;
++    CartROMMapped = false;
++    {
++        long pagesz = sysconf(_SC_PAGESIZE);
++        if (pagesz <= 0) pagesz = 4096;
++        u32 maplen = (len + (u32)pagesz - 1) & ~((u32)pagesz - 1);
++        int fd = -1;
++        if (maplen && maplen <= CartROMSize)
++            fd = open(path, O_RDONLY);
++        if (fd >= 0)
++        {
++            u8* base = (u8*)mmap(nullptr, CartROMSize,
++                                 PROT_READ | PROT_WRITE,
++                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++            if (base != MAP_FAILED)
++            {
++                void* fm = mmap(base, maplen, PROT_READ | PROT_WRITE,
++                                MAP_PRIVATE | MAP_FIXED, fd, 0);
++                if (fm == MAP_FAILED)
++                    munmap(base, CartROMSize);
++                else
++                {
++                    CartROM = base;
++                    CartROMMapped = true;
++#ifdef POSIX_FADV_WILLNEED
++                    // Warm the boot code so the first frames don't stall.
++                    posix_fadvise(fd, 0, 8 * 1024 * 1024,
++                                  POSIX_FADV_WILLNEED);
++#endif
++                }
++            }
++            close(fd);
++        }
++    }
++#endif
++    if (!CartROM)
++    {
++        CartROM = new u8[CartROMSize];
++        memset(CartROM, 0, CartROMSize);
++        if (len)
++        {
++            fseek(f, 0, SEEK_SET);
++            fread(CartROM, 1, len, f);
++        }
++    }
+ 
+     fclose(f);
+ 
