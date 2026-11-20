@@ -26,6 +26,25 @@ RUN=/run/gameos
 STORE=/userdata/system/bluetooth.tar
 LAST=/userdata/system/bt-last
 CTL="timeout 45 bluetoothctl"
+LOG=/userdata/system/bt.log
+
+have_data() { mountpoint -q /userdata 2>/dev/null; }
+
+# stdout is the UI's device list, so every diagnostic goes to the card.
+log() {
+    have_data || return 0
+    printf '[%s +%ss] [gameos-bt] %s\n' \
+        "$(date '+%F %T' 2>/dev/null)" \
+        "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
+    return 0
+}
+
+rotate_log() {
+    have_data || return 0
+    [ -f "$LOG" ] || return 0
+    [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 2097152 ] && mv -f "$LOG" "$LOG.1"
+    return 0
+}
 
 # one at a time (the UI runs these in the background); daemons get the lock fd
 # closed (9>&-). down waits at most 3 s: a sleep must not wait out a pairing.
@@ -75,12 +94,20 @@ call_back() {
 
 up() {
     running && return 0
+    log "up: begin"
     mkdir -p "$RUN"
+    # rfkill can come up soft-blocked; the chip is then present but unusable.
+    for r in /sys/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] || continue
+        [ "$(cat "$r/type" 2>/dev/null)" = bluetooth ] || continue
+        [ -w "$r/soft" ] && echo 0 > "$r/soft" 2>/dev/null
+    done
     modprobe -a hci_uart hidp 2>/dev/null
     # hci0 appears once hci_uart binds the uart1 serdev node
     i=0
     while [ $i -lt 20 ]; do [ -d /sys/class/bluetooth/hci0 ] && break; sleep 0.25; i=$((i + 1)); done
     if [ ! -d /sys/class/bluetooth/hci0 ]; then
+        log "up: no hci0 after ${i} waits"
         echo "no Bluetooth controller (hci0)" >&2
         modprobe -r hci_uart 2>/dev/null
         return 1
@@ -101,10 +128,23 @@ up() {
     fi
     /usr/libexec/bluetooth/bluetoothd -n 9>&- </dev/null >/dev/null 2>&1 &
     echo $! > "$RUN/bluetoothd.pid"
-    # AutoEnable powers the adapter; the firmware download takes a second or two
+    # AutoEnable powers the adapter; the firmware download takes a second or two.
+    # Verify it really reached Powered: a running bluetoothd with an off adapter
+    # looked healthy in Settings but every scan came back empty.
     i=0
-    while [ $i -lt 20 ]; do timeout 2 bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && break; sleep 0.25; i=$((i + 1)); done
-    ctl power on >/dev/null
+    while [ $i -lt 12 ]; do
+        timeout 2 bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && break
+        [ $i -eq 3 ] && timeout 8 bluetoothctl power on >/dev/null 2>&1
+        sleep 0.5
+        i=$((i + 1))
+    done
+    if ! timeout 3 bluetoothctl show 2>/dev/null | grep -q 'Powered: yes'; then
+        log "up: adapter did not power on"
+        echo "Bluetooth adapter did not power on" >&2
+        down >/dev/null 2>&1
+        return 1
+    fi
+    log "up: powered"
     # A2DP source: the handheld plays, the headphones listen. aptX/aptX HD when
     # both sides have them, else SBC at high quality; 3 s keep-alive so a game
     # opening right after the menu closed does not renegotiate; I/O threads above
@@ -186,14 +226,43 @@ devices() {
 why() { sed -n 's/.*\(Failed to [a-z]*\|Device [0-9A-F:]* not available\)\(.*\)/\1\2/p' | tail -n 1 | sed 's/org\.bluez\.Error\.//'; }
 
 case $1 in
-up) up || { rm -f "$RUN/bt-audio" "$RUN/bt-hold"; exit 1; } ;;
-down) down "$2" ;;
+up) rotate_log; up || { rm -f "$RUN/bt-audio" "$RUN/bt-hold"; exit 1; } ;;
+down) rotate_log; down "$2" ;;
 scan)
-    running || { echo "ERROR Bluetooth is off"; exit 1; }
-    ctl --timeout 10 scan on >/dev/null
-    devices
+    rotate_log
+    running || { log "scan: stack is off"; echo "ERROR Bluetooth is off"; exit 1; }
+    # The adapter can be down even while bluetoothd runs; scanning then just
+    # reports nothing. Bring it up and verify before touching discovery.
+    pwr=$(timeout 3 bluetoothctl show 2>/dev/null | sed -n 's/^[[:space:]]*Powered: //p')
+    if [ "$pwr" != "yes" ]; then
+        timeout 8 bluetoothctl power on >/dev/null 2>&1
+        sleep 1
+        pwr=$(timeout 3 bluetoothctl show 2>/dev/null | sed -n 's/^[[:space:]]*Powered: //p')
+    fi
+    log "scan: begin powered=${pwr:-unknown}"
+    if [ "$pwr" != "yes" ]; then
+        log "scan: adapter is not powered"
+        echo "ERROR Bluetooth adapter is off"
+        exit 1
+    fi
+    out=$($CTL --timeout 12 scan on 2>&1)
+    rc=$?
+    out=$(printf '%s\n' "$out" | tr -d '\r' | sed "s/$ESC\[[0-9;]*m//g")
+    log "scan: end rc=$rc $(printf '%s' "$out" | grep -i 'discover\|fail\|error\|controller' | tail -n 3 | tr '\n' '|')"
+    ctl scan off >/dev/null 2>&1
+    case "$out" in
+    *"Failed to start discovery"*|*"No default controller"*)
+        echo "ERROR $(printf '%s\n' "$out" | grep -i 'failed\|no default' | head -n 1)"
+        exit 1
+        ;;
+    esac
+    devices > "$RUN/bt-devices.out"
+    n=$(grep -c . "$RUN/bt-devices.out" 2>/dev/null)
+    [ -n "$n" ] || n=0
+    log "scan: devices=$n"
+    cat "$RUN/bt-devices.out"
     ;;
-devices) devices ;;
+devices) rotate_log; devices ;;
 pair|connect|disconnect|forget)
     mac=$2
     mac_ok "$mac" || { echo "ERROR not an address: $mac"; exit 1; }

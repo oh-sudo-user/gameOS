@@ -3,11 +3,104 @@
 # reachable. cfg80211/mac80211 and aw88166 are modules (linux-fragment.config)
 # to avoid early firmware-loader boot stalls. BT stays unloaded (chip
 # unpowered) until the Bluetooth stack explicitly enables it.
+
+LOG=/userdata/system/wifi-boot.log
+
+have_data() { mountpoint -q /userdata 2>/dev/null; }
+
+log() {
+    have_data || return 0
+    printf '[%s +%ss] [S25wireless] %s\n' \
+        "$(date '+%F %T' 2>/dev/null)" \
+        "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
+    return 0
+}
+
+rotate_log() {
+    have_data || return 0
+    [ -f "$LOG" ] || return 0
+    sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+    [ "$sz" -gt 2097152 ] && mv -f "$LOG" "$LOG.1"
+    return 0
+}
+
+rfkill_state() {
+    out=""
+    for r in /sys/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] || continue
+        out="$out ${r##*/}:$(cat "$r/type" 2>/dev/null),soft=$(cat "$r/soft" 2>/dev/null),hard=$(cat "$r/hard" 2>/dev/null);"
+    done
+    echo "${out:-none}"
+}
+
+snapshot() {
+    log "state: ifaces=$(ls -d /sys/class/net/* 2>/dev/null | sed 's#.*/##' | tr '\n' ' ')"
+    log "state: rfkill=$(rfkill_state)"
+    log "state: modules=$(lsmod 2>/dev/null | awk '$1 ~ /^(rtw|cfg80211|mac80211|sdio)/ {printf "%s ", $1}')"
+    log "state: firmware=$(ls -l /lib/firmware/rtw88/rtw8821c_fw.bin 2>&1 | tr '\n' ';')"
+}
+
+dmesg_scan() {
+    dmesg 2>/dev/null | grep -iE 'rtw|sdio|mmc|firmware|cfg80211|rfkill' | tail -n 60 \
+        | while IFS= read -r l; do log "dmesg: $l"; done
+}
+
+# rfkill may come up soft-blocked; without a soft unblock the rtw88 interface
+# exists but every scan returns nothing. There is no rfkill binary in the
+# image, so drive the sysfs node directly.
+unblock_wlan()
+{
+    for r in /sys/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] || continue
+        [ "$(cat "$r/type" 2>/dev/null)" = wlan ] || continue
+        [ -w "$r/soft" ] && echo 0 > "$r/soft" 2>/dev/null
+    done
+}
+
+wait_wlan()
+{
+    i=0
+    while [ "$i" -lt "$1" ]; do
+        for n in /sys/class/net/wlan*; do
+            [ -e "$n" ] && return 0
+        done
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
 case "$1" in
     start)
+        rotate_log
+        log "boot: version=$(cat /etc/gameos-version 2>/dev/null) diag=$(cat /etc/gameos-diag-build 2>/dev/null) kernel=$(uname -r 2>/dev/null) uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)s"
+        log "boot: model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)"
+        snapshot
+        dmesg_scan
+
         /usr/bin/gameos-bootstage 70 network
         modprobe rtw88_8821cs 2>/dev/null
+        log "modprobe: rtw88_8821cs rc=$?"
         modprobe snd-soc-aw88166 2>/dev/null
+        log "modprobe: snd-soc-aw88166 rc=$?"
+        unblock_wlan
+        log "after unblock: rfkill=$(rfkill_state)"
+        if wait_wlan 8; then
+            log "wlan ready after <=8s"
+        else
+            log "no wlan after 8s, retrying modprobe"
+            modprobe rtw88_8821cs 2>/dev/null
+            log "retry modprobe rc=$?"
+            unblock_wlan
+            if wait_wlan 5; then
+                log "wlan ready after retry"
+            else
+                log "still no wlan interface"
+            fi
+        fi
+        snapshot
+        dmesg_scan
+        log "done iface=$(ls -d /sys/class/net/wlan* 2>/dev/null | sed 's#.*/##' | tr '\n' ' ')"
         /usr/bin/gameos-bootstage 75 network
         ;;
     stop)

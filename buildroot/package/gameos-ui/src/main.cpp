@@ -49,7 +49,7 @@ constexpr int CAR_SETTINGS = 7;
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
                     Activity, Quick, Msg, Confirm };
-enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update };
+enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt };
 
 // Every tappable region on the bottom deck. `a` (and `b`) carry the row /
 // column / index the handler needs, so one id can serve a whole list.
@@ -62,12 +62,12 @@ enum HitId {
     HIT_LIST_ROWS, HIT_LIST_ROW,        // row: a = index
     HIT_SET_TILE, HIT_SET_SLIDER,       // tile a = 0..11; slider a = 0 bright, 1 volume
     HIT_WIFI_NET, HIT_WIFI_SCAN, HIT_WIFI_TEST,
-    HIT_BT_TOGGLE, HIT_BT_DEV, HIT_BT_SCAN,
+    HIT_BT_TOGGLE, HIT_BT_DEV, HIT_BT_SCAN, HIT_BT_FORGET,
     HIT_SAVE_ROW, HIT_SAVE_DEL,
     HIT_UPD_CHECK, HIT_UPD_APPLY, HIT_UPD_REBOOT,
     HIT_ACT_TAB, HIT_ACT_ROWS, HIT_ACT_ROW,
     HIT_QUICK_TAB, HIT_QUICK_ROWS, HIT_QUICK_ROW,
-    HIT_SETUP_OPT, HIT_SETUP_NEXT, HIT_SETUP_SKIP, HIT_SETUP_ACTION,
+    HIT_SETUP_OPT, HIT_SETUP_NEXT, HIT_SETUP_PREV, HIT_SETUP_ACTION,
     HIT_KB_KEY,
     HIT_DLG_OK, HIT_DLG_CANCEL
 };
@@ -132,6 +132,7 @@ struct App {
     int sel = 0;
     int scroll = 0;
     int set_sel = 0;
+    int set_adjust = -1;           // focused slider (0 brightness, 1 volume), -1 = none
     bool fav_only = false;
     std::vector<SaveEntry> saves;
     int save_sel = 0;
@@ -139,6 +140,7 @@ struct App {
     int save_del_idx = -1;
     std::string msg_title, msg_body;
     ConfirmAct confirm = ConfirmAct::None;
+    std::string wifi_del_ssid, bt_del_mac;
 
     // Bluetooth screen state (ops run via gameos-bt in the background)
     bool bt_on = false;
@@ -150,6 +152,8 @@ struct App {
     int bt_scroll = 0;
     Uint32 bt_poll_at = 0;
     Uint32 bt_op_at = 0;               // when the running op started (timeout)
+    bool settings_dirty = false;       // deferred gameos.ini write (exFAT)
+    Uint32 settings_dirty_at = 0;
 
     // WiFi screen state (ops run via gameos-wifi in the background)
     bool wifi_busy = false;
@@ -988,6 +992,15 @@ void bt_parse_devs(const std::string& out)
     app.bt_sel = std::clamp(app.bt_sel, 0, (int)app.bt_devs.size());
 }
 
+std::string bt_last_line(const std::string& out)
+{
+    std::string last, line;
+    std::istringstream ss(out);
+    while (std::getline(ss, line))
+        if (!line.empty() && line != "\r") last = line;
+    return last;
+}
+
 void bt_poll()
 {
     if (!app.bt_busy) return;
@@ -1011,7 +1024,11 @@ void bt_poll()
     app.bt_op.clear();
     if (op == "devices" || op == "scan") {
         bt_parse_devs(out);
-        if (op == "scan") app.bt_status = tr(T_SCAN_DONE);
+        std::string last = bt_last_line(out);
+        // A helper that failed (adapter off, discovery refused) must say so
+        // instead of leaving an empty list that looks like "no devices found".
+        if (rc != 0 && !last.empty()) app.bt_status = last;
+        else if (op == "scan") app.bt_status = tr(T_SCAN_DONE);
     } else if (op == "up") {
         app.bt_on = (rc == 0);
         app.settings.bluetooth = app.bt_on ? 1 : 0;
@@ -1027,11 +1044,7 @@ void bt_poll()
         app.bt_status = tr(T_BT_OFF_OK);
     } else {
         // pair / connect / disconnect / forget: last line "OK" or "ERROR <why>"
-        std::string last;
-        std::istringstream ss(out);
-        std::string line;
-        while (std::getline(ss, line))
-            if (!line.empty() && line != "\r") last = line;
+        std::string last = bt_last_line(out);
         if (rc == 0) {
             if (op == "pair") app.bt_status = tr(T_PAIR_OK);
             else if (op == "connect") app.bt_status = tr(T_CONNECTED);
@@ -1122,6 +1135,17 @@ void wifi_start(const std::string& op)
     app.wifi_op_at = SDL_GetTicks();
 }
 
+// A user-requested scan supersedes the one queued by wifi_enter(); without
+// this a tap during the status probe started a second scan as soon as the
+// first one finished.
+void wifi_scan_now()
+{
+    if (app.wifi_busy) return;
+    app.wifi_probe_scan = false;
+    app.wifi_status = tr(T_WIFI_SCANNING);
+    wifi_start("scan");
+}
+
 // gameos-wifi status/known used to be popen()ed right when the wizard moved
 // to the WiFi step (and when Settings opened), so a supplicant that was slow
 // to come up froze the whole UI on the previous screen. They now run in a
@@ -1162,8 +1186,12 @@ void wifi_probe_poll(Uint32 now)
     const bool scan = app.wifi_probe_scan;
     app.wifi_probe_scan = false;
     if (scan) {
-        if (app.wifi_state == "NOHW") app.wifi_status.clear();
-        else if (!app.wifi_busy) {
+        if (app.wifi_state == "NOHW") {
+            // the module may still be loading at cold boot: keep the request
+            // pending so the scan starts as soon as the interface appears
+            app.wifi_status.clear();
+            app.wifi_probe_scan = true;
+        } else if (!app.wifi_busy) {
             app.wifi_status = tr(T_WIFI_SCANNING);
             wifi_start("scan");
         }
@@ -1218,15 +1246,6 @@ void wifi_press_net()
     } else {
         wifi_begin_connect(n.ssid, "");  // open network or saved key
     }
-}
-
-void wifi_forget_net()
-{
-    if (app.wifi_sel < 0 || app.wifi_sel >= (int)app.wifi_nets.size()) return;
-    const WifiNet& n = app.wifi_nets[app.wifi_sel];
-    if (!n.saved) return;
-    write_file("/run/gameos/wifi-arg", n.ssid + "\n");
-    wifi_start("forget");
 }
 
 const std::vector<std::vector<std::string>>& kb_rows()
@@ -1338,8 +1357,22 @@ void wifi_poll()
     std::string op = app.wifi_op;
     app.wifi_op.clear();
     if (op == "scan") {
-        wifi_parse_nets(out);
-        app.wifi_status = app.wifi_nets.empty() ? tr(T_WIFI_NO_NETS) : "";
+        if (out.rfind("ERROR", 0) == 0) {
+            // Never show a stale list as if the scan had worked, and say why.
+            app.wifi_nets.clear();
+            app.wifi_sel = 0;
+            app.wifi_scroll = 0;
+            if (out.find("no-wifi-hardware") != std::string::npos) {
+                app.wifi_state = "NOHW";
+                app.wifi_status = tr(T_WIFI_UNAVAILABLE);
+            } else if (out.find("supplicant-failed") != std::string::npos)
+                app.wifi_status = tr(T_WIFI_SUPPLICANT_FAIL);
+            else
+                app.wifi_status = tr(T_WIFI_SCAN_FAIL);
+        } else {
+            wifi_parse_nets(out);
+            app.wifi_status = app.wifi_nets.empty() ? tr(T_WIFI_NO_NETS) : "";
+        }
         wifi_probe_start();           // refresh saved markers off-thread
     } else if (op == "connect") {
         std::string last;
@@ -1382,7 +1415,7 @@ void wifi_enter()
 // first-boot wizard
 //
 // Six questions then a done page. A (right button) acts on the highlighted row,
-// B (bottom button) skips the current step, START skips the whole wizard. The
+// B (bottom button) goes back a step, START skips the whole wizard. The
 // marker on /userdata is what makes this a *first*-boot experience; Settings
 // can run it again at any time.
 // ---------------------------------------------------------------------------
@@ -1520,7 +1553,7 @@ void setup_next()
     app.setup_scroll = 0;
     app.setup_col = 0;
     app.setup_status.clear();
-    // Skipping a step while its op is in flight: the script still runs to
+    // Leaving a step while its op is in flight: the script still runs to
     // completion and persists the choice, but its result must not land on the
     // next step (a timezone result would otherwise advance twice).
     app.setup_busy = false;
@@ -1533,6 +1566,27 @@ void setup_next()
         app.cov_state.clear();
         app.cov_current.clear();
         app.cov_total = app.cov_done = app.cov_ok = app.cov_miss = app.cov_fail = 0;
+        setup_run("covers-count", "gameos-covers count");
+    }
+}
+
+void setup_prev()
+{
+    if (app.setup_step <= 0) return;
+    app.setup_step--;
+    app.setup_sel = 0;
+    app.setup_scroll = 0;
+    app.setup_col = 0;
+    app.setup_status.clear();
+    app.setup_busy = false;
+    app.setup_op.clear();
+
+    if (app.setup_step == 1) {
+        wifi_probe_start(true);        // refresh status/known (and scan if hardware)
+    } else if (app.setup_step == 2) {
+        app.setup_sel = std::clamp(app.setup_region, 0,
+                                   (int)tz_regions().size() - 1);   // focus current region
+    } else if (app.setup_step == 5 && app.cov_total == 0) {
         setup_run("covers-count", "gameos-covers count");
     }
 }
@@ -1871,7 +1925,7 @@ void draw_setup(SDL_Renderer* r)
     case 1: {
         bool connected = !app.wifi_ip.empty();
         bool nohw = app.wifi_state == "NOHW";
-        bool busy = app.wifi_busy || app.wifi_probe_busy;
+        bool busy = app.wifi_busy;
         icon_wifi(r, W / 2 - 62, 228, 124,
                   connected ? C_ACCENT : with_alpha(C_DIM, 210),
                   connected ? 4 : 3);
@@ -2091,7 +2145,7 @@ void draw_wifi(SDL_Renderer* r)
 
     bool connected = !app.wifi_ip.empty();
     bool nohw = app.wifi_state == "NOHW";
-    bool busy = app.wifi_busy || app.wifi_probe_busy;
+    bool busy = app.wifi_busy;
     top_plate(r, W / 2, 290, 142);
     icon_wifi(r, W / 2 - 62, 228, 124,
               connected ? C_ACCENT : with_alpha(C_DIM, 210),
@@ -2340,7 +2394,10 @@ void draw_confirm(SDL_Renderer* r)
     int pw = 680, ph = 340, px = (W - pw) / 2, py = (H - ph) / 2;
 
     bool update = app.confirm == ConfirmAct::Update;
-    SDL_Color ac = update ? C_ACCENT
+    bool forget = app.confirm == ConfirmAct::ForgetWifi ||
+                  app.confirm == ConfirmAct::ForgetBt;
+    SDL_Color ac = forget ? C_AMBER
+                 : update ? C_ACCENT
                  : app.confirm == ConfirmAct::Reboot ? C_AMBER : C_RED;
     glow(r, W / 2, py + 64, 300, ac, 10, 16);
     card(r, { px, py, pw, ph }, 36, false, 246);
@@ -2349,6 +2406,8 @@ void draw_confirm(SDL_Renderer* r)
     circle(r, cx, cy, 42, with_alpha(ac, 26));
     ring(r, cx, cy, 42, 1, with_alpha(ac, 120));
     if (update) icon_download(r, cx - 22, cy - 22, 44, ac);
+    else if (app.confirm == ConfirmAct::ForgetWifi) icon_wifi(r, cx - 22, cy - 22, 44, ac);
+    else if (app.confirm == ConfirmAct::ForgetBt) icon_bt(r, cx - 22, cy - 22, 44, ac);
     else if (app.confirm == ConfirmAct::Reboot) icon_refresh(r, cx - 22, cy - 22, 44, ac);
     else if (app.confirm == ConfirmAct::PowerOff) icon_power(r, cx - 22, cy - 22, 44, ac);
     else icon_trash(r, cx - 22, cy - 22, 44, ac);
@@ -2359,9 +2418,15 @@ void draw_confirm(SDL_Renderer* r)
         title = fmt(tr(T_UPDATE_CONFIRM), app.upd_version.c_str());
         body = tr(T_UPDATE_CONFIRM_BODY);
     } else {
-        title = (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
+        title = forget ? tr(T_CONFIRM_FORGET)
+              : (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
               : (app.confirm == ConfirmAct::Reboot) ? tr(T_CONFIRM_REBOOT)
               : tr(T_CONFIRM_DEL);
+        if (forget) {
+            const std::string& n = app.confirm == ConfirmAct::ForgetWifi
+                                 ? app.wifi_del_ssid : app.bt_del_mac;
+            body = n;
+        }
     }
     text(r, app.f_title, ellipsize(app.f_title, title, pw - 64),
          cx, py + 122, C_TEXT, Align::Center);
@@ -2629,11 +2694,45 @@ static void tf2_poll()
     }
 }
 
+// Last non-empty line of the emulator logs, for the crash dialog. Reading
+// only the tail keeps this cheap even when RetroArch has logged for an hour.
+static std::string log_tail_line()
+{
+    for (const char* path : { "/userdata/system/retroarch.log",
+                              "/userdata/system/emu.log" }) {
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+        long sz = -1;
+        if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
+        if (sz < 0) { fclose(f); continue; }
+        fseek(f, sz > 4096 ? sz - 4096 : 0, SEEK_SET);
+        std::string buf;
+        char tmp[1024];
+        size_t n;
+        while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0) buf.append(tmp, n);
+        fclose(f);
+        size_t end = buf.find_last_not_of(" \t\r\n");
+        if (end == std::string::npos) continue;
+        size_t nl = buf.find_last_of('\n', end);
+        std::string line = buf.substr(nl == std::string::npos ? 0 : nl + 1,
+                                      end - (nl == std::string::npos ? 0 : nl + 1) + 1);
+        if (line.size() > 120) line = "…" + line.substr(line.size() - 119);
+        return line;
+    }
+    return "-";
+}
+
 // Launch one game from any screen (console list, favorites, history, a
 // recommendation). Records the session; the caller refreshes its own list.
 static void launch_one(const Console& c, const Game& g)
 {
     long long wall_start = (long long)time(nullptr);
+    {
+        char dbg[512];
+        snprintf(dbg, sizeof(dbg), "gameos-ui: launch console=%s title=\"%.200s\" path=%s\n",
+                 c.id, g.title.c_str(), g.path.c_str());
+        ui_dbg(dbg);
+    }
     SDL_Delay(230);                    // let the launch chime ring out
     shutdown_gfx();                    // release DRM master
     // CLOCK_MONOTONIC, not the wall clock: gameos-sleepd suspends to RAM on lid
@@ -2643,6 +2742,12 @@ static void launch_one(const Console& c, const Game& g)
     int rc = launch_game(c, g);
     struct timespec t1;
     clock_gettime(CLOCK_MONOTONIC, &t1);
+    {
+        char dbg[256];
+        snprintf(dbg, sizeof(dbg), "gameos-ui: emu returned rc=%d after %llds\n",
+                 rc, (long long)(t1.tv_sec - t0.tv_sec));
+        ui_dbg(dbg);
+    }
     // Log the session BEFORE taking the panels back: if init_gfx() fails the UI
     // exits right here, and the hour just played would otherwise never be saved.
     if (rc != 127)
@@ -2651,10 +2756,12 @@ static void launch_one(const Console& c, const Game& g)
         // Graphics re-init failed (DRM still held / mode broken). Exit non-zero
         // so the session supervisor backs off instead of treating it as a clean
         // exit and spinning in a tight restart loop.
+        ui_dbg("gameos-ui: gfx reinit FAILED after emulator exit\n");
         app.running = false;
         app.exit_code = 1;
         return;
     }
+    ui_dbg("gameos-ui: gfx reinit ok after emulator exit\n");
     // fresh scene textures after re-init: fade back in from black
     g_scene_cur ^= 1;
     g_trans_start = SDL_GetTicks();
@@ -2662,8 +2769,11 @@ static void launch_one(const Console& c, const Game& g)
     if (rc == 127) {
         sound_play(SND_ERROR);
         show_msg(tr(T_EMU_FAIL), tr(T_EMU_FAIL_BODY));
-    } else if (rc != 0)
-        fprintf(stderr, "gameos-ui: emulator exited with %d\n", rc);
+    } else if (rc != 0) {
+        sound_play(SND_ERROR);
+        show_msg(tr(T_EMU_CRASH_TITLE),
+                 fmt(tr(T_EMU_CRASH_BODY), log_tail_line().c_str()));
+    }
 }
 
 void do_launch()
@@ -2688,8 +2798,12 @@ void go_back()
     case Screen::Quick:
         app.screen = Screen::Home;
         break;
-    case Screen::Settings:
     case Screen::Msg:
+        app.screen = Screen::Home;
+        break;
+    case Screen::Settings:
+        // B first leaves adjust mode, a second press returns home
+        if (app.set_adjust >= 0) { app.set_adjust = -1; break; }
         app.screen = Screen::Home;
         break;
     case Screen::Wifi:
@@ -2697,9 +2811,9 @@ void go_back()
         app.screen = Screen::Settings;
         break;
     case Screen::Setup:
-        // B skips the current step; an open keyboard is cancelled first
+        // B goes back one step; an open keyboard is cancelled first
         if (app.wifi_kb) { kb_cancel(); break; }
-        setup_next();
+        setup_prev();
         break;
     case Screen::Saves:
         app.screen = Screen::Settings;
@@ -2713,6 +2827,8 @@ void go_back()
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
                    : (app.confirm == ConfirmAct::Update)     ? Screen::Update
+                   : (app.confirm == ConfirmAct::ForgetWifi) ? Screen::Wifi
+                   : (app.confirm == ConfirmAct::ForgetBt)   ? Screen::Bluetooth
                                                              : Screen::Settings;
         app.confirm = ConfirmAct::None;
         break;
@@ -2757,6 +2873,11 @@ void confirm_btn()
         break;
     }
     case Screen::Settings:
+        if (app.set_sel <= 1) {   // A enters/leaves slider adjust mode
+            app.set_adjust = (app.set_adjust == app.set_sel) ? -1 : app.set_sel;
+            break;
+        }
+        app.set_adjust = -1;
         if (app.set_sel == 2) bt_enter();
         else if (app.set_sel == 3) wifi_enter();
         else if (app.set_sel == 4) cycle_theme();
@@ -2824,6 +2945,23 @@ void confirm_btn()
             app.confirm = ConfirmAct::None;
             app.screen = Screen::Update;
             update_start("apply");
+        } else if (app.confirm == ConfirmAct::ForgetWifi) {
+            app.confirm = ConfirmAct::None;
+            app.screen = Screen::Wifi;
+            if (!app.wifi_del_ssid.empty()) {
+                write_file("/run/gameos/wifi-arg", app.wifi_del_ssid + "\n");
+                app.wifi_status = tr(T_FORGETTING);
+                wifi_start("forget");
+            }
+            app.wifi_del_ssid.clear();
+        } else if (app.confirm == ConfirmAct::ForgetBt) {
+            app.confirm = ConfirmAct::None;
+            app.screen = Screen::Bluetooth;
+            if (bt_mac_valid(app.bt_del_mac)) {
+                app.bt_status = tr(T_FORGETTING);
+                bt_start("forget", app.bt_del_mac);
+            }
+            app.bt_del_mac.clear();
         } else {
             app.exit_code = (app.confirm == ConfirmAct::PowerOff) ? 90 : 91;
             app.running = false;
@@ -2848,6 +2986,7 @@ void start_btn()
         update_refresh();        // and the update row
         app.screen = Screen::Settings;
         app.set_sel = 0;
+        app.set_adjust = -1;
     }
     else if (app.screen == Screen::Setup) {
         sound_play(SND_BACK);
@@ -2860,12 +2999,16 @@ void start_btn()
 }
 
 // horizontal / vertical navigation with key repeat
+static void settings_mark_dirty();
+static void settings_flush(bool force);
+
 void navigate(int dx, int dy)
 {
     if (dx || dy) {
-        if (app.screen == Screen::Home && dx)          sound_play(SND_SWITCH);
-        else if (app.screen == Screen::Settings && dx) sound_play(SND_ADJUST);
-        else                                           sound_play(SND_MOVE);
+        if (app.screen == Screen::Home && dx) sound_play(SND_SWITCH);
+        else if (app.screen == Screen::Settings && app.set_adjust >= 0 && dx)
+            sound_play(SND_ADJUST);
+        else sound_play(SND_MOVE);
     }
     switch (app.screen) {
     case Screen::Home:
@@ -2896,22 +3039,25 @@ void navigate(int dx, int dy)
             app.quick_sel = std::clamp(app.quick_sel + dy, 0, (int)app.quick.size() - 1);
         break;
     case Screen::Settings:
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy, 0, 11);
-        if (dx) {
-            if (app.set_sel == 0) {
-                app.settings.brightness = std::clamp(app.settings.brightness + dx * 5, 10, 100);
-                apply_brightness(app.settings.brightness);
-                save_settings(app.settings);
-            } else if (app.set_sel == 1) {
-                app.settings.volume = std::clamp(app.settings.volume + dx * 5, 0, 100);
-                apply_volume(app.settings.volume);
-                save_settings(app.settings);
-            } else if (app.set_sel == 4) {
-                cycle_theme(dx);
-            } else if (app.set_sel == 5) {
-                cycle_lang(dx);
+        if (app.set_adjust >= 0) {
+            if (dx) {
+                if (app.set_adjust == 0) {
+                    app.settings.brightness =
+                        std::clamp(app.settings.brightness + dx * 5, 10, 100);
+                    apply_brightness(app.settings.brightness);
+                } else {
+                    app.settings.volume =
+                        std::clamp(app.settings.volume + dx * 5, 0, 100);
+                    apply_volume(app.settings.volume);
+                }
+                settings_mark_dirty();
+                break;
             }
+            if (dy) app.set_adjust = -1;   // leave adjust, then move
         }
+        // two-column tile grid: up/down changes row, left/right changes column
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 2, 0, 11);
+        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 11);
         break;
     case Screen::Wifi:
         if (app.wifi_kb) {
@@ -3047,6 +3193,23 @@ void volume_show(int v)
     app.vol_osd_at = SDL_GetTicks();
 }
 
+// gameos.ini lives on the exFAT data partition; writing it on every key repeat
+// blocked the render thread long enough to feel like a stutter. Coalesce the
+// writes and let the main loop flush once the adjustment settles.
+static void settings_mark_dirty()
+{
+    app.settings_dirty = true;
+    app.settings_dirty_at = SDL_GetTicks();
+}
+
+static void settings_flush(bool force)
+{
+    if (!app.settings_dirty) return;
+    if (!force && SDL_GetTicks() - app.settings_dirty_at < 600) return;
+    app.settings_dirty = false;
+    save_settings(app.settings);
+}
+
 // Sets the level locally, pushes it to ALSA at a human rate, and persists on
 // release. Shared by the deck slider, L2/R2 and the hardware keys' state file.
 void volume_set(int v, bool persist)
@@ -3063,7 +3226,7 @@ void volume_set(int v, bool persist)
     }
     if (changed) sound_play(SND_ADJUST);
     volume_show(v);
-    if (persist) save_settings(app.settings);
+    if (persist) settings_mark_dirty();
 }
 
 void brightness_set(int v, bool persist)
@@ -3076,7 +3239,7 @@ void brightness_set(int v, bool persist)
         app.slider_at = now;
         apply_brightness(v);
     }
-    if (persist) save_settings(app.settings);
+    if (persist) settings_mark_dirty();
 }
 
 static void refresh_recent()
@@ -3409,18 +3572,23 @@ void deck_settings(SDL_Renderer* r)
         if (!v.empty())
             text(r, app.f_small, ellipsize(app.f_small, v, tw - 80),
                  tile.x + 58, tile.y + 54, vc);
+        // Tile first, slider second: ui_hit_at() walks the list backwards,
+        // so the smaller track must be registered last to win the touch.
+        hit_add(tile, HIT_SET_TILE, i);
         if (i == 0 || i == 1) {
             int pct = i == 0 ? app.settings.brightness : app.settings.volume;
             SDL_Rect track = { tile.x + tw - 190, tile.y + 54, 160, 24 };
+            bool adj = app.set_adjust == i;
+            if (adj) rrect_stroke(r, { track.x - 8, track.y - 4, track.w + 16, 32 },
+                                  16, with_alpha(C_ACCENT, 210), 1);
             rrect(r, { track.x, track.y + 9, track.w, 6 }, 3, with_alpha(C_DIM, 60));
-            rrect(r, { track.x, track.y + 9, track.w * pct / 100, 6 }, 3,
-                  i == 8 ? C_RED : C_ACCENT);
-            circle(r, track.x + track.w * pct / 100, track.y + 12, 8, C_TEXT);
+            rrect(r, { track.x, track.y + 9, track.w * pct / 100, 6 }, 3, C_ACCENT);
+            circle(r, track.x + track.w * pct / 100, track.y + 12, adj ? 10 : 8,
+                   C_TEXT);
             hit_add(track, HIT_SET_SLIDER, i);
         }
-        hit_add(tile, HIT_SET_TILE, i);
     }
-    deck_hint(r, tr(T_TOUCH_SETTINGS));
+    deck_hint(r, tr(app.set_adjust >= 0 ? T_SET_HINT_ADJUST : T_SET_HINT_GRID));
 }
 
 // ---------------------------------------------------------------------------
@@ -3527,13 +3695,12 @@ void deck_wifi(SDL_Renderer* r)
     }
     if (n == 0) {
         const char* msg = app.wifi_state == "NOHW" ? tr(T_WIFI_UNAVAILABLE)
-                        : (app.wifi_busy || app.wifi_probe_busy) ? tr(T_WIFI_SCANNING)
-                                                                 : tr(T_WIFI_EMPTY);
+                        : app.wifi_busy ? tr(T_WIFI_SCANNING)
+                                        : tr(T_WIFI_EMPTY);
         text(r, app.f_body, msg, W / 2, top + 150, C_DIM, Align::Center);
     }
 
-    std::string st = (app.wifi_busy || app.wifi_probe_busy) ? tr(T_PROCESSING)
-                                                            : app.wifi_status;
+    std::string st = app.wifi_busy ? tr(T_PROCESSING) : app.wifi_status;
     if (!st.empty())
         text(r, app.f_small, ellipsize(app.f_small, st, W - 200),
              W / 2, 646, C_AMBER, Align::Center);
@@ -3608,6 +3775,12 @@ void deck_bt(SDL_Renderer* r)
     deck_round(r, { 48, 672, 64, 64 });
     icon_chevron(r, 60, 684, 40, C_TEXT, true);
     hit_add({ 48, 672, 64, 64 }, HIT_BACK);
+    if (app.bt_on && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size() &&
+        app.bt_devs[app.bt_sel - 1].paired) {
+        SDL_Rect fg = { 136, 672, 200, 64 };
+        button(r, fg, tr(T_FORGET), false, false);
+        hit_add(fg, HIT_BT_FORGET);
+    }
     if (app.bt_on) {
         SDL_Rect sc = { W - 48 - 200, 672, 200, 64 };
         button(r, sc, app.bt_busy ? tr(T_SCANNING) : tr(T_SCAN), false, false);
@@ -3948,6 +4121,14 @@ void deck_quick(SDL_Renderer* r)
 // ---------------------------------------------------------------------------
 // wizard deck
 // ---------------------------------------------------------------------------
+void setup_deck_back(SDL_Renderer* r, int y = 668)
+{
+    SDL_Rect rc = { 48, y, 64, 64 };
+    deck_round(r, rc);
+    icon_chevron(r, rc.x + 12, rc.y + 12, 40, C_TEXT, true);
+    hit_add(rc, HIT_SETUP_PREV);
+}
+
 void deck_setup(SDL_Renderer* r)
 {
     const char* title = tr(T_SETUP_TITLE);
@@ -4026,16 +4207,15 @@ void deck_setup(SDL_Renderer* r)
         }
         text(r, app.f_small, ellipsize(app.f_small, link, W - 240),
              W / 2, 604, lc, Align::Center);
-        std::string st = (app.wifi_busy || app.wifi_probe_busy)
-            ? tr(T_PROCESSING) : app.wifi_status;
+        std::string st = app.wifi_busy ? tr(T_PROCESSING) : app.wifi_status;
         if (!st.empty())
             text(r, app.f_small, ellipsize(app.f_small, st, W - 240),
                  W / 2, 642, C_AMBER, Align::Center);
-        if (nets == 0 && !app.wifi_busy && !app.wifi_probe_busy &&
-            app.wifi_state != "NOHW")
+        if (nets == 0 && !app.wifi_busy && app.wifi_state != "NOHW")
             text(r, app.f_body, ellipsize(app.f_body, tr(T_WIFI_EMPTY), W - 200),
                  W / 2, 344, C_DIM, Align::Center);
 
+        setup_deck_back(r);
         SDL_Rect scan = { W - 48 - 160, 668, 160, 64 };
         button(r, scan, app.wifi_busy ? tr(T_SCANNING) : tr(T_SCAN), false, false);
         hit_add(scan, HIT_WIFI_SCAN);
@@ -4074,11 +4254,12 @@ void deck_setup(SDL_Renderer* r)
         text(r, app.f_small,
              fmt(tr(T_TZ_NOW_FMT), zone_time(preview).c_str()),
              W / 2, 608, C_DIM, Align::Center);
-        text(r, app.f_small, ellipsize(app.f_small, tr(T_TOUCH_TZ), W - 420),
-             48, 684, with_alpha(C_DIM, 160));
+        text(r, app.f_small, ellipsize(app.f_small, tr(T_TOUCH_TZ), W - 500),
+             124, 684, with_alpha(C_DIM, 160));
         SDL_Rect next = { W - 48 - 160, 668, 160, 64 };
         button(r, next, tr(T_NEXT), false, false);
         hit_add(next, HIT_SETUP_NEXT);
+        setup_deck_back(r);
         return;
     }
 
@@ -4108,8 +4289,9 @@ void deck_setup(SDL_Renderer* r)
             y += 32;
         }
         if (!app.setup_status.empty())
-            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 120),
+            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 300),
                  W / 2, 624, C_AMBER, Align::Center);
+        setup_deck_back(r);
         deck_hint(r, tr(T_TOUCH_NAME));
         return;
     }
@@ -4144,14 +4326,15 @@ void deck_setup(SDL_Renderer* r)
                           i == 3 ? C_GREEN : C_DIM);
             hit_add(rc, HIT_SETUP_OPT, i, 0);
         }
-        int y = 592;
+        int y = 584;
         for (const auto& l : wrap(app.f_small, tr(T_RA_HARDCORE_HELP), 880)) {
             text(r, app.f_small, l, 60, y, with_alpha(C_DIM, 190));
             y += 30;
         }
         if (!app.setup_status.empty())
-            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 120),
-                 W / 2, 676, C_AMBER, Align::Center);
+            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 300),
+                 W / 2, 648, C_AMBER, Align::Center);
+        setup_deck_back(r, 672);
         deck_hint(r, tr(T_TOUCH_LIST));
         return;
     }
@@ -4194,8 +4377,9 @@ void deck_setup(SDL_Renderer* r)
         hit_add(next, HIT_SETUP_NEXT);
 
         if (!app.setup_status.empty())
-            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 120),
+            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 300),
                  W / 2, 552, C_AMBER, Align::Center);
+        setup_deck_back(r);
         deck_hint(r, tr(T_TOUCH_COVER));
         return;
     }
@@ -4211,6 +4395,7 @@ void deck_setup(SDL_Renderer* r)
     SDL_Rect go = { 232, 460, 560, 96 };
     button(r, go, tr(T_PLAY), true, true);
     hit_add(go, HIT_SETUP_ACTION, 1);
+    setup_deck_back(r, 640);
 }
 
 // ---------------------------------------------------------------------------
@@ -4241,7 +4426,9 @@ void deck_confirm(SDL_Renderer* r)
     const char* title = app.confirm == ConfirmAct::PowerOff ? tr(T_CONFIRM_OFF)
                       : app.confirm == ConfirmAct::Reboot ? tr(T_CONFIRM_REBOOT)
                       : app.confirm == ConfirmAct::Update ? tr(T_UPDATE)
-                                                         : tr(T_CONFIRM_DEL);
+                      : (app.confirm == ConfirmAct::ForgetWifi ||
+                         app.confirm == ConfirmAct::ForgetBt) ? tr(T_CONFIRM_FORGET)
+                                                             : tr(T_CONFIRM_DEL);
     text(r, app.f_title, ellipsize(app.f_title, title, W - 160),
          W / 2, 180, C_TEXT, Align::Center);
     if (app.confirm == ConfirmAct::Update && !app.upd_version.empty())
@@ -4347,7 +4534,8 @@ void deck_activate(int id, int a, int b)
         if (a == 0) { rebuild_activity(); app.screen = Screen::Activity; }
         else if (a == 1) { rebuild_quick(); app.screen = Screen::Quick; }
         else { app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
-               wifi_probe_start(); update_refresh(); app.screen = Screen::Settings; app.set_sel = 0; }
+               wifi_probe_start(); update_refresh(); app.screen = Screen::Settings;
+               app.set_sel = 0; app.set_adjust = -1; }
         break;
     case HIT_RECENT:
         if (app.recent_ok) launch_one(consoles()[app.recent.con], app.recent.game);
@@ -4373,6 +4561,12 @@ void deck_activate(int id, int a, int b)
         break;
     case HIT_SET_TILE:
         app.set_sel = std::clamp(a, 0, 11);
+        if (a <= 1) {
+            app.set_adjust = a;
+            sound_play(SND_ADJUST);
+            break;
+        }
+        app.set_adjust = -1;
         if (a == 2) bt_enter();
         else if (a == 3) wifi_enter();
         else if (a == 4) cycle_theme();
@@ -4398,14 +4592,28 @@ void deck_activate(int id, int a, int b)
     case HIT_WIFI_SCAN:
         if (!app.wifi_busy) {
             sound_play(SND_SWITCH);
-            app.wifi_status = tr(T_WIFI_SCANNING);
-            wifi_start("scan");
+            wifi_scan_now();
         }
         break;
     case HIT_WIFI_TEST:
-        if (!app.wifi_busy) {
+        if (!app.wifi_busy && app.wifi_sel >= 0 &&
+            app.wifi_sel < (int)app.wifi_nets.size() &&
+            app.wifi_nets[app.wifi_sel].saved) {
             sound_play(SND_BACK);
-            wifi_forget_net();
+            app.wifi_del_ssid = app.wifi_nets[app.wifi_sel].ssid;
+            app.confirm = ConfirmAct::ForgetWifi;
+            app.screen = Screen::Confirm;
+        }
+        break;
+    case HIT_BT_FORGET:
+        if (!app.bt_busy && app.bt_sel > 0 && app.bt_sel <= (int)app.bt_devs.size()) {
+            const BtDev& d = app.bt_devs[app.bt_sel - 1];
+            if (d.paired && bt_mac_valid(d.mac)) {
+                sound_play(SND_BACK);
+                app.bt_del_mac = d.mac;
+                app.confirm = ConfirmAct::ForgetBt;
+                app.screen = Screen::Confirm;
+            }
         }
         break;
     case HIT_BT_TOGGLE:
@@ -4494,8 +4702,8 @@ void deck_activate(int id, int a, int b)
     case HIT_SETUP_NEXT:
         setup_next();
         break;
-    case HIT_SETUP_SKIP:
-        setup_next();
+    case HIT_SETUP_PREV:
+        setup_prev();
         break;
     case HIT_SETUP_ACTION:
         if (a == 1) setup_finish();
@@ -4537,6 +4745,8 @@ void deck_touch(const TouchEvent& e)
         app.slider_drag = false;
         if (h && h->id == HIT_SET_SLIDER) {
             app.slider_drag = true;
+            app.set_sel = h->a;
+            app.set_adjust = h->a;
             g_slider_rect = h->rect;
             int pct = std::clamp((int)((e.x - h->rect.x) * 100 / std::max(1, h->rect.w)), 0, 100);
             if (h->a == 0) brightness_set(pct, false);
@@ -4586,8 +4796,11 @@ void deck_touch(const TouchEvent& e)
 void volume_poll()
 {
     Uint32 now = SDL_GetTicks();
-    if (now - app.vol_poll_at < 500) return;
+    if (now - app.vol_poll_at < 250) return;
     app.vol_poll_at = now;
+    // The async hardware write trails the UI value; do not let a stale state
+    // file yank the slider back while the user is still adjusting it.
+    if (app.slider_drag || now - app.slider_at < 1500) return;
     std::string s = read_file("/run/gameos/volume.level");
     while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
         s.pop_back();
@@ -4596,7 +4809,7 @@ void volume_poll()
     if (v >= 0 && v <= 100 && v != app.settings.volume) {
         app.settings.volume = v;
         volume_show(v);
-        save_settings(app.settings);
+        settings_mark_dirty();
     }
 }
 
@@ -4614,19 +4827,17 @@ void handle_button(SDL_ControllerButtonEvent& b)
         if (app.screen == Screen::Bluetooth) {
             if (app.bt_on && !app.bt_busy) { sound_play(SND_SWITCH); app.bt_status = tr(T_SCANNING); bt_start("scan"); }
         } else if (app.screen == Screen::Wifi) {
-            if (!app.wifi_busy && !app.wifi_kb && app.wifi_state != "NOHW") {
+            if (!app.wifi_busy && !app.wifi_kb) {
                 sound_play(SND_SWITCH);
-                app.wifi_status = tr(T_WIFI_SCANNING);
-                wifi_start("scan");
+                wifi_scan_now();
             }
         } else if (app.screen == Screen::Update) {
             if (!app.upd_busy) { sound_play(SND_SWITCH); update_start("check"); }
         } else if (app.screen == Screen::Setup) {
             if (app.setup_step == 1 && !app.wifi_busy && !app.setup_busy &&
-                !app.wifi_kb && app.wifi_state != "NOHW") {
+                !app.wifi_kb) {
                 sound_play(SND_SWITCH);
-                app.wifi_status = tr(T_WIFI_SCANNING);
-                wifi_start("scan");
+                wifi_scan_now();
             }
         } else if (app.screen == Screen::Settings) {
             sound_play(SND_SWITCH);
@@ -4646,14 +4857,20 @@ void handle_button(SDL_ControllerButtonEvent& b)
                 const BtDev& d = app.bt_devs[app.bt_sel - 1];
                 if (d.paired && bt_mac_valid(d.mac)) {
                     sound_play(SND_BACK);
-                    app.bt_status = tr(T_FORGETTING);
-                    bt_start("forget", d.mac);
+                    app.bt_del_mac = d.mac;
+                    app.confirm = ConfirmAct::ForgetBt;
+                    app.screen = Screen::Confirm;
                 }
             }
         } else if (app.screen == Screen::Wifi) {
             if (!app.wifi_busy && !app.wifi_kb) {
-                sound_play(SND_BACK);
-                wifi_forget_net();
+                if (app.wifi_sel >= 0 && app.wifi_sel < (int)app.wifi_nets.size() &&
+                    app.wifi_nets[app.wifi_sel].saved) {
+                    sound_play(SND_BACK);
+                    app.wifi_del_ssid = app.wifi_nets[app.wifi_sel].ssid;
+                    app.confirm = ConfirmAct::ForgetWifi;
+                    app.screen = Screen::Confirm;
+                }
             }
         } else if (app.screen == Screen::Update) {
             // nothing to forget here
@@ -4693,19 +4910,17 @@ void handle_key(SDL_KeyboardEvent& k)
         if (app.screen == Screen::Bluetooth) {
             if (app.bt_on && !app.bt_busy) { sound_play(SND_SWITCH); app.bt_status = tr(T_SCANNING); bt_start("scan"); }
         } else if (app.screen == Screen::Wifi) {
-            if (!app.wifi_busy && !app.wifi_kb && app.wifi_state != "NOHW") {
+            if (!app.wifi_busy && !app.wifi_kb) {
                 sound_play(SND_SWITCH);
-                app.wifi_status = tr(T_WIFI_SCANNING);
-                wifi_start("scan");
+                wifi_scan_now();
             }
         } else if (app.screen == Screen::Update) {
             if (!app.upd_busy) { sound_play(SND_SWITCH); update_start("check"); }
         } else if (app.screen == Screen::Setup) {
             if (app.setup_step == 1 && !app.wifi_busy && !app.setup_busy &&
-                !app.wifi_kb && app.wifi_state != "NOHW") {
+                !app.wifi_kb) {
                 sound_play(SND_SWITCH);
-                app.wifi_status = tr(T_WIFI_SCANNING);
-                wifi_start("scan");
+                wifi_scan_now();
             }
         } else if (app.screen == Screen::Settings) {
             sound_play(SND_SWITCH);
@@ -4725,14 +4940,20 @@ void handle_key(SDL_KeyboardEvent& k)
                 const BtDev& d = app.bt_devs[app.bt_sel - 1];
                 if (d.paired && bt_mac_valid(d.mac)) {
                     sound_play(SND_BACK);
-                    app.bt_status = tr(T_FORGETTING);
-                    bt_start("forget", d.mac);
+                    app.bt_del_mac = d.mac;
+                    app.confirm = ConfirmAct::ForgetBt;
+                    app.screen = Screen::Confirm;
                 }
             }
         } else if (app.screen == Screen::Wifi) {
             if (!app.wifi_busy && !app.wifi_kb) {
-                sound_play(SND_BACK);
-                wifi_forget_net();
+                if (app.wifi_sel >= 0 && app.wifi_sel < (int)app.wifi_nets.size() &&
+                    app.wifi_nets[app.wifi_sel].saved) {
+                    sound_play(SND_BACK);
+                    app.wifi_del_ssid = app.wifi_nets[app.wifi_sel].ssid;
+                    app.confirm = ConfirmAct::ForgetWifi;
+                    app.screen = Screen::Confirm;
+                }
             }
         } else if (app.screen == Screen::Update) {
             // nothing to forget here
@@ -4928,6 +5149,7 @@ int main(int, char**)
         TouchEvent te;
         while (touch_poll(te)) deck_touch(te);
         volume_poll();
+        settings_flush(false);
 
         // Tell S99update the UI really got on screen: boot.scr only clears the
         // boot counter once this marker exists, so a rootfs whose session

@@ -1,0 +1,24 @@
+diff --git a/src/libretro/libretro.cpp b/src/libretro/libretro.cpp
+index 2d90603..08c2de9 100644
+--- a/src/libretro/libretro.cpp
++++ b/src/libretro/libretro.cpp
+@@ -120,7 +120,7 @@ void retro_get_system_info(struct retro_system_info *info)
+ #define GIT_VERSION ""
+ #endif
+    info->library_version  = MELONDS_VERSION GIT_VERSION;
+-   info->need_fullpath    = false;
++   info->need_fullpath    = true;
+    info->valid_extensions = "nds|ids|dsi";
+ }
+ 
+@@ -236,8 +236,8 @@ void retro_set_environment(retro_environment_t cb)
+    static const struct retro_system_content_info_override content_overrides[] = {
+       {
+          "nds|dsi|gba",
+-         false,
+-         true
++         true,
++         false
+       },
+       { NULL, false, false}
+    };

@@ -105,6 +105,10 @@ enum TKey {
     // touch hints for wizard steps and the deck keyboard
     T_TOUCH_LANG, T_TOUCH_NAME, T_TOUCH_COVER, T_KB_DECK_HINT, T_TOUCH_TZ,
     T_DELETE_SAVE, T_BT_OFF_HELP,
+    T_SET_HINT_GRID, T_SET_HINT_ADJUST,
+    T_WIFI_SCAN_FAIL, T_WIFI_SUPPLICANT_FAIL,
+    T_CONFIRM_FORGET,
+    T_EMU_CRASH_TITLE, T_EMU_CRASH_BODY,
     T_COUNT
 };
 

@@ -3,6 +3,15 @@
 # module itself is loaded by S25wireless; this only runs wpa_supplicant so the
 # UI opens with the link already up when a known network is in range. With no
 # saved network the supplicant stays down and Settings > WiFi drives it.
+LOG=/userdata/system/wifi-boot.log
+log() {
+    mountpoint -q /userdata 2>/dev/null || return 0
+    printf '[%s +%ss] [S30wifi] %s\n' \
+        "$(date '+%F %T' 2>/dev/null)" \
+        "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
+    return 0
+}
+
 case "$1" in
     start)
         /usr/bin/gameos-bootstage 85 network
@@ -13,7 +22,8 @@ case "$1" in
             i=$((i + 1))
         done
         mountpoint -q /userdata || exit 0
-        [ -s /userdata/system/wifi/wpa_supplicant.conf ] || exit 0
+        [ -s /userdata/system/wifi/wpa_supplicant.conf ] || { log "no saved networks; staying down"; exit 0; }
+        log "saved networks present; starting gameos-wifi up"
         gameos-wifi up >/dev/null 2>&1 &
         ;;
     stop)

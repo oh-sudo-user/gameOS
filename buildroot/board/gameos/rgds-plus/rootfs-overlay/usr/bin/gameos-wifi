@@ -30,18 +30,70 @@ IFACE=${WIFI_IFACE:-}
 WPA="wpa_cli -p $SOCK"
 ACTION=/etc/gameos/wpa_action.sh
 CA=/etc/ssl/certs/ca-certificates.crt
+LOG=/userdata/system/wifi.log
+WPA_LOG=/userdata/system/wpa_supplicant.log
+WPS_ERR=/userdata/system/wpa_supplicant.err.log
 
 mkdir -p "$RUN"
+
+have_data() { mountpoint -q /userdata 2>/dev/null; }
+
+# stdout belongs to the caller (status/scan parsing), so diagnostics go to a
+# file on the card. The data partition is exFAT, so this is readable on a PC.
+log() {
+    have_data || return 0
+    printf '[%s +%ss] [gameos-wifi] %s\n' \
+        "$(date '+%F %T' 2>/dev/null)" \
+        "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
+    return 0
+}
+
+rotate() {  # $1 file, $2 max bytes
+    have_data || return 0
+    [ -f "$1" ] || return 0
+    sz=$(wc -c < "$1" 2>/dev/null || echo 0)
+    [ "$sz" -gt "$2" ] && mv -f "$1" "$1.1"
+    return 0
+}
+
+log_tail() {  # $1 file, $2 tag, $3 lines
+    [ -f "$1" ] || return 0
+    tail -n "$3" "$1" 2>/dev/null \
+        | while IFS= read -r l; do log "$2: $l"; done
+}
+
+rfkill_state() {
+    out=""
+    for r in /sys/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] || continue
+        out="$out ${r##*/}:$(cat "$r/type" 2>/dev/null),soft=$(cat "$r/soft" 2>/dev/null),hard=$(cat "$r/hard" 2>/dev/null);"
+    done
+    echo "${out:-none}"
+}
+
+iface_list() {
+    ls -d /sys/class/net/* 2>/dev/null | sed 's#.*/##' | tr '\n' ' '
+}
+
+# One snapshot per failure: module/rfkill/firmware state plus the kernel's
+# view of SDIO/firmware events. This is what tells us why a scan stayed empty
+# once the card is back in a PC.
+diag_snapshot() {
+    log "snapshot: uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)s ifaces=$(iface_list)"
+    log "snapshot: rfkill=$(rfkill_state)"
+    log "snapshot: modules=$(lsmod 2>/dev/null | awk '$1 ~ /^(rtw|cfg80211|mac80211|sdio)/ {printf "%s ", $1}')"
+    log "snapshot: firmware=$(ls -l /lib/firmware/rtw88/rtw8821c_fw.bin 2>&1 | tr '\n' ';')"
+    dmesg 2>/dev/null | grep -iE 'rtw|sdio|mmc|firmware|cfg80211|rfkill' | tail -n 40 \
+        | while IFS= read -r l; do log "dmesg: $l"; done
+}
 
 # one operation at a time; the UI runs these in the background
 case $1 in
 up|down|connect|disconnect|forget|scan|test) exec 9>"$RUN/wifi.lock"; flock 9 ;;
 esac
 
-log() { echo "[gameos-wifi] $*"; }
-
 iface() {
-    [ -n "$IFACE" ] && { echo "$IFACE"; return; }
+    [ -n "$IFACE" ] && [ -e "/sys/class/net/$IFACE" ] && { echo "$IFACE"; return; }
     for n in /sys/class/net/wlan*; do
         [ -e "$n" ] || continue
         IFACE=${n##*/}
@@ -49,6 +101,46 @@ iface() {
     done
     echo "$IFACE"
 }
+
+# rfkill soft-block is the usual reason the interface exists but scans return
+# nothing; there is no rfkill binary in the image, so write the sysfs node.
+rfkill_unblock() {
+    for r in /sys/class/rfkill/rfkill*; do
+        [ -e "$r/type" ] || continue
+        [ "$(cat "$r/type" 2>/dev/null)" = wlan ] || continue
+        [ -w "$r/soft" ] && echo 0 > "$r/soft" 2>/dev/null
+    done
+}
+
+# At cold boot S25wireless may still be loading the module when the UI starts.
+# Retry here so the first scan is not a permanent NOHW.
+ensure_hw() {
+    log "ensure_hw: begin iface=$(iface) rfkill=$(rfkill_state)"
+    if [ -z "$(iface)" ]; then
+        modprobe rtw88_8821cs 2>/dev/null
+        log "ensure_hw: modprobe rtw88_8821cs rc=$?"
+    fi
+    rfkill_unblock
+    i=0
+    while [ -z "$(iface)" ] && [ $i -lt 6 ]; do
+        sleep 1
+        rfkill_unblock
+        i=$((i + 1))
+    done
+    log "ensure_hw: end iface=$(iface) waited=${i}s rfkill=$(rfkill_state)"
+    if [ -z "$(iface)" ]; then
+        diag_snapshot
+        return 1
+    fi
+    return 0
+}
+
+case $1 in
+up|down|connect|disconnect|forget|scan|test)
+    rotate "$LOG" 2097152
+    log "op=$1 iface=$(iface) rfkill=$(rfkill_state)"
+    ;;
+esac
 
 wpa_ok() { command -v wpa_cli >/dev/null 2>&1; }
 
@@ -69,22 +161,55 @@ supplicant_running() {
 }
 
 start_supplicant() {
-    [ -f "$CONF" ] || return 0
-    supplicant_running && return 0
+    [ -f "$CONF" ] || regen_conf
+    supplicant_running && {
+        log "supplicant already running pid=$(supplicant_pid) state=$(state)"
+        return 0
+    }
     enc=$(iface)
-    [ -n "$enc" ] || return 1
+    [ -n "$enc" ] || { log "start_supplicant: no interface"; return 1; }
+    rfkill_unblock
     ip link set "$enc" up 2>/dev/null
     mkdir -p "$SOCK"
-    wpa_supplicant -B -D nl80211 -i "$enc" -c "$CONF" \
-        -P "/run/wpa_supplicant.$enc.pid" -a "$ACTION" >/dev/null 2>&1 || return 1
-    # give the control socket a moment
+    rotate "$WPA_LOG" 4194304
+    rotate "$WPS_ERR" 1048576
+    log "start_supplicant: launching on $enc rfkill=$(rfkill_state)"
+    wpa_supplicant -B -D nl80211 -i "$enc" -c "$CONF" -f "$WPA_LOG" \
+        -P "/run/wpa_supplicant.$enc.pid" >/dev/null 2>>"$WPS_ERR" || {
+        log "start_supplicant: wpa_supplicant failed to start on $enc"
+        log_tail "$WPS_ERR" "wps-err" 20
+        diag_snapshot
+        return 1
+    }
+    # -B reports success even when the daemon dies right after parsing the
+    # command line, so require a live pid instead of trusting the exit code.
     i=0
+    p=""
     while [ $i -lt 20 ]; do
-        [ "$(state)" = "" ] || return 0
+        p=$(supplicant_pid)
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; then
+        log "start_supplicant: no running process after launch"
+        log_tail "$WPS_ERR" "wps-err" 20
+        diag_snapshot
+        return 1
+    fi
+    log "start_supplicant: pid=$p"
+    # give the control socket a moment, then require an actual answer
+    i=0
+    while [ $i -lt 30 ]; do
+        st=$(state)
+        [ -n "$st" ] && { log "start_supplicant: ready state=$st"; return 0; }
         sleep 0.2
         i=$((i + 1))
     done
-    return 0
+    log "start_supplicant: did not answer on $enc"
+    log_tail "$WPA_LOG" "wpa" 30
+    diag_snapshot
+    return 1
 }
 
 stop_supplicant() {
@@ -155,22 +280,23 @@ lease() {
     [ -n "$enc" ] || return 0
     kill_lease
     udhcpc -i "$enc" -b -R -p "/run/udhcpc.$enc.pid" >/dev/null 2>&1
+    log "udhcpc: started iface=$enc pid=$(cat "/run/udhcpc.$enc.pid" 2>/dev/null) state=$(state)"
 }
 
 kill_lease() {
     enc=$(iface)
     [ -n "$enc" ] || return 0
     p=$(cat "/run/udhcpc.$enc.pid" 2>/dev/null)
-    [ -n "$p" ] && kill "$p" 2>/dev/null
+    [ -n "$p" ] && { kill "$p" 2>/dev/null; log "udhcpc: killed pid=$p"; }
     rm -f "/run/udhcpc.$enc.pid"
 }
 
 # --- operations ------------------------------------------------------------
 do_up() {
-    [ -n "$(iface)" ] || { echo "ERROR no-wifi-hardware"; return 1; }
+    ensure_hw || { echo "ERROR no-wifi-hardware"; return 1; }
     regen_conf
-    [ -s "$CONF" ] || return 0
-    start_supplicant || { echo "ERROR supplicant-failed"; return 1; }
+    [ -s "$CONF" ] || { log "up: no saved networks"; return 0; }
+    start_supplicant || { log "up: supplicant failed"; echo "ERROR supplicant-failed"; return 1; }
     # connect now if a saved network is in range; the action script leases
     i=0
     while [ $i -lt 15 ]; do
@@ -178,11 +304,14 @@ do_up() {
         sleep 1
         i=$((i + 1))
     done
+    log "up: finished state=$(state) ip=$(link_ip) waited=${i}s"
     echo OK
 }
 
 do_down() {
+    log "down: begin state=$(state) ip=$(link_ip)"
     stop_supplicant
+    log "down: finished iface=$(iface)"
     echo OK
 }
 
@@ -202,17 +331,29 @@ do_status() {
 }
 
 do_scan() {
+    ensure_hw || { echo "ERROR no-wifi-hardware"; return 1; }
     enc=$(iface)
-    [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
+    log "scan: begin iface=$enc state=$(state)"
     if [ "$(state)" = "" ]; then
         # first scan ever: no saved networks means no conf file yet, and
-        # start_supplicant refuses to run without one. Write the (empty)
-        # conf so the supplicant comes up and can actually scan.
-        [ -f "$CONF" ] || regen_conf
+        # start_supplicant writes the (empty) conf so the supplicant comes up
+        # and can actually scan.
         start_supplicant
-        [ "$(state)" = "" ] && { echo "ERROR supplicant-failed"; return 1; }
+        [ "$(state)" = "" ] && {
+            log "scan: supplicant failed"
+            diag_snapshot
+            echo "ERROR supplicant-failed"
+            return 1
+        }
     fi
-    w scan >/dev/null 2>&1
+    scans_ok=0
+    trig=0
+    r=$(w scan)
+    trig=1
+    case "$r" in
+    ''|FAIL*) log "scan: trigger#1 failed rc=$r" ;;
+    *) scans_ok=1; log "scan: trigger#1 ok" ;;
+    esac
     # wpa_cli scan returns at once, and scan_results answers with the header
     # line even while the BSS table is still empty, so "output changed" was
     # true after the first 0.5 s sample and the first-ever scan returned an
@@ -223,9 +364,28 @@ do_scan() {
     while [ $i -lt 24 ]; do
         sleep 0.5
         [ -n "$(w scan_results | sed -n '2p')" ] && break
-        [ $((i % 8)) -eq 7 ] && w scan >/dev/null 2>&1
+        if [ $((i % 8)) -eq 7 ]; then
+            r=$(w scan)
+            trig=$((trig + 1))
+            case "$r" in
+            ''|FAIL*) log "scan: trigger#$trig failed rc=$r" ;;
+            *) scans_ok=1; log "scan: trigger#$trig ok" ;;
+            esac
+        fi
         i=$((i + 1))
     done
+    bss=$(w scan_results | sed '1d' | grep -c . 2>/dev/null)
+    log "scan: done iface=$enc state=$(state) bss=$bss triggers=$trig scans_ok=$scans_ok waited=$((i / 2))s"
+    if [ -z "$(w scan_results | sed -n '2p')" ] && [ "$scans_ok" = 0 ]; then
+        log "scan: never triggered on $enc"
+        diag_snapshot
+        echo "ERROR scan-failed"
+        return 1
+    fi
+    if [ "$bss" = 0 ]; then
+        log "scan: zero BSS in range; dumping hardware state"
+        diag_snapshot
+    fi
     w scan_results | awk -F'\t' '
         NR == 1 { next }                       # header
         $5 == "" { next }                      # hidden SSID
@@ -248,14 +408,15 @@ read_psk_arg() { sed -n '2p' "$ARG" 2>/dev/null; }
 do_connect() {
     ssid=$(read_arg)
     psk=$(read_psk_arg)
-    [ -n "$ssid" ] || { echo "ERROR no-ssid"; return 1; }
+    [ -n "$ssid" ] || { log "connect: no SSID"; echo "ERROR no-ssid"; return 1; }
+    ensure_hw || { echo "ERROR no-wifi-hardware"; return 1; }
     enc=$(iface)
-    [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
 
     # an empty passphrase means "use the saved one" (reconnect from the list)
     if [ -z "$psk" ] && [ -n "$(saved_psk "$ssid")" ]; then
         psk=$(saved_psk "$ssid")
     fi
+    log "connect: ssid=\"$ssid\" psk=$( [ -n "$psk" ] && echo provided || echo none ) iface=$enc state=$(state)"
     save_net "$ssid" "$psk"
     regen_conf "$ssid"
 
@@ -263,18 +424,24 @@ do_connect() {
         cur=$(link_ssid)
         [ -n "$cur" ] && [ "$cur" != "$ssid" ] && w disconnect >/dev/null 2>&1
         w reconfigure >/dev/null 2>&1
+        log "connect: reconfigured supplicant pid=$(supplicant_pid)"
     else
-        start_supplicant || { echo "ERROR supplicant-failed"; return 1; }
+        start_supplicant || { log "connect: supplicant failed"; echo "ERROR supplicant-failed"; return 1; }
     fi
 
     i=0
+    last_st=""
     while [ $i -lt 25 ]; do
-        [ "$(state)" = COMPLETED ] && break
+        st=$(state)
+        [ "$st" != "$last_st" ] && { log "connect: state=$st t=${i}s"; last_st=$st; }
+        [ "$st" = COMPLETED ] && break
         sleep 1
         i=$((i + 1))
     done
     st=$(state)
+    log "connect: association finished state=$st t=${i}s ip=$(link_ip)"
     if [ "$st" != COMPLETED ]; then
+        diag_snapshot
         echo "ERROR association-failed ($st)"
         return 1
     fi
@@ -282,10 +449,16 @@ do_connect() {
     i=0
     while [ $i -lt 15 ]; do
         ip=$(link_ip)
-        [ -n "$ip" ] && { echo "OK $ip"; return 0; }
+        [ -n "$ip" ] && {
+            log "connect: ok ssid=\"$ssid\" ip=$ip waited=${i}s"
+            echo "OK $ip"
+            return 0
+        }
         sleep 1
         i=$((i + 1))
     done
+    log "connect: no DHCP lease state=$(state) iface=$enc"
+    diag_snapshot
     echo "ERROR no-dhcp-lease"
     return 1
 }
@@ -307,6 +480,7 @@ do_test() {
     [ -n "$enc" ] || { echo "ERROR no-wifi-hardware"; return 1; }
 
     if [ "$(state)" != COMPLETED ]; then
+        log "test: link=fail state=$(state) iface=$enc"
         echo "link=fail"
         echo "route=wait"
         echo "dns=wait"
@@ -314,13 +488,16 @@ do_test() {
         echo "ERROR link"
         return 1
     fi
+    log "test: link=ok ssid=\"$(link_ssid)\" ip=$(link_ip) iface=$enc"
     echo "link=ok"
     echo "ssid=$(link_ssid)"
     echo "ip=$(link_ip)"
 
     if ip -4 route 2>/dev/null | grep -q '^default'; then
+        log "test: route=ok"
         echo "route=ok"
     else
+        log "test: route=fail"
         echo "route=fail"
         echo "dns=wait"
         echo "net=wait"
@@ -334,6 +511,7 @@ do_test() {
              http://www.msftconnecttest.com/connecttest.txt \
              https://github.com; do
         probe "$u"
+        log "test: probe $u http=$P_CODE curl_rc=$P_RC"
         [ $P_RC -ne 6 ] && resolved=1
         case $u in
         *generate_204) want=204 ;;
@@ -344,30 +522,36 @@ do_test() {
 
     if [ $resolved -eq 1 ]; then echo "dns=ok"; else echo "dns=fail"; fi
     if [ $reached -eq 1 ]; then
+        log "test: net=ok resolved=$resolved"
         echo "net=ok"
         echo OK
         return 0
     fi
+    log "test: net=fail resolved=$resolved"
     echo "net=fail"
     if [ $resolved -eq 1 ]; then echo "ERROR net"; else echo "ERROR dns"; fi
     return 1
 }
 
 do_disconnect() {
+    log "disconnect: begin state=$(state) ssid=\"$(link_ssid)\""
     w disconnect >/dev/null 2>&1
     kill_lease
+    log "disconnect: done state=$(state)"
     echo OK
 }
 
 do_forget() {
     ssid=$(read_arg)
-    [ -n "$ssid" ] || { echo "ERROR no-ssid"; return 1; }
+    [ -n "$ssid" ] || { log "forget: no SSID"; echo "ERROR no-ssid"; return 1; }
+    log "forget: ssid=\"$ssid\" connected=$(link_ssid)"
     drop_net "$ssid"
     regen_conf
     if supplicant_running; then
         w reconfigure >/dev/null 2>&1
         [ "$(link_ssid)" = "$ssid" ] && w disconnect >/dev/null 2>&1
     fi
+    log "forget: done"
     echo OK
 }
 

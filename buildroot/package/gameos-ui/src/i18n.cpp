@@ -117,6 +117,11 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "轻触开始下载 · 或点继续跳过", "轻触输入 · 点确定完成",
         "轻触城市即时生效 · 继续保留当前",
         "删除存档", "打开开关后即可搜索并连接蓝牙设备",
+        "方向键选择 · Ⓐ 调整/打开 · Ⓑ 返回",
+        "◀ ▶ 调节 · Ⓐ 完成 · Ⓑ 返回",
+        "扫描失败，请点「扫描」重试", "Wi-Fi 服务启动失败，请重试",
+        "确认忘记该连接？", "游戏启动失败",
+        "模拟器异常退出。日志：TF 卡 system/retroarch.log\n最后一行：%s",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -223,6 +228,11 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "輕觸開始下載 · 或點繼續跳過", "輕觸輸入 · 點確定完成",
         "輕觸城市即時生效 · 繼續保留目前",
         "刪除存檔", "開啟開關後即可搜尋並連接藍牙裝置",
+        "方向鍵選擇 · Ⓐ 調整/開啟 · Ⓑ 返回",
+        "◀ ▶ 調整 · Ⓐ 完成 · Ⓑ 返回",
+        "掃描失敗，請點「掃描」重試", "Wi-Fi 服務啟動失敗，請重試",
+        "確認忘記此連線？", "遊戲啟動失敗",
+        "模擬器異常退出。日誌：TF 卡 system/retroarch.log\n最後一行：%s",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -340,6 +350,11 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "タップでダウンロード · 次へでスキップ", "タップで入力 · 決定で完了",
         "タップで即時適用 · 次へで現在のまま",
         "セーブを削除", "スイッチをオンにすると Bluetooth 機器を検索・接続できます",
+        "方向キーで選択 · Ⓐ 調整/開く · Ⓑ 戻る",
+        "◀ ▶ 調整 · Ⓐ 完了 · Ⓑ 戻る",
+        "スキャン失敗 · スキャンで再試行", "Wi-Fi サービスの起動に失敗しました",
+        "この接続を解除しますか？", "ゲームを起動できません",
+        "エミュレータが異常終了しました。ログ: TFカード system/retroarch.log\n最後の行: %s",
     },
     // ------------------------------------------------------------------ en
     {
@@ -462,6 +477,11 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Tap keys · tap OK when done",
         "Tap a city to apply · Continue keeps current",
         "Delete save", "Turn the switch on to find and connect Bluetooth devices",
+        "D-pad select · Ⓐ adjust/open · Ⓑ back",
+        "◀ ▶ adjust · Ⓐ done · Ⓑ back",
+        "Scan failed — tap Scan to retry", "Wi-Fi service failed to start — try again",
+        "Forget this connection?", "Game failed to start",
+        "The emulator exited unexpectedly. Log: system/retroarch.log on the TF card.\nLast line: %s",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -588,6 +608,11 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Коснитесь клавиш · OK для завершения",
         "Коснитесь города для применения · Далее — оставить текущий",
         "Удалить сейв", "Включите переключатель, чтобы искать и подключать Bluetooth-устройства",
+        "Крестовина — выбор · Ⓐ настроить/открыть · Ⓑ назад",
+        "◀ ▶ — настроить · Ⓐ готово · Ⓑ назад",
+        "Ошибка поиска — нажмите «Поиск»", "Служба Wi-Fi не запустилась — повторите",
+        "Забыть это подключение?", "Не удалось запустить игру",
+        "Эмулятор аварийно завершился. Журнал: system/retroarch.log на карте TF.\nПоследняя строка: %s",
     },
     // ------------------------------------------------------------------ es
     {
@@ -718,6 +743,11 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Toca las teclas · OK para terminar",
         "Toca una ciudad para aplicar · Continuar mantiene la actual",
         "Eliminar partida", "Activa el interruptor para buscar y conectar dispositivos Bluetooth",
+        "Cruceta elegir · Ⓐ ajustar/abrir · Ⓑ volver",
+        "◀ ▶ ajustar · Ⓐ listo · Ⓑ volver",
+        "Error de búsqueda — toca Escanear", "El servicio Wi-Fi no arrancó — reintenta",
+        "¿Olvidar esta conexión?", "No se pudo iniciar el juego",
+        "El emulador terminó de forma inesperada. Registro: system/retroarch.log en la tarjeta TF.\nÚltima línea: %s",
     },
 };
 

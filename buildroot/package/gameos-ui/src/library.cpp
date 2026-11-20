@@ -9,11 +9,15 @@
 #include <cstring>
 #include <strings.h>
 #include <ctime>
+#include <condition_variable>
 #include <dirent.h>
+#include <fcntl.h>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 namespace gameos {
@@ -330,7 +334,7 @@ void save_settings(const Settings& s)
     write_file(SETTINGS_PATH, ss.str());
 }
 
-void apply_brightness(int pct)
+static void apply_brightness_now(int pct)
 {
     pct = std::clamp(pct, 5, 100);
     DIR* d = opendir("/sys/class/backlight");
@@ -342,15 +346,20 @@ void apply_brightness(int pct)
         std::string maxs = read_file(base + "/max_brightness");
         int max = maxs.empty() ? 255 : atoi(maxs.c_str());
         if (max <= 0) max = 255;
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "echo %d > '%s/brightness' 2>/dev/null",
-                 max * pct / 100, base.c_str());
-        if (system(cmd) != 0) { /* ignore */ }
+        int fd = open((base + "/brightness").c_str(), O_WRONLY);
+        if (fd < 0) continue;
+        char b[16];
+        int n = snprintf(b, sizeof(b), "%d\n", max * pct / 100);
+        if (write(fd, b, (size_t)n) < 0) { /* ignore */ }
+        close(fd);
     }
     closedir(d);
 }
 
-void apply_volume(int pct)
+// Speaker amps expose "Left PCM"/"Right PCM" as attenuators: raw 0 is the
+// loudest setting, so the UI percentage has to be inverted for exactly those
+// two controls. Every other control is a normal 0..100 gain.
+static void apply_volume_now(int pct)
 {
     pct = std::clamp(pct, 0, 100);
     // gameos-volume owns the mixer map (card order swaps, the amps expose
@@ -361,14 +370,76 @@ void apply_volume(int pct)
     snprintf(cmd, sizeof(cmd), "gameos-volume set %d >/dev/null 2>&1", pct);
     if (system(cmd) == 0) return;
 
+    int raw = 100 - pct;   // Left/Right PCM are attenuation controls
     char fb[640];
     snprintf(fb, sizeof(fb),
              "amixer -c 0 sset Master %d%% >/dev/null 2>&1 || amixer -c 0 sset PCM %d%% >/dev/null 2>&1 || "
              "{ amixer -c 0 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 0 sset 'Right PCM' %d%% >/dev/null 2>&1; }; "
              "amixer -c 1 sset Master %d%% >/dev/null 2>&1 || amixer -c 1 sset PCM %d%% >/dev/null 2>&1 || "
              "{ amixer -c 1 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 1 sset 'Right PCM' %d%% >/dev/null 2>&1; }",
-             pct, pct, pct, pct, pct, pct, pct, pct);
+             pct, pct, raw, raw, pct, pct, raw, raw);
     if (system(fb) != 0) { /* ignore */ }
+}
+
+// Both setters spawn helper processes (amixer walks every card looking for
+// playback controls). Doing that inline on the render thread made the UI and
+// the top screen visibly stutter while a slider was dragged. A single
+// long-lived worker coalesces the requests: only the newest level of each
+// control is applied, off the render thread.
+namespace {
+struct HwWorker {
+    std::mutex mu;
+    std::condition_variable cv;
+    int bri = -1, vol = -1;
+    bool bri_dirty = false, vol_dirty = false;
+    bool started = false;
+
+    void run()
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        for (;;) {
+            cv.wait(lk, [this] { return bri_dirty || vol_dirty; });
+            int b = bri_dirty ? bri : -1;
+            int v = vol_dirty ? vol : -1;
+            bri_dirty = vol_dirty = false;
+            lk.unlock();
+            if (b >= 0) apply_brightness_now(b);
+            if (v >= 0) apply_volume_now(v);
+            lk.lock();
+        }
+    }
+};
+
+HwWorker& hw()
+{
+    // intentionally leaked: a detached thread must never outlive its
+    // mutex/condition_variable during static destruction at exit
+    static HwWorker* w = new HwWorker();
+    return *w;
+}
+
+void hw_push(int bri, int vol)
+{
+    HwWorker& w = hw();
+    std::lock_guard<std::mutex> lk(w.mu);
+    if (bri >= 0) { w.bri = bri; w.bri_dirty = true; }
+    if (vol >= 0) { w.vol = vol; w.vol_dirty = true; }
+    if (!w.started) {
+        w.started = true;
+        std::thread([] { hw().run(); }).detach();
+    }
+    w.cv.notify_one();
+}
+} // namespace
+
+void apply_brightness(int pct)
+{
+    hw_push(std::clamp(pct, 10, 100), -1);
+}
+
+void apply_volume(int pct)
+{
+    hw_push(-1, std::clamp(pct, 0, 100));
 }
 
 // ---------------------------------------------------------------------------

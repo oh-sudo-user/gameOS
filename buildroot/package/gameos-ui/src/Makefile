@@ -2,8 +2,8 @@ CXX ?= g++
 PKG_CONFIG ?= pkg-config
 PKGS = sdl2 SDL2_ttf SDL2_image libdrm
 
-CXXFLAGS += -O2 -std=c++17 -Wall -Wextra $(shell $(PKG_CONFIG) --cflags $(PKGS))
-LIBS = $(shell $(PKG_CONFIG) --libs $(PKGS))
+CXXFLAGS += -O2 -std=c++17 -Wall -Wextra -pthread $(shell $(PKG_CONFIG) --cflags $(PKGS))
+LIBS = $(shell $(PKG_CONFIG) --libs $(PKGS)) -pthread
 
 SRCS = main.cpp library.cpp launch.cpp activity.cpp i18n.cpp sound.cpp displays.cpp ui.cpp touch.cpp
 
