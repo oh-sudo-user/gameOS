@@ -15,14 +15,20 @@ VENDOR_PIN=ad9e48d1492f272db9c742d0cfa6d81769ceee22   # upstream RK3566 hardware
 RKBIN_PIN=3e288fe814e059dd06833495f845cab04ac20a5c     # rockchip-linux/rkbin (DDR v1.26 / BL31 v1.46)
 KERNEL_VERSION=7.2.11                                  # mainline, matches the vendored RK3566 patch set
 
-NOTO_URL="https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
-ORBITRON_URL="https://github.com/google/fonts/raw/main/ofl/orbitron/Orbitron%5Bwght%5D.ttf"
-# Fonts are committed to git, but a fresh checkout may still trigger the
-# download path. The upstream URLs point at moving branches, so the SHA-256
-# below is the actual pin: a changed/compromised font fails the build instead
-# of silently shipping. Values were taken from the committed files.
+# Fonts are pinned to exact upstream commits, not moving branches, and the
+# SHA-256 below is checked on every run (cached or freshly downloaded): a
+# changed/compromised font fails the build instead of silently shipping.
+NOTO_PIN=f8d157532fbfaeda587e826d4cd5b21a49186f7c
+ORBITRON_PIN=06bfe0d62a98375cb09c942fa18e68bd32cff057
+NOTO_URL="https://raw.githubusercontent.com/notofonts/noto-cjk/$NOTO_PIN/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
+ORBITRON_URL="https://raw.githubusercontent.com/google/fonts/$ORBITRON_PIN/ofl/orbitron/Orbitron%5Bwght%5D.ttf"
 NOTO_SHA256=faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
 ORBITRON_SHA256=f42db2dd16e642258e35782916eceb1dcdbea06fb958d77ad71dc5963587e8fd
+
+# rkbin blobs are pinned by commit above AND by hash here: a swapped blob at
+# the same URL must fail the build, not just a missing file.
+RKBIN_DDR_SHA256=acb4e054298f0f0c8471dd3d45de07a1c77b67e687ec6e77ede365a087f1d95a
+RKBIN_BL31_SHA256=c81ac7e8e1fd727cf7f0db62a9aaea760bde2b270e34d98eb264a264b86df749
 
 echo "==> Fetching vendored kernel support files @ ${VENDOR_PIN:0:12}"
 TMP="$(mktemp -d)"
@@ -98,8 +104,15 @@ for f in rk3568_ddr_1560MHz_v1.26.bin rk3568_bl31_v1.46.elf; do
       "https://raw.githubusercontent.com/rockchip-linux/rkbin/$RKBIN_PIN/bin/rk35/$f"
   fi
   test -s "$ROOT/vendor/rkbin/bin/rk35/$f" || { echo "ERROR: missing $f in rkbin"; exit 1; }
+  case "$f" in
+    rk3568_ddr_1560MHz_v1.26.bin) want="$RKBIN_DDR_SHA256" ;;
+    rk3568_bl31_v1.46.elf)        want="$RKBIN_BL31_SHA256" ;;
+    *) echo "ERROR: no pinned hash for $f"; exit 1 ;;
+  esac
+  got=$(sha256sum "$ROOT/vendor/rkbin/bin/rk35/$f" | cut -d' ' -f1)
+  [ "$got" = "$want" ] || { echo "ERROR: sha256 mismatch for $f (got $got want $want)"; exit 1; }
 done
-echo "    DDR init + BL31 verified"
+echo "    DDR init + BL31 verified (pinned hashes)"
 
 echo "==> Fetching fonts (Noto Sans SC for CJK, Orbitron for display)"
 FONTS="$BOARD/rootfs-overlay/usr/share/gameos/fonts"
