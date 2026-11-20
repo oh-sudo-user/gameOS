@@ -236,8 +236,7 @@ done
 # On later boots the UI restores the user's saved volume (apply_volume at
 # startup); forcing 70% here every boot would discard the user's setting.
 if [ "$FIRSTBOOT" = 1 ]; then
-  amixer -c 0 sset 'Master' 70% >/dev/null 2>&1 || amixer -c 0 sset 'PCM' 70% >/dev/null 2>&1 || true
-  amixer -c 1 sset 'Master' 70% >/dev/null 2>&1 || amixer -c 1 sset 'PCM' 70% >/dev/null 2>&1 || true
+  gameos-volume set 70 >/dev/null 2>&1 || true
 fi
 
 log "done"

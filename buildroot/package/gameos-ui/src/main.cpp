@@ -13,6 +13,8 @@
 #include "gameos.hpp"
 #include "i18n.hpp"
 #include "sound.hpp"
+#include "touch.hpp"
+#include "ui.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -43,21 +45,32 @@ constexpr int CAR_SETTINGS = 7;
 
 // Mutable palette: apply_theme() swaps the whole set (light themes need
 // dark text and light panels), so every draw call stays theme-correct.
-SDL_Color C_TEXT   = { 232, 236, 247, 255 };
-SDL_Color C_DIM    = { 138, 147, 178, 255 };
-SDL_Color C_ACCENT = {  53, 208, 186, 255 };
-const SDL_Color C_AMBER  = { 255, 180,  84, 255 };
-SDL_Color C_PANEL  = {  20,  27,  51, 235 };
-SDL_Color C_BG     = {  11,  16,  32, 255 };
-SDL_Color C_TRACK  = {  28,  38,  58, 255 };
-const SDL_Color C_RED    = { 255,  99,  99, 255 };
-const SDL_Color C_GREEN  = { 105, 220, 140, 255 };
-int g_tint_top = 14, g_tint_bot = 26;
-SDL_Color g_accent = C_ACCENT;
+// The definitions live in ui.cpp; this file reads them through ui.hpp.
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
                     Activity, Quick, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update };
+
+// Every tappable region on the bottom deck. `a` (and `b`) carry the row /
+// column / index the handler needs, so one id can serve a whole list.
+enum HitId {
+    HIT_NONE = 0,
+    HIT_BACK, HIT_HOME, HIT_FAV_FILTER, HIT_PLAY, HIT_FAV, HIT_REFRESH,
+    HIT_SYS,              // a = console index
+    HIT_HUB,              // a = 0 activity, 1 quick, 2 settings
+    HIT_RECENT,
+    HIT_LIST_ROWS, HIT_LIST_ROW,        // row: a = index
+    HIT_SET_TILE, HIT_SET_SLIDER,       // tile a = 0..11; slider a = 0 bright, 1 volume
+    HIT_WIFI_NET, HIT_WIFI_SCAN, HIT_WIFI_TEST,
+    HIT_BT_TOGGLE, HIT_BT_DEV, HIT_BT_SCAN,
+    HIT_SAVE_ROW, HIT_SAVE_DEL,
+    HIT_UPD_CHECK, HIT_UPD_APPLY, HIT_UPD_REBOOT,
+    HIT_ACT_TAB, HIT_ACT_ROWS, HIT_ACT_ROW,
+    HIT_QUICK_TAB, HIT_QUICK_ROWS, HIT_QUICK_ROW,
+    HIT_SETUP_OPT, HIT_SETUP_NEXT, HIT_SETUP_SKIP, HIT_SETUP_ACTION,
+    HIT_KB_KEY,
+    HIT_DLG_OK, HIT_DLG_CANCEL
+};
 
 struct BtDev {
     std::string mac, name, kind;
@@ -94,14 +107,21 @@ struct App {
     TTF_Font* f_body  = nullptr;   // Noto 30
     TTF_Font* f_small = nullptr;   // Noto 22
     TTF_Font* f_clock = nullptr;   // Orbitron 96
+    TTF_Font* f_hero  = nullptr;   // Noto 50
 
     SDL_Texture* bg = nullptr;
     SDL_Texture* ambient = nullptr;
     SDL_Texture* logo = nullptr;
+    SDL_Texture* logo_bot = nullptr;
     SDL_Texture* icons[5] = {};
     SDL_Texture* icon_settings = nullptr;
     SDL_Texture* icon_activity = nullptr;
     SDL_Texture* icon_quick = nullptr;
+    // the deck has its own renderer; textures cannot cross renderers
+    SDL_Texture* icons_bot[5] = {};
+    SDL_Texture* icon_settings_bot = nullptr;
+    SDL_Texture* icon_activity_bot = nullptr;
+    SDL_Texture* icon_quick_bot = nullptr;
 
     SDL_GameController* pad = nullptr;
 
@@ -228,6 +248,27 @@ struct App {
     float act_sel_f = 0, act_scroll_f = 0;
     float set_sel_f = 0;
     float act_tab_f = 0, quick_tab_f = 0;
+
+    // bottom-deck touch state
+    int t_id = HIT_NONE;           // region held right now
+    int t_a = 0, t_b = 0;
+    int t_x0 = 0, t_y0 = 0, t_ly = 0;
+    bool t_moved = false;
+    float t_acc = 0;
+    Uint32 t_at = 0;
+    bool slider_drag = false;
+    int slider_next_apply = 0;
+    Uint32 slider_at = 0;
+
+    // recent game card (resolved newest session, refreshed off the frame path)
+    QuickEntry recent;
+    bool recent_ok = false;
+    Uint32 recent_at = 0;
+
+    // volume feedback
+    int vol_osd = -1;
+    Uint32 vol_osd_at = 0;
+    Uint32 vol_poll_at = 0;
 };
 
 App app;
@@ -243,12 +284,6 @@ float damp(float cur, float target, float rate = 14.0f)
     return fabsf(target - v) < 0.001f ? target : v;
 }
 
-float ease_out(float p)
-{
-    float q = 1.0f - p;
-    return 1.0f - q * q * q;
-}
-
 // Screen transitions: every frame is rendered into one of two scene textures;
 // on a screen change the new scene fades/slides over the previous one instead
 // of hard-cutting. Dialogs pop in with a slight scale.
@@ -257,6 +292,7 @@ int g_scene_cur = 0;
 Screen g_last_screen = Screen::Home;
 int g_last_setup_step = -1;
 Uint32 g_trans_start = 0;
+extern SDL_Texture* g_deck_tex[2];   // defined with the bottom deck
 
 // ---------------------------------------------------------------------------
 // per-console game list cache
@@ -285,219 +321,8 @@ static void invalidate_games(int idx)
 }
 
 // ---------------------------------------------------------------------------
-// drawing helpers
+// drawing helpers (base shapes, text and formatting live in ui.cpp)
 // ---------------------------------------------------------------------------
-void fill_rect(SDL_Renderer* r, int x, int y, int w, int h, SDL_Color c)
-{
-    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    SDL_Rect rc = { x, y, w, h };
-    SDL_RenderFillRect(r, &rc);
-}
-
-void draw_tex(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha = 255)
-{
-    if (!t) return;
-    SDL_SetTextureAlphaMod(t, alpha);
-    SDL_RenderCopy(r, t, nullptr, &dst);
-}
-
-enum class Align { Left, Center, Right };
-
-// text() runs many times per frame (clock, titles, labels) with mostly-static
-// strings. Re-rendering the TTF surface and creating/destroying a texture on
-// every call is costly on the Cortex-A55. Cache the rendered texture keyed by
-// (renderer, font, color, string). Textures belong to a renderer, so the cache
-// MUST be cleared before renderers are destroyed — see shutdown_gfx(). When
-// full, evict the least recently used half: wiping everything would re-render
-// every visible string in a single frame, which reads as a hitch (clock and
-// battery strings churn, and switching language adds a whole second set).
-struct TextKey {
-    SDL_Renderer* r;
-    TTF_Font* f;
-    SDL_Color c;
-    std::string s;
-    bool operator<(const TextKey& o) const {
-        if (r != o.r) return r < o.r;
-        if (f != o.f) return f < o.f;
-        if (c.r != o.c.r) return c.r < o.c.r;
-        if (c.g != o.c.g) return c.g < o.c.g;
-        if (c.b != o.c.b) return c.b < o.c.b;
-        if (c.a != o.c.a) return c.a < o.c.a;
-        return s < o.s;
-    }
-};
-struct CachedText {
-    SDL_Texture* t;
-    Uint32 used;      // g_text_tick at the last draw, for least-recent eviction
-};
-std::map<TextKey, CachedText> g_text_cache;
-Uint32 g_text_tick = 0;
-
-void clear_text_cache()
-{
-    for (auto& kv : g_text_cache) SDL_DestroyTexture(kv.second.t);
-    g_text_cache.clear();
-}
-
-void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
-          int x, int y, SDL_Color c, Align align = Align::Left)
-{
-    if (!f || s.empty()) return;
-    TextKey key{ r, f, c, s };
-    SDL_Texture* t;
-    int tw, th;
-    auto it = g_text_cache.find(key);
-    if (it != g_text_cache.end()) {
-        t = it->second.t;
-        it->second.used = ++g_text_tick;
-        SDL_QueryTexture(t, nullptr, nullptr, &tw, &th);
-    } else {
-        SDL_Surface* surf = TTF_RenderUTF8_Blended(f, s.c_str(), c);
-        if (!surf) return;
-        t = SDL_CreateTextureFromSurface(r, surf);
-        tw = surf->w; th = surf->h;
-        SDL_FreeSurface(surf);
-        if (!t) return;
-        if (g_text_cache.size() >= 128) {
-            std::vector<std::pair<Uint32, const TextKey*>> order;
-            order.reserve(g_text_cache.size());
-            for (auto& kv : g_text_cache) order.push_back({ kv.second.used, &kv.first });
-            std::sort(order.begin(), order.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
-            size_t drop = std::max<size_t>(8, order.size() / 4);
-            for (size_t i = 0; i < drop; i++) {
-                auto hit = g_text_cache.find(*order[i].second);
-                if (hit != g_text_cache.end()) {
-                    SDL_DestroyTexture(hit->second.t);
-                    g_text_cache.erase(hit);
-                }
-            }
-        }
-        g_text_cache.emplace(key, CachedText{ t, ++g_text_tick });
-    }
-    int dx = x;
-    if (align == Align::Center) dx = x - tw / 2;
-    else if (align == Align::Right) dx = x - tw;
-    SDL_Rect dst = { dx, y, tw, th };
-    SDL_RenderCopy(r, t, nullptr, &dst);
-}
-
-int text_width(TTF_Font* f, const std::string& s)
-{
-    int w = 0, h = 0;
-    if (f) TTF_SizeUTF8(f, s.c_str(), &w, &h);
-    return w;
-}
-
-// word-wrap CJK/latin mixed text to a pixel width
-std::vector<std::string> wrap(TTF_Font* f, const std::string& s, int maxw)
-{
-    std::vector<std::string> lines;
-    std::string cur;
-    size_t i = 0, sp = std::string::npos;   // last space in cur, for word breaks
-    while (i < s.size()) {
-        if (s[i] == '\n') {
-            lines.push_back(cur); cur.clear(); sp = std::string::npos; i++; continue;
-        }
-        // take one UTF-8 codepoint
-        size_t len = 1;
-        unsigned char ch = (unsigned char)s[i];
-        if (ch >= 0xF0) len = 4; else if (ch >= 0xE0) len = 3;
-        else if (ch >= 0xC0) len = 2;
-        std::string piece = s.substr(i, len);
-        if (text_width(f, cur + piece) > maxw && !cur.empty()) {
-            // Latin prose breaks at the last word boundary; CJK and overlong
-            // single words fall back to a codepoint cut
-            if (sp != std::string::npos && piece != " ") {
-                lines.push_back(cur.substr(0, sp));
-                cur = cur.substr(sp + 1);
-            } else {
-                lines.push_back(cur);
-                cur.clear();
-            }
-            sp = cur.rfind(' ');
-            while (text_width(f, cur + piece) > maxw && !cur.empty()) {
-                lines.push_back(cur);
-                cur.clear();
-                sp = std::string::npos;
-            }
-            if (piece == " " && cur.empty()) { i += len; continue; }
-        }
-        if (piece == " ") sp = cur.size();
-        cur += piece;
-        i += len;
-    }
-    if (!cur.empty()) lines.push_back(cur);
-    return lines;
-}
-
-// printf-style format into a std::string: a fixed char buffer would cut long
-// external messages mid-UTF8-codepoint and render a tofu box at the cut.
-std::string fmt(const char* f, const char* arg)
-{
-    int n = snprintf(nullptr, 0, f, arg);
-    std::string s(n + 1, '\0');
-    snprintf(&s[0], n + 1, f, arg);
-    s.pop_back();
-    return s;
-}
-
-// Shorten a label to a pixel width, marking the cut with an ellipsis. Used for
-// game rows so a long title cannot run into the TF2 badge or the cover panel.
-std::string ellipsize(TTF_Font* f, const std::string& s, int maxw)
-{
-    if (maxw <= 0 || text_width(f, s) <= maxw) return s;
-    std::string out;
-    size_t i = 0;
-    while (i < s.size()) {
-        size_t len = 1;
-        unsigned char ch = (unsigned char)s[i];
-        if (ch >= 0xF0) len = 4; else if (ch >= 0xE0) len = 3;
-        else if (ch >= 0xC0) len = 2;
-        if (i + len > s.size()) break;
-        std::string piece = s.substr(i, len);
-        if (text_width(f, out + piece + "…") > maxw) break;
-        out += piece;
-        i += len;
-    }
-    return out + "…";
-}
-
-std::string two(int v)
-{
-    char b[8];
-    snprintf(b, sizeof(b), "%02d", v);
-    return b;
-}
-
-// Play time as a short localised string: "2 小时 5 分" / "12 分钟" / "40 秒".
-std::string fmt_duration(long long secs)
-{
-    if (secs < 0) secs = 0;
-    char b[96];
-    if (secs >= 3600)
-        snprintf(b, sizeof(b), tr(T_DUR_HM_FMT),
-                 (int)(secs / 3600), (int)((secs % 3600) / 60));
-    else if (secs >= 60)
-        snprintf(b, sizeof(b), tr(T_DUR_M_FMT), (int)(secs / 60));
-    else
-        snprintf(b, sizeof(b), tr(T_DUR_S_FMT), (int)secs);
-    return b;
-}
-
-// "11-19 14:32" — numeric on purpose, so it needs no translation and stays
-// the same width in every language.
-std::string fmt_when(long long epoch)
-{
-    time_t t = (time_t)epoch;
-    struct tm tmv;
-    localtime_r(&t, &tmv);
-    char b[32];
-    snprintf(b, sizeof(b), "%02d-%02d %02d:%02d",
-             tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
-    return b;
-}
 
 int console_index(const std::string& id)
 {
@@ -583,13 +408,20 @@ void reload_fonts()
 {
     clear_text_cache();   // cached textures reference the fonts closed below
     std::string noto = fonts_dir() + "/NotoSansSC-Regular.otf";
-    for (TTF_Font** f : { &app.f_title, &app.f_body, &app.f_small }) {
+    for (TTF_Font** f : { &app.f_title, &app.f_body, &app.f_small, &app.f_hero }) {
         if (*f) TTF_CloseFont(*f);
         *f = nullptr;
     }
     app.f_title = TTF_OpenFont(noto.c_str(), 40);
     app.f_body  = TTF_OpenFont(noto.c_str(), 30);
     app.f_small = TTF_OpenFont(noto.c_str(), 22);
+    app.f_hero  = TTF_OpenFont(noto.c_str(), 50);
+    g_ui.logo = app.f_logo;
+    g_ui.title = app.f_title;
+    g_ui.body = app.f_body;
+    g_ui.small = app.f_small;
+    g_ui.clock = app.f_clock;
+    g_ui.hero = app.f_hero;
 }
 
 void apply_theme(int idx)
@@ -614,19 +446,32 @@ void load_theme_assets()
     if (app.bg)      { SDL_DestroyTexture(app.bg);      app.bg = nullptr; }
     if (app.ambient) { SDL_DestroyTexture(app.ambient); app.ambient = nullptr; }
     if (app.logo)    { SDL_DestroyTexture(app.logo);    app.logo = nullptr; }
+    if (app.logo_bot) { SDL_DestroyTexture(app.logo_bot); app.logo_bot = nullptr; }
     for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
     if (app.icon_activity) { SDL_DestroyTexture(app.icon_activity); app.icon_activity = nullptr; }
     if (app.icon_quick)    { SDL_DestroyTexture(app.icon_quick);    app.icon_quick = nullptr; }
+    for (auto& t : app.icons_bot) { if (t) SDL_DestroyTexture(t); t = nullptr; }
+    if (app.icon_settings_bot) { SDL_DestroyTexture(app.icon_settings_bot); app.icon_settings_bot = nullptr; }
+    if (app.icon_activity_bot) { SDL_DestroyTexture(app.icon_activity_bot); app.icon_activity_bot = nullptr; }
+    if (app.icon_quick_bot)    { SDL_DestroyTexture(app.icon_quick_bot);    app.icon_quick_bot = nullptr; }
     app.bg      = load_tex(app.ren_top, dir + "/home_bg.png");
     app.ambient = app.ren_bot ? load_tex(app.ren_bot, dir + "/ambient_bg.png") : nullptr;
     app.logo    = load_tex(app.ren_top, dir + "/logo.png");
+    app.logo_bot = app.ren_bot ? load_tex(app.ren_bot, dir + "/logo.png") : nullptr;
     const char* ids[] = { "nds", "gba", "gbc", "ps1", "psp" };
     for (int i = 0; i < 5; i++)
         app.icons[i] = load_tex(app.ren_top, dir + "/console_" + ids[i] + ".png");
     app.icon_settings = load_tex(app.ren_top, dir + "/icon_settings.png");
     app.icon_activity = load_tex(app.ren_top, dir + "/icon_activity.png");
     app.icon_quick    = load_tex(app.ren_top, dir + "/icon_quick.png");
+    if (app.ren_bot) {
+        for (int i = 0; i < 5; i++)
+            app.icons_bot[i] = load_tex(app.ren_bot, dir + "/console_" + ids[i] + ".png");
+        app.icon_settings_bot = load_tex(app.ren_bot, dir + "/icon_settings.png");
+        app.icon_activity_bot = load_tex(app.ren_bot, dir + "/icon_activity.png");
+        app.icon_quick_bot    = load_tex(app.ren_bot, dir + "/icon_quick.png");
+    }
 }
 
 // The top panel is DSI-2 on both RG DS models; panel_displays() maps the DRM
@@ -657,6 +502,12 @@ bool init_gfx()
         fprintf(stderr, "gameos-ui: cannot open text fonts in %s\n", fonts.c_str());
         return false;
     }
+    g_ui.logo = app.f_logo;
+    g_ui.title = app.f_title;
+    g_ui.body = app.f_body;
+    g_ui.small = app.f_small;
+    g_ui.clock = app.f_clock;
+    g_ui.hero = app.f_hero;
 
     const Panels panels = panel_displays();
     const int dtop = panels.top;
@@ -701,6 +552,7 @@ bool init_gfx()
     load_theme_assets();
 
     open_controller();
+    touch_init();
     sound_init("/usr/share/gameos/sounds");   // silent fallback if audio fails
     return true;
 }
@@ -711,20 +563,28 @@ bool userdata_mounted();    // defined with the system helpers below
 void shutdown_gfx()
 {
     sound_quit();          // release ALSA before the emulator takes over
+    touch_shutdown();
     clear_text_cache();  // text textures belong to the renderers destroyed below
     clear_cover_cache();
     for (auto& t : g_scene_tex) { if (t) SDL_DestroyTexture(t); t = nullptr; }
+    for (auto& t : g_deck_tex) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.pad) { SDL_GameControllerClose(app.pad); app.pad = nullptr; }
     for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
     if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
     if (app.icon_activity) { SDL_DestroyTexture(app.icon_activity); app.icon_activity = nullptr; }
     if (app.icon_quick)    { SDL_DestroyTexture(app.icon_quick);    app.icon_quick = nullptr; }
+    for (auto& t : app.icons_bot) { if (t) SDL_DestroyTexture(t); t = nullptr; }
+    if (app.icon_settings_bot) { SDL_DestroyTexture(app.icon_settings_bot); app.icon_settings_bot = nullptr; }
+    if (app.icon_activity_bot) { SDL_DestroyTexture(app.icon_activity_bot); app.icon_activity_bot = nullptr; }
+    if (app.icon_quick_bot)    { SDL_DestroyTexture(app.icon_quick_bot);    app.icon_quick_bot = nullptr; }
     if (app.bg)      { SDL_DestroyTexture(app.bg); app.bg = nullptr; }
     if (app.ambient) { SDL_DestroyTexture(app.ambient); app.ambient = nullptr; }
     if (app.logo)    { SDL_DestroyTexture(app.logo); app.logo = nullptr; }
-    for (TTF_Font* f : { app.f_logo, app.f_title, app.f_body, app.f_small, app.f_clock })
+    if (app.logo_bot) { SDL_DestroyTexture(app.logo_bot); app.logo_bot = nullptr; }
+    for (TTF_Font* f : { app.f_logo, app.f_title, app.f_body, app.f_small, app.f_clock, app.f_hero })
         if (f) TTF_CloseFont(f);
-    app.f_logo = app.f_title = app.f_body = app.f_small = app.f_clock = nullptr;
+    app.f_logo = app.f_title = app.f_body = app.f_small = app.f_clock = app.f_hero = nullptr;
+    g_ui = UiFonts{};
     if (app.ren_bot) { SDL_DestroyRenderer(app.ren_bot); app.ren_bot = nullptr; }
     if (app.win_bot) { SDL_DestroyWindow(app.win_bot); app.win_bot = nullptr; }
     if (app.ren_top) { SDL_DestroyRenderer(app.ren_top); app.ren_top = nullptr; }
@@ -737,81 +597,128 @@ void shutdown_gfx()
 // ---------------------------------------------------------------------------
 // top-bar (logo, battery, clock)
 // ---------------------------------------------------------------------------
+std::string clock_hm()
+{
+    time_t now = time(nullptr);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    return two(tmv.tm_hour) + ":" + two(tmv.tm_min);
+}
+
 void draw_topbar(SDL_Renderer* r)
 {
     if (app.logo) {
         int tw = 0, th = 0;
         SDL_QueryTexture(app.logo, nullptr, nullptr, &tw, &th);
         if (th > 0) {
-            SDL_Rect dst = { 32, 16, tw * 44 / th, 44 };
-            draw_tex(r, app.logo, dst);
+            SDL_Rect dst = { 48, 26, tw * 38 / th, 38 };
+            draw_tex(r, app.logo, dst, 235);
         }
     } else {
-        text(r, app.f_logo, "gameOS", 32, 20, C_ACCENT);
+        text(r, app.f_logo, "gameOS", 48, 24, C_ACCENT);
     }
 
-    time_t now = time(nullptr);
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    std::string hhmm = two(tmv.tm_hour) + ":" + two(tmv.tm_min);
-    text(r, app.f_body, hhmm, W - 32, 34, C_DIM, Align::Right);
-
+    text(r, app.f_body, clock_hm(), W - 48, 28, C_TEXT, Align::Right);
     int pct = battery_percent();
     if (pct >= 0) {
-        int bx = W - 190, by = 36;
-        SDL_Color bc = pct > 40 ? C_GREEN : (pct > 15 ? C_AMBER : C_RED);
-        fill_rect(r, bx, by, 48, 22, { 0, 0, 0, 0 });
-        SDL_SetRenderDrawColor(r, C_DIM.r, C_DIM.g, C_DIM.b, 255);
-        SDL_Rect outline = { bx, by, 48, 22 };
-        SDL_RenderDrawRect(r, &outline);
-        SDL_Rect tip = { bx + 48, by + 6, 4, 10 };
-        SDL_RenderFillRect(r, &tip);
-        fill_rect(r, bx + 3, by + 3, 42 * pct / 100, 16, bc);
+        battery_icon(r, W - 172, 34, 48, 20, pct, battery_charging());
         char b[16];
         snprintf(b, sizeof(b), "%d%%", pct);
-        text(r, app.f_small, b, bx - 12, by - 1, C_DIM, Align::Right);
-        if (battery_charging())
-            text(r, app.f_small, "+", bx + 58, by - 1, C_GREEN);
+        text(r, app.f_small, b, W - 186, 28, C_DIM, Align::Right);
     }
 }
 
-void draw_hint(SDL_Renderer* r, const std::string& s)
+// A quiet dark gradient with two accent glows and the theme art, dimmed. All
+// screens share it so the palette feels like one system.
+void draw_background(SDL_Renderer* r)
 {
-    fill_rect(r, 0, H - 56, W, 56, C_PANEL);
-    text(r, app.f_small, ellipsize(app.f_small, s, W - 48),
-         W / 2, H - 42, C_DIM, Align::Center);
+    SDL_Color top = mix_color(C_BG, rgba(255, 255, 255, 255), 0.035f);
+    // The scene texture is a render target and RenderGeometry leaves its
+    // alpha fractional when blended; the panel composite then dims the whole
+    // screen. Lay an opaque base first so every scene stays solid.
+    fill_rect(r, 0, 0, W, H, C_BG);
+    grad_rect(r, { 0, 0, W, H }, top, C_BG);
+    if (app.bg) {
+        SDL_SetTextureAlphaMod(app.bg, 55);
+        SDL_Rect dst = { 0, 0, W, H };
+        SDL_RenderCopy(r, app.bg, nullptr, &dst);
+    }
+    glow(r, W - 120, 60, 420, g_accent, 12, 34);
+    glow(r, 90, H - 40, 340, g_accent, 10, 16);
+    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, (Uint8)std::min(g_tint_top, 8) });
 }
 
-// Bounded box-art cache (covers belong to a renderer; cleared on shutdown).
-std::map<std::string, SDL_Texture*> g_cover_cache;
+// ---------------------------------------------------------------------------
+// Shared stage for the secondary screens: one large icon, a hero line and two
+// lines of context. The deck below carries the controls, so the top panel
+// only has to answer "where am I and what is the state" at a glance.
+// ---------------------------------------------------------------------------
+void top_plate(SDL_Renderer* r, int cx, int cy, int radius)
+{
+    float breathe = 0.5f + 0.5f * sinf(now_sec() * 1.2f);
+    glow(r, cx, cy, radius + 60 + (int)(breathe * 14), g_accent, 14, 34);
+    circle(r, cx, cy, radius, rgba(255, 255, 255, 7));
+    ring(r, cx, cy, radius, 1, rgba(255, 255, 255, 22));
+}
+
+void top_hero(SDL_Renderer* r, const char* kicker, const std::string& name,
+              const std::string& status, SDL_Color sc,
+              const std::string& detail)
+{
+    if (kicker && *kicker)
+        text(r, app.f_small, kicker, W / 2, 452,
+             with_alpha(C_ACCENT, 225), Align::Center);
+    text(r, app.f_hero, ellipsize(app.f_hero, name, W - 160),
+         W / 2, 482, C_TEXT, Align::Center);
+    if (!status.empty())
+        text(r, app.f_title, ellipsize(app.f_title, status, W - 200),
+             W / 2, 566, sc, Align::Center);
+    if (!detail.empty()) {
+        auto lines = wrap(app.f_small, detail, W - 320);
+        int y = 622;
+        for (size_t i = 0; i < lines.size() && i < 2; i++) {
+            text(r, app.f_small, lines[i], W / 2, y, C_DIM, Align::Center);
+            y += 30;
+        }
+    }
+}
+
+void top_dots(SDL_Renderer* r, int count, int cur, int y)
+{
+    int total = 0;
+    for (int i = 0; i < count; i++) total += (i == cur ? 22 : 6) + (i ? 10 : 0);
+    int x = W / 2 - total / 2;
+    for (int i = 0; i < count; i++) {
+        bool on = i == cur;
+        rrect(r, { x, y, on ? 22 : 6, 6 }, 3,
+              on ? C_ACCENT : with_alpha(C_DIM, 95));
+        x += (on ? 22 : 6) + 10;
+    }
+}
+
+// Bounded box-art cache. A texture belongs to the renderer that created it,
+// so top and deck keep separate maps (the same path can be shown on both).
+std::map<SDL_Renderer*, std::map<std::string, SDL_Texture*>> g_cover_cache;
 void clear_cover_cache()
 {
-    for (auto& kv : g_cover_cache) SDL_DestroyTexture(kv.second);
+    for (auto& rr : g_cover_cache)
+        for (auto& kv : rr.second) SDL_DestroyTexture(kv.second);
     g_cover_cache.clear();
 }
 SDL_Texture* cover_tex(SDL_Renderer* r, const std::string& path)
 {
     if (path.empty()) return nullptr;
-    auto it = g_cover_cache.find(path);
-    if (it != g_cover_cache.end()) return it->second;
+    auto& cache = g_cover_cache[r];
+    auto it = cache.find(path);
+    if (it != cache.end()) return it->second;
     SDL_Texture* t = load_tex(r, path);
     if (!t) return nullptr;
-    if (g_cover_cache.size() >= 24) clear_cover_cache();
-    g_cover_cache.emplace(path, t);
-    return t;
-}
-
-void draw_background(SDL_Renderer* r)
-{
-    if (app.bg) {
-        SDL_Rect dst = { 0, 0, W, H };
-        draw_tex(r, app.bg, dst);
-    } else {
-        fill_rect(r, 0, 0, W, H, C_BG);
-        fill_rect(r, 0, 0, W, 6, g_accent);
+    if (cache.size() >= 24) {
+        for (auto& kv : cache) SDL_DestroyTexture(kv.second);
+        cache.clear();
     }
-    // subtle theme tint over the top panel
-    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, (Uint8)g_tint_top });
+    cache.emplace(path, t);
+    return t;
 }
 
 // ---------------------------------------------------------------------------
@@ -823,18 +730,30 @@ void draw_home(SDL_Renderer* r)
     draw_topbar(r);
 
     const auto& cons = consoles();
-    int total = CAR_N;
+    const int total = CAR_N;
 
-    app.car_f = damp(app.car_f, (float)app.carousel, 12.0f);
+    app.car_f = damp(app.car_f, (float)app.carousel, 11.0f);
+
+    // A slow halo and a frosted plate give the focused console its weight.
+    float breathe = 0.5f + 0.5f * sinf(now_sec() * 1.3f);
+    glow(r, W / 2, 322, 262 + (int)(breathe * 16), g_accent, 16, 42);
+
     for (int i = 0; i < total; i++) {
         float off = i - app.car_f;
-        if (std::abs(off) > 2.5f) continue;
+        if (std::abs(off) > 2.05f) continue;
         float d = std::min(1.0f, std::abs(off));
-        float scale = 1.0f - 0.32f * d;
-        int size = (int)(250 * scale);
-        int cx = W / 2 + (int)(off * 270);
-        int cy = 330;
-        Uint8 alpha = (Uint8)(255 - 125 * d);
+        float scale = 1.0f - 0.34f * d;
+        int size = (int)(300 * scale);
+        int cx = W / 2 + (int)(off * 288);
+        int cy = 326 + (int)(sinf(now_sec() * 0.8f + i * 0.7f) * 5.0f * (1 - d));
+        Uint8 alpha = (Uint8)(255 - 145 * d);
+
+        if (d < 0.04f) {
+            SDL_Rect plate = { cx - size / 2 - 26, cy - size / 2 - 26,
+                               size + 52, size + 52 };
+            rrect(r, plate, 56, rgba(255, 255, 255, 7));
+            rrect_stroke(r, plate, 56, rgba(255, 255, 255, 18), 1);
+        }
 
         SDL_Texture* icon = (i < 5) ? app.icons[i]
                           : (i == CAR_ACTIVITY) ? app.icon_activity
@@ -847,13 +766,14 @@ void draw_home(SDL_Renderer* r)
             SDL_Rect dst = { cx - size / 2, cy - size / 2, size, size };
             draw_tex(r, icon, dst, alpha);
         } else {
-            fill_rect(r, cx - size / 2, cy - size / 2, size, size, C_PANEL);
-            text(r, app.f_title, badge, cx, cy - 20, C_ACCENT, Align::Center);
+            circle(r, cx, cy, size / 2 - 10, with_alpha(C_PANEL, alpha));
+            text(r, app.f_title, badge, cx, cy - 24, with_alpha(C_ACCENT, alpha),
+                 Align::Center);
         }
     }
 
-    // selection ring / glow under the active icon
-    fill_rect(r, W / 2 - 130, 470, 260, 4, C_ACCENT);
+    // A short accent underline sits exactly under the focused plate.
+    rrect(r, { W / 2 - 36, 466, 72, 5 }, 3, C_ACCENT);
 
     std::string name, sub;
     if (app.carousel < 5) {
@@ -873,17 +793,19 @@ void draw_home(SDL_Renderer* r)
         name = tr(T_SETTINGS);
         sub = tr(T_SETTINGS_SUB);
     }
-    text(r, app.f_title, name, W / 2, 500, C_TEXT, Align::Center);
-    text(r, app.f_small, ellipsize(app.f_small, sub, W - 160),
-         W / 2, 560, C_DIM, Align::Center);
+    text(r, app.f_hero, name, W / 2, 496, C_TEXT, Align::Center);
+    text(r, app.f_small, ellipsize(app.f_small, sub, W - 200),
+         W / 2, 566, C_DIM, Align::Center);
 
-    // carousel dots
+    // Carousel dots: the active one stretches, the rest stay quiet.
+    int dotw = total * 16 + 8;
+    int x = W / 2 - dotw / 2;
     for (int i = 0; i < total; i++) {
-        SDL_Color dc = (i == app.carousel) ? C_ACCENT : C_DIM;
-        fill_rect(r, W / 2 - total * 12 + i * 24, 610, 10, 10, dc);
+        bool on = i == app.carousel;
+        rrect(r, { x, 634, on ? 22 : 6, 6 }, 3,
+              on ? C_ACCENT : with_alpha(C_DIM, 95));
+        x += (on ? 22 : 6) + 10;
     }
-
-    draw_hint(r, tr(T_HOME_HINT));
 }
 
 void draw_list(SDL_Renderer* r)
@@ -891,104 +813,121 @@ void draw_list(SDL_Renderer* r)
     draw_background(r);
     const Console& c = consoles()[app.carousel];
 
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
+    // header: back pill, console name, count, card source
+    rrect(r, { 48, 34, 52, 52 }, 26, with_alpha(C_PANEL, 220));
+    rrect_stroke(r, { 48, 34, 52, 52 }, 26, rgba(255, 255, 255, 20), 1);
+    icon_chevron(r, 58, 44, 32, C_TEXT, true);
     const std::string title = console_name(c.id);
-    text(r, app.f_title, title, 32, 26, C_TEXT);
+    text(r, app.f_hero, title, 120, 30, C_TEXT);
+
     char b[96];
     snprintf(b, sizeof(b), tr(T_LIST_COUNT_FMT), app.games.size());
     std::string cnt = b;
     if (app.fav_only) cnt += tr(T_FAV_SUFFIX);
-    if (app.tf2_mounted) cnt += tr(T_TF2_ON);
-    // the count yields to the console name: ja names plus both suffixes can
-    // be wider than the header together
-    int titlew = text_width(app.f_title, title);
-    text(r, app.f_body, ellipsize(app.f_body, cnt, W - 88 - titlew),
-         W - 32, 34, C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
+    int tw = text_width(app.f_hero, title);
+    int pillw = text_width(app.f_small, cnt) + 32;
+    if (120 + tw + 18 + pillw < W - 180) {
+        rrect(r, { 120 + tw + 18, 52, pillw, 32 }, 16,
+              app.fav_only ? with_alpha(C_ACCENT, 40) : rgba(255, 255, 255, 12));
+        text(r, app.f_small, cnt, 120 + tw + 18 + pillw / 2, 54,
+             app.fav_only ? C_ACCENT : C_DIM, Align::Center);
+    }
+    if (app.tf2_mounted) {
+        std::string tf2 = tr(T_TF2_ON);
+        if (!tf2.empty() && tf2[0] == ' ') tf2.erase(0, 1);
+        int w = text_width(app.f_small, tf2) + 28;
+        rrect(r, { W - 48 - w, 52, w, 32 }, 16, rgba(255, 255, 255, 12));
+        text(r, app.f_small, tf2, W - 48 - w / 2, 54, C_DIM, Align::Center);
+    }
 
     if (app.games.empty()) {
-        // /userdata not mounted: the data partition could not be read and was
-        // deliberately NOT reformatted. Say so, instead of implying the card
-        // is simply empty, so the user knows their data is preserved.
         bool data_err = !app.fav_only && !userdata_mounted();
         const char* head = app.fav_only ? tr(T_NO_FAV)
                          : data_err     ? tr(T_DATA_ERROR)
                                         : tr(T_NO_GAMES);
-        text(r, app.f_body, head, W / 2, 300,
-             data_err ? C_AMBER : C_TEXT, Align::Center);
-        char p[256];
-        if (app.fav_only) {
-            snprintf(p, sizeof(p), "%s", tr(T_FAV_HELP));
-        } else if (data_err) {
-            snprintf(p, sizeof(p), "%s", tr(T_DATA_ERROR_HELP));
+        SDL_Rect cardrc = { 212, 212, 600, 340 };
+        card(r, cardrc, 32, false, 236);
+        if (app.icons[app.carousel]) {
+            SDL_Rect dst = { W / 2 - 42, 252, 84, 84 };
+            draw_tex(r, app.icons[app.carousel], dst, 150);
         } else {
-            snprintf(p, sizeof(p), tr(T_COPY_ROMS_FMT), c.id);
+            icon_image(r, W / 2 - 32, 262, 64, C_DIM);
         }
-        int y = 360;
-        for (const auto& l : wrap(app.f_small, p, W - 120)) {
-            text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-            y += 32;
+        text(r, app.f_body, head, W / 2, 368,
+             data_err ? C_AMBER : C_TEXT, Align::Center);
+        std::string p;
+        if (app.fav_only) p = tr(T_FAV_HELP);
+        else if (data_err) p = tr(T_DATA_ERROR_HELP);
+        else p = fmt(tr(T_COPY_ROMS_FMT), c.id);
+        int ty = 424;
+        for (const auto& l : wrap(app.f_small, p, 520)) {
+            text(r, app.f_small, l, W / 2, ty, C_DIM, Align::Center);
+            ty += 30;
         }
         if (!app.fav_only && !data_err) {
-            y += 10;
-            for (const auto& l : wrap(app.f_small, tr(T_TF_HELP), W - 120)) {
-                text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-                y += 32;
+            for (const auto& l : wrap(app.f_small, tr(T_TF_HELP), 520)) {
+                text(r, app.f_small, l, W / 2, ty + 6, with_alpha(C_DIM, 180),
+                     Align::Center);
+                ty += 30;
             }
         }
-    } else {
-        const int rowh = 66, top = 116, vis = 9;
-        const int listw = W - 360;   // leave room for the cover panel
-        if (app.sel < app.scroll) app.scroll = app.sel;
-        if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
-        app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll);
-        app.list_sel_f = damp(app.list_sel_f, (float)app.sel);
-        SDL_Rect clip = { 0, top, listw, vis * rowh };
-        SDL_RenderSetClipRect(r, &clip);
-        int hy = top + (int)((app.list_sel_f - app.list_scroll_f) * rowh);
-        fill_rect(r, 24, hy, listw - 48, rowh - 6, C_PANEL);
-        fill_rect(r, 24, hy, 5, rowh - 6, g_accent);
-        for (int i = -1; i <= vis; i++) {
-            int idx = (int)floorf(app.list_scroll_f) + i;
-            if (idx < 0 || idx >= (int)app.games.size()) continue;
-            int y = top + (int)((idx - app.list_scroll_f) * rowh);
-            SDL_Color tc = (idx == app.sel) ? C_TEXT : C_DIM;
-            const Game& g = app.games[idx];
-            std::string label = g.title;
-            if (fav_contains(c.id, g.title)) label = "★ " + label;
-            // Games from the second card carry a TF2 badge; shorten the title
-            // so the two never overlap.
-            bool tf2 = on_tf2(g.path);
-            label = ellipsize(app.f_body, label, listw - 96 - (tf2 ? 76 : 0));
-            text(r, app.f_body, label, 48, y + 14, tc);
-            if (tf2)
-                text(r, app.f_small, "TF2", listw - 40, y + 18, C_DIM, Align::Right);
-        }
-        // scrollbar
-        if ((int)app.games.size() > vis) {
-            int trackh = vis * rowh;
-            int barh = std::max(30, trackh * vis / (int)app.games.size());
-            int bary = top + (int)((trackh - barh) * app.list_scroll_f /
-                       std::max(1, (int)app.games.size() - vis));
-            fill_rect(r, listw - 14, top, 4, trackh, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
-            fill_rect(r, listw - 14, bary, 4, barh, g_accent);
-        }
-        SDL_RenderSetClipRect(r, nullptr);
-        // cover preview for the selected game
-        const Game& g = app.games[app.sel];
-        int px = W - 320, py = 140, pw = 280, ph = 280;
-        fill_rect(r, px - 8, py - 8, pw + 16, ph + 16, C_PANEL);
-        SDL_Texture* cv = cover_tex(r, cover_path(c.id, g.title));
-        if (cv) {
-            SDL_Rect dst = { px, py, pw, ph };
-            draw_tex(r, cv, dst);
-        } else if (app.icons[app.carousel]) {
-            SDL_Rect dst = { px + 40, py + 40, pw - 80, ph - 80 };
-            draw_tex(r, app.icons[app.carousel], dst, 160);
-        }
-        text(r, app.f_small, tr(T_COVER), px + pw / 2, py + ph + 20, C_DIM, Align::Center);
+        return;
     }
-    draw_hint(r, tr(T_LIST_HINT));
+
+    const int rowh = 88, gap = 10, top = 126, vis = 6;
+    const int listw = 928, listx = 48;
+    if (app.sel < app.scroll) app.scroll = app.sel;
+    if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
+    app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll);
+    app.list_sel_f = damp(app.list_sel_f, (float)app.sel);
+
+    SDL_Rect cliprc = { listx, top, listw, vis * rowh - gap };
+    set_clip(r, &cliprc);
+
+    int first = (int)floorf(app.list_scroll_f);
+    for (int idx = first - 1; idx <= first + vis; idx++) {
+        if (idx < 0 || idx >= (int)app.games.size()) continue;
+        int y = top + (int)((idx - app.list_scroll_f) * rowh);
+        bool sel = idx == app.sel;
+        SDL_Rect rc = { listx, y, listw, rowh - gap };
+        rrect(r, rc, 20, rgba(255, 255, 255, sel ? 16 : 7));
+        rrect_stroke(r, rc, 20, rgba(255, 255, 255, sel ? 22 : 9), 1);
+    }
+
+    // focus follows the selected row, even while the list is gliding
+    int fy = top + (int)((app.list_sel_f - app.list_scroll_f) * rowh);
+    SDL_Rect focus = { listx, fy, listw, rowh - gap };
+    card(r, focus, 20, true, 235);
+    rrect(r, { focus.x + 18, focus.y + 22, 4, focus.h - 44 }, 2, C_ACCENT);
+
+    for (int idx = first - 1; idx <= first + vis; idx++) {
+        if (idx < 0 || idx >= (int)app.games.size()) continue;
+        int y = top + (int)((idx - app.list_scroll_f) * rowh);
+        const Game& g = app.games[idx];
+        bool sel = idx == app.sel;
+        bool fav = fav_contains(c.id, g.title);
+        bool tf2 = on_tf2(g.path);
+        int maxw = listw - 48 - 44 - (fav ? 40 : 0) - (tf2 ? 76 : 0);
+        text(r, app.f_body, ellipsize(app.f_body, g.title, maxw),
+             listx + 36, y + 20, sel ? C_TEXT : with_alpha(C_TEXT, 205));
+        if (fav) icon_star(r, listx + listw - 84, y + 26, 32, C_AMBER, true);
+        if (tf2) {
+            rrect(r, { listx + listw - 62, y + 28, 42, 24 }, 12,
+                  rgba(255, 255, 255, 16));
+            text(r, app.f_small, "TF2", listx + listw - 41, y + 24, C_DIM,
+                 Align::Center);
+        }
+    }
+    set_clip(r, nullptr);
+
+    if ((int)app.games.size() > vis) {
+        int trackh = vis * rowh - gap;
+        int barh = std::max(36, trackh * vis / (int)app.games.size());
+        int bary = top + (int)((trackh - barh) * app.list_scroll_f /
+                    std::max(1, (int)app.games.size() - vis));
+        rrect(r, { W - 22, top, 4, trackh }, 2, rgba(255, 255, 255, 18));
+        rrect(r, { W - 22, bary, 4, barh }, 2, C_ACCENT);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1895,25 +1834,6 @@ void setup_enter()
 // ---------------------------------------------------------------------------
 // wizard drawing
 // ---------------------------------------------------------------------------
-void draw_kb(SDL_Renderer* r);   // defined with the WiFi screen below
-
-void setup_row(SDL_Renderer* r, int x, int y, int w, int h, bool sel,
-               const std::string& label, const std::string& value,
-               SDL_Color vc = C_DIM)
-{
-    if (sel) {
-        fill_rect(r, x, y, w, h - 6, C_PANEL);
-        fill_rect(r, x, y, 5, h - 6, g_accent);
-    }
-    // measure the value actually shown, then give the label whatever remains
-    std::string v = value.empty() ? "" : ellipsize(app.f_body, value, w - 400);
-    int vw = text_width(app.f_body, v);
-    int labelw = w - 48 - (v.empty() ? 0 : vw + 24);
-    text(r, app.f_body, ellipsize(app.f_body, label, labelw),
-         x + 24, y + 12, sel ? C_TEXT : C_DIM);
-    if (!v.empty())
-        text(r, app.f_body, v, x + w - 24, y + 12, vc, Align::Right);
-}
 
 void setup_scroll_into_view(int vis)
 {
@@ -1923,279 +1843,112 @@ void setup_scroll_into_view(int vis)
     if (app.setup_scroll < 0) app.setup_scroll = 0;
 }
 
-void draw_setup_lang(SDL_Renderer* r)
-{
-    const int rowh = 62, top = 126;
-    setup_scroll_into_view(7);
-    for (int i = 0; i < (int)LANG_COUNT; i++) {
-        int idx = app.setup_scroll + i;
-        if (idx >= (int)LANG_COUNT) break;
-        int y = top + i * rowh;
-        bool sel = idx == app.setup_sel;
-        setup_row(r, 32, y, W - 64, rowh, sel, lang_name(idx), "");
-        if (idx == app.settings.language)
-            fill_rect(r, W - 72, y + 22, 16, 16, g_accent);
-    }
-}
-
-void draw_setup_wifi(SDL_Renderer* r)
-{
-    const int rowh = 56, top = 116, vis = 6;
-    int nets = (int)app.wifi_nets.size();
-    int n = nets + 2;
-    setup_scroll_into_view(vis);
-    for (int i = 0; i < vis; i++) {
-        int idx = app.setup_scroll + i;
-        if (idx >= n) break;
-        int y = top + i * rowh;
-        bool sel = idx == app.setup_sel;
-        if (idx < nets) {
-            const WifiNet& w = app.wifi_nets[idx];
-            std::string badge = w.saved ? tr(T_WIFI_SAVED)
-                              : !w.secure ? tr(T_WIFI_OPEN) : "";
-            int ssidw = badge.empty() ? W - 172
-                        : W - 140 - text_width(app.f_small, badge) - 12 - 56;
-            setup_row(r, 32, y, W - 64, rowh, sel,
-                      ellipsize(app.f_body, w.ssid, ssidw), "");
-            if (w.saved)
-                text(r, app.f_small, tr(T_WIFI_SAVED), W - 140, y + 16,
-                     C_GREEN, Align::Right);
-            else if (!w.secure)
-                text(r, app.f_small, tr(T_WIFI_OPEN), W - 140, y + 16,
-                     C_DIM, Align::Right);
-            int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3
-                     : w.signal >= -78 ? 2 : 1;
-            for (int b = 0; b < 4; b++) {
-                int h = 6 + b * 5;
-                fill_rect(r, W - 104 + b * 13, y + 34 - h, 8, h,
-                          b < bars ? g_accent : SDL_Color{ C_DIM.r, C_DIM.g, C_DIM.b, 90 });
-            }
-        } else {
-            setup_row(r, 32, y, W - 64, rowh, sel,
-                      idx == nets ? tr(T_WIFI_TEST) : tr(T_NEXT), "");
-        }
-    }
-    // On its own line below the action rows: centred on the first row it
-    // collides with the "test connectivity" label in ru/es.
-    if (nets == 0 && !app.wifi_busy && !app.wifi_probe_busy)
-        text(r, app.f_small, tr(T_WIFI_NO_NETS), W / 2, top + n * rowh + 24,
-             C_DIM, Align::Center);
-
-    // four staged results: association, route, DNS, real internet access
-    const TKey lab[4] = { T_TEST_LINK, T_TEST_ROUTE, T_TEST_DNS, T_TEST_NET };
-    for (int i = 0; i < 4; i++) {
-        int x = 40 + i * 245;
-        const std::string& v = app.setup_test[i];
-        SDL_Color c = v == "ok" ? C_GREEN : v == "fail" ? C_RED : C_DIM;
-        text(r, app.f_small, tr(lab[i]), x, 478, C_DIM);
-        text(r, app.f_body,
-             ellipsize(app.f_body,
-                       v == "ok" ? tr(T_TEST_OK) : v == "fail" ? tr(T_TEST_FAIL) : tr(T_TEST_WAIT),
-                       235),
-             x, 514, c);
-    }
-
-    std::string link = tr(T_WIFI_DISCONNECTED);
-    SDL_Color lc = C_DIM;
-    if (app.wifi_state == "NOHW") {
-        link = tr(T_WIFI_UNAVAILABLE);
-    } else if (!app.wifi_ip.empty()) {
-        char b[96];
-        snprintf(b, sizeof(b), tr(T_WIFI_CONNECTED_FMT), app.wifi_ip.c_str());
-        link = b;
-        lc = C_GREEN;
-    }
-    text(r, app.f_body, ellipsize(app.f_body, link, W - 120), W / 2, 566, lc, Align::Center);
-    const bool waiting = app.wifi_busy || app.wifi_probe_busy;
-    if (waiting || !app.wifi_status.empty())
-        text(r, app.f_small,
-             ellipsize(app.f_small, waiting ? tr(T_PROCESSING) : app.wifi_status, W - 80),
-             W / 2, 610, C_AMBER, Align::Center);
-}
-
-void draw_setup_tz(SDL_Renderer* r)
-{
-    const int rowh = 56, top = 126;
-    const auto& regs = tz_regions();
-    for (int i = 0; i < (int)regs.size(); i++) {
-        int y = top + i * rowh;
-        bool sel = app.setup_col == 0 && i == app.setup_sel;
-        bool cur = i == app.setup_region;
-        setup_row(r, 32, y, 328, rowh, sel, tr(regs[i].name), "");
-        if (cur) fill_rect(r, 348, y + 20, 8, 8, g_accent);
-    }
-    const auto& zs = regs[app.setup_region].zones;
-    setup_scroll_into_view(6);
-    for (int i = 0; i < 6; i++) {
-        int idx = app.setup_scroll + i;
-        if (idx >= (int)zs.size()) break;
-        int y = top + i * rowh;
-        bool sel = app.setup_col == 1 && idx == app.setup_sel;
-        // stop before the "current zone" marker at the column's right edge
-        setup_row(r, 392, y, W - 424, rowh, sel,
-                  ellipsize(app.f_body, zs[idx], W - 424 - 88), "");
-        if (app.setup_tz == zs[idx])
-            fill_rect(r, W - 72, y + 20, 14, 14, g_accent);
-    }
-    std::string preview = app.setup_col == 0
-        ? zs[0] : zs[std::clamp(app.setup_sel, 0, (int)zs.size() - 1)];
-    char b[128];
-    snprintf(b, sizeof(b), tr(T_TZ_NOW_FMT), zone_time(preview).c_str());
-    text(r, app.f_body, b, W / 2, 500, C_TEXT, Align::Center);
-    if (!app.setup_tz.empty())
-        text(r, app.f_small, app.setup_tz, W / 2, 548, C_DIM, Align::Center);
-    text(r, app.f_small, tr(T_SETUP_TZ_HINT), W / 2, 600, C_DIM, Align::Center);
-}
-
-void draw_setup_name(SDL_Renderer* r)
-{
-    auto lines = wrap(app.f_small, tr(T_SETUP_NAME_HELP), W - 120);
-    int y = 130;
-    for (size_t i = 0; i < lines.size() && i < 2; i++) {
-        std::string l = lines[i];
-        if (i == 1 && lines.size() > 2) l = ellipsize(app.f_small, l + "…", W - 120);
-        text(r, app.f_small, l, 60, y, C_DIM);
-        y += 34;
-    }
-
-    setup_row(r, 32, 230, W - 64, 70, app.setup_sel == 0,
-              tr(T_SETUP_NAME_TITLE), app.setup_name, C_TEXT);
-    setup_row(r, 32, 320, W - 64, 70, app.setup_sel == 1, tr(T_NEXT), "");
-
-    auto rl = wrap(app.f_small, tr(T_NAME_INVALID), W - 120);
-    y = 440;
-    for (size_t i = 0; i < rl.size() && i < 3; i++) {
-        std::string l = rl[i];
-        if (i == 2 && rl.size() > 3) l = ellipsize(app.f_small, l + "…", W - 120);
-        text(r, app.f_small, l, 60, y, C_DIM);
-        y += 34;
-    }
-}
-
-void draw_setup_ra(SDL_Renderer* r)
-{
-    auto lines = wrap(app.f_small, tr(T_SETUP_RA_HELP), W - 120);
-    int y = 122;
-    for (size_t i = 0; i < lines.size() && i < 2; i++) {
-        std::string l = lines[i];
-        if (i == 1 && lines.size() > 2) l = ellipsize(app.f_small, l + "…", W - 120);
-        text(r, app.f_small, l, 60, y, C_DIM);
-        y += 34;
-    }
-
-    const int rowh = 62, top = 190;
-    std::string login = tr(T_RA_LOGIN);
-    if (app.setup_ra_logged)
-        login = fmt(tr(T_RA_LOGGED_FMT), app.setup_ra_name.c_str());
-    setup_row(r, 32, top + 0 * rowh, W - 64, rowh, app.setup_sel == 0,
-              tr(T_RA_USER), app.setup_ra_user, C_TEXT);
-    setup_row(r, 32, top + 1 * rowh, W - 64, rowh, app.setup_sel == 1,
-              tr(T_RA_PASS), std::string(app.setup_ra_pass.size(), '*'), C_TEXT);
-    setup_row(r, 32, top + 2 * rowh, W - 64, rowh, app.setup_sel == 2,
-              tr(T_RA_HARDCORE),
-              app.setup_ra_hardcore ? tr(T_ON) : tr(T_OFF),
-              app.setup_ra_hardcore ? C_AMBER : C_DIM);
-    setup_row(r, 32, top + 3 * rowh, W - 64, rowh, app.setup_sel == 3,
-              login, "", C_GREEN);
-    setup_row(r, 32, top + 4 * rowh, W - 64, rowh, app.setup_sel == 4,
-              tr(T_RA_LOGOUT), "");
-    setup_row(r, 32, top + 5 * rowh, W - 64, rowh, app.setup_sel == 5,
-              tr(T_NEXT), "");
-
-    auto hl = wrap(app.f_small, tr(T_RA_HARDCORE_HELP), W - 120);
-    y = 580;
-    for (size_t i = 0; i < hl.size() && i < 3; i++) {
-        std::string l = hl[i];
-        if (i == 2 && hl.size() > 3) l = ellipsize(app.f_small, l + "…", W - 120);
-        text(r, app.f_small, l, 60, y, C_DIM);
-        y += 34;
-    }
-}
-
-void draw_setup_covers(SDL_Renderer* r)
-{
-    auto lines = wrap(app.f_small, tr(T_SETUP_COVER_HELP), W - 120);
-    int y = 126;
-    for (size_t i = 0; i < lines.size() && i < 2; i++) {
-        std::string l = lines[i];
-        if (i == 1 && lines.size() > 2) l = ellipsize(app.f_small, l + "…", W - 120);
-        text(r, app.f_small, l, 60, y, C_DIM);
-        y += 34;
-    }
-
-    char b[192];
-    if (app.setup_busy && app.setup_op == "covers-count") {
-        text(r, app.f_body, tr(T_PROCESSING), W / 2, 220, C_DIM, Align::Center);
-    } else if (app.cov_total == 0 && !app.setup_busy) {
-        text(r, app.f_body, tr(T_COVER_NONE), W / 2, 220, C_DIM, Align::Center);
-    } else {
-        snprintf(b, sizeof(b), tr(T_COVER_PROGRESS_FMT),
-                 app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
-        text(r, app.f_body, b, W / 2, 210, C_TEXT, Align::Center);
-        int bw = W - 160, bx = 80, by = 268;
-        fill_rect(r, bx, by, bw, 12, C_TRACK);
-        int fw = app.cov_total > 0 ? bw * app.cov_done / app.cov_total : 0;
-        if (fw > 0) fill_rect(r, bx, by, fw, 12, g_accent);
-        if (!app.cov_current.empty())
-            text(r, app.f_small, ellipsize(app.f_small, app.cov_current, bw),
-                 W / 2, 300, C_DIM, Align::Center);
-    }
-
-    bool running = app.setup_busy && app.setup_op == "covers";
-    setup_row(r, 32, 400, W - 64, 70, app.setup_sel == 0,
-              running ? tr(T_COVER_STOP) : tr(T_COVER_START), "");
-    setup_row(r, 32, 490, W - 64, 70, app.setup_sel == 1, tr(T_NEXT), "");
-}
-
 void draw_setup(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    const char* title = tr(T_SETUP_TITLE);
-    switch (app.setup_step) {
-    case 0: title = tr(T_LANGUAGE); break;
-    case 1: title = tr(T_WIFI); break;
-    case 2: title = tr(T_SETUP_TZ_TITLE); break;
-    case 3: title = tr(T_SETUP_NAME_TITLE); break;
-    case 4: title = tr(T_SETUP_RA_TITLE); break;
-    case 5: title = tr(T_COVERS); break;
-    default: break;
-    }
-    text(r, app.f_title, title, 32, 26, C_TEXT);
-    char sb[64];
+    draw_topbar(r);
+
+    const int step = app.setup_step;
     // the last page is the "done" screen, not a question: clamp so it shows
     // the final question's number instead of "7 / 6"
-    int shown = std::min(app.setup_step + 1, SETUP_STEPS - 1);
+    int shown = std::min(step + 1, SETUP_STEPS - 1);
+    char sb[64];
     snprintf(sb, sizeof(sb), tr(T_SETUP_STEP_FMT), shown, SETUP_STEPS - 1);
-    text(r, app.f_body, sb, W - 32, 34, C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
+    std::string kick = std::string(tr(T_SETUP)) + "  ·  " + sb;
 
-    switch (app.setup_step) {
-    case 0: draw_setup_lang(r); break;
-    case 1: draw_setup_wifi(r); break;
-    case 2: draw_setup_tz(r); break;
-    case 3: draw_setup_name(r); break;
-    case 4: draw_setup_ra(r); break;
-    case 5: draw_setup_covers(r); break;
-    default: {
-        text(r, app.f_title, tr(T_SETUP_DONE_TITLE), W / 2, 250,
-             g_accent, Align::Center);
-        auto lines = wrap(app.f_body, tr(T_SETUP_DONE_BODY), W - 200);
-        int y = 350;
-        for (const auto& l : lines) {
-            text(r, app.f_body, l, W / 2, y, C_TEXT, Align::Center);
-            y += 44;
+    std::string name, status, detail;
+    SDL_Color sc = C_DIM;
+    top_plate(r, W / 2, 290, 142);
+
+    switch (step) {
+    case 0:
+        icon_globe(r, W / 2 - 62, 228, 124, C_ACCENT);
+        name = lang_name(app.settings.language);
+        status = tr(T_LANGUAGE);
+        sc = with_alpha(C_TEXT, 235);
+        detail = tr(T_SETUP_TITLE);
+        break;
+    case 1: {
+        bool connected = !app.wifi_ip.empty();
+        bool nohw = app.wifi_state == "NOHW";
+        bool busy = app.wifi_busy || app.wifi_probe_busy;
+        icon_wifi(r, W / 2 - 62, 228, 124,
+                  connected ? C_ACCENT : with_alpha(C_DIM, 210),
+                  connected ? 4 : 3);
+        name = connected && !app.wifi_link.empty() ? app.wifi_link : tr(T_WIFI);
+        if (nohw) {
+            status = tr(T_WIFI_UNAVAILABLE); sc = C_AMBER;
+        } else if (connected) {
+            status = fmt(tr(T_WIFI_CONNECTED_FMT), app.wifi_ip.c_str()); sc = C_GREEN;
+        } else if (busy) {
+            status = tr(T_PROCESSING); sc = C_AMBER;
+        } else {
+            status = tr(T_WIFI_DISCONNECTED);
+        }
+        if (!busy) detail = app.wifi_status;
+        break;
+    }
+    case 2: {
+        icon_clock(r, W / 2 - 62, 228, 124, C_ACCENT);
+        const auto& zs = tz_regions()[app.setup_region].zones;
+        std::string preview = app.setup_col == 0
+            ? zs[0] : zs[std::clamp(app.setup_sel, 0, (int)zs.size() - 1)];
+        name = zone_time(preview);
+        status = app.setup_tz.empty() ? preview : app.setup_tz;
+        sc = C_ACCENT;
+        break;
+    }
+    case 3:
+        icon_keyboard(r, W / 2 - 62, 228, 124, C_ACCENT);
+        name = app.setup_name.empty() ? tr(T_SETUP_NAME_TITLE) : app.setup_name;
+        status = "";
+        detail = tr(T_SETUP_NAME_HELP);
+        break;
+    case 4:
+        icon_trophy(r, W / 2 - 62, 228, 124, C_ACCENT);
+        name = app.setup_ra_logged ? app.setup_ra_name
+               : app.setup_ra_user.empty() ? tr(T_RA_LOGIN) : app.setup_ra_user;
+        status = "RetroAchievements";
+        detail = tr(T_SETUP_RA_HELP);
+        break;
+    case 5: {
+        icon_image(r, W / 2 - 62, 228, 124,
+                   app.cov_total > 0 ? C_ACCENT : with_alpha(C_DIM, 210));
+        bool running = app.setup_busy && app.setup_op == "covers";
+        if (app.cov_total > 0) {
+            int pct = app.cov_done * 100 / app.cov_total;
+            char pb[16];
+            snprintf(pb, sizeof(pb), "%d%%", pct);
+            name = pb;
+            if (running) {
+                status = tr(T_COVER_RUNNING); sc = C_AMBER;
+            } else {
+                char b[192];
+                snprintf(b, sizeof(b), tr(T_COVER_PROGRESS_FMT),
+                         app.cov_done, app.cov_total, app.cov_ok, app.cov_miss);
+                status = b; sc = C_ACCENT;
+            }
+            detail = app.cov_current;
+            SDL_Rect track = { 262, 688, 500, 10 };
+            rrect(r, track, 5, with_alpha(C_DIM, 70));
+            if (pct > 0)
+                rrect(r, { track.x, track.y, 500 * pct / 100, 10 }, 5, C_ACCENT);
+        } else {
+            name = tr(T_COVERS);
+            status = app.setup_busy ? tr(T_PROCESSING) : tr(T_COVER_NONE);
+            detail = tr(T_SETUP_COVER_HELP);
         }
         break;
     }
+    default:
+        icon_check(r, W / 2 - 62, 228, 124, C_GREEN);
+        name = tr(T_SETUP_DONE_TITLE);
+        sc = C_GREEN;
+        detail = tr(T_SETUP_DONE_BODY);
+        break;
     }
-
-    if (!app.setup_status.empty())
-        text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 80),
-             W / 2, H - 96, C_AMBER, Align::Center);
-    draw_hint(r, app.setup_step >= SETUP_STEPS - 1
-              ? tr(T_CONFIRM_HINT) : tr(T_SETUP_HINT));
-    if (app.wifi_kb) draw_kb(r);
+    top_hero(r, kick.c_str(), name, status, sc, detail);
+    top_dots(r, 6, std::min(step, 5), 712);
 }
 
 // ---------------------------------------------------------------------------
@@ -2282,188 +2035,84 @@ void update_enter()
 void draw_update(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_UPDATE), 32, 26, C_TEXT);
-    fill_rect(r, 0, 96, W, 3, g_accent);
+    draw_topbar(r);
 
+    top_plate(r, W / 2, 290, 142);
+    icon_download(r, W / 2 - 62, 228, 124,
+                  app.upd_busy ? with_alpha(C_ACCENT, 170) : C_ACCENT);
+
+    std::string status, detail;
+    SDL_Color sc = C_DIM;
     char b[192];
-    if (!app.upd_cur.empty()) {
-        snprintf(b, sizeof(b), tr(T_UPDATE_CURRENT), app.upd_cur.c_str());
-        text(r, app.f_small, ellipsize(app.f_small, b, W - 64), 32, 120, C_DIM);
-    }
-
-    std::string st;
-    SDL_Color c = C_TEXT;
-    if (app.upd_busy && app.upd_op == "apply" && app.upd_state == "downloading") {
+    bool downloading = app.upd_busy && app.upd_op == "apply" &&
+                       app.upd_state == "downloading";
+    if (downloading) {
         snprintf(b, sizeof(b), tr(T_UPDATE_DOWNLOADING), app.upd_pct);
-        st = b; c = g_accent;
+        status = b; sc = C_ACCENT;
     } else if (app.upd_busy && app.upd_op == "apply") {
-        st = tr(T_UPDATE_INSTALLING); c = C_AMBER;
+        status = tr(T_UPDATE_INSTALLING); sc = C_AMBER;
     } else if (app.upd_busy) {
-        st = tr(T_UPDATE_CHECKING); c = C_DIM;
+        status = tr(T_UPDATE_CHECKING); sc = C_DIM;
     } else if (app.upd_state == "available") {
-        st = fmt(tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
-        c = C_GREEN;
+        snprintf(b, sizeof(b), tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
+        status = b; sc = C_GREEN;
+        detail = tr(T_UPDATE_CONFIRM_BODY);
     } else if (app.upd_state == "uptodate") {
-        st = tr(T_UPDATE_UPTODATE); c = C_GREEN;
+        status = tr(T_UPDATE_UPTODATE); sc = C_GREEN;
     } else if (app.upd_state == "ready") {
-        st = tr(T_UPDATE_READY); c = C_GREEN;
+        status = tr(T_UPDATE_READY); sc = C_GREEN;
     } else if (app.upd_state == "nowifi") {
-        st = tr(T_UPDATE_NOWIFI); c = C_AMBER;
+        status = tr(T_UPDATE_NOWIFI); sc = C_AMBER;
     } else if (app.upd_state == "failed") {
-        st = fmt(tr(T_UPDATE_FAILED), app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
-        c = C_RED;
+        snprintf(b, sizeof(b), tr(T_UPDATE_FAILED),
+                 app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
+        status = b; sc = C_RED;
     } else {
-        st = tr(T_UPDATE_IDLE); c = C_DIM;
-    }
-    auto lines = wrap(app.f_body, st, W - 160);
-    int y = 230;
-    for (size_t i = 0; i < lines.size() && i < 5; i++) {
-        std::string l = lines[i];
-        if (i == 4 && lines.size() > 5) l = ellipsize(app.f_body, l + "…", W - 160);
-        text(r, app.f_body, l, W / 2, y, c, Align::Center);
-        y += 52;
+        status = tr(T_UPD_CHECK);
     }
 
-    if (app.upd_busy && app.upd_op == "apply" && app.upd_state == "downloading") {
-        fill_rect(r, W / 2 - 300, 420, 600, 18, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
-        fill_rect(r, W / 2 - 300, 420, 600 * app.upd_pct / 100, 18, g_accent);
-        snprintf(b, sizeof(b), "%d%%", app.upd_pct);
-        text(r, app.f_small, b, W / 2, 452, C_DIM, Align::Center);
-    }
-    if (!app.upd_busy && app.upd_state == "ready") {
-        text(r, app.f_body, tr(T_UPDATE_REBOOT), W / 2, 430, C_AMBER, Align::Center);
-    }
-    draw_hint(r, tr(T_UPDATE_HINT));
-}
+    char vb[128] = { 0 };
+    if (!app.upd_cur.empty())
+        snprintf(vb, sizeof(vb), tr(T_UPDATE_CURRENT), app.upd_cur.c_str());
+    top_hero(r, tr(T_UPDATE), vb[0] ? vb : tr(T_UPDATE), status, sc, detail);
 
-void draw_kb(SDL_Renderer* r)
-{
-    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 205 });
-    int pw = 944, ph = 500, px = (W - pw) / 2, py = (H - ph) / 2;
-    fill_rect(r, px, py, pw, ph, C_PANEL);
-    fill_rect(r, px, py, pw, 4, g_accent);
-    const std::string& buf = app.kb_generic ? *app.kb_buf : app.wifi_pw;
-    text(r, app.f_title,
-         ellipsize(app.f_title, app.kb_generic ? app.kb_title : tr(T_WIFI_PASSWORD), pw - 96),
-         W / 2, py + 16, C_TEXT, Align::Center);
-    text(r, app.f_small,
-         ellipsize(app.f_small, app.kb_generic ? std::string() : app.wifi_target, pw - 120),
-         W / 2, py + 78, C_DIM, Align::Center);
-
-    fill_rect(r, px + 56, py + 116, pw - 112, 52, { C_DIM.r, C_DIM.g, C_DIM.b, 120 });
-    std::string disp = app.kb_mask ? std::string(buf.size(), '*') : buf;
-    // Keep the tail that fits, measured in pixels: 42 CJK characters are
-    // twice as wide as 42 latin ones and would overflow the input box.
-    const int dispw = pw - 112 - 32;
-    while (!disp.empty() && text_width(app.f_body, disp + "_") > dispw) {
-        size_t len = 1;
-        unsigned char ch = (unsigned char)disp[0];
-        if (ch >= 0xF0) len = 4; else if (ch >= 0xE0) len = 3;
-        else if (ch >= 0xC0) len = 2;
-        disp.erase(0, len);
+    if (downloading) {
+        SDL_Rect bar = { 262, 660, 500, 10 };
+        rrect(r, bar, 5, with_alpha(C_DIM, 70));
+        if (app.upd_pct > 0)
+            rrect(r, { bar.x, bar.y, 500 * app.upd_pct / 100, 10 }, 5, C_ACCENT);
     }
-    text(r, app.f_body, disp + "_", px + 72, py + 122, C_TEXT);
-
-    const auto& rows = kb_rows();
-    // 5 rows of 50px keys + gaps end at py+450, leaving the hint line clear
-    const int kh = 50, gap = 5, ky0 = py + 180;
-    for (int ri = 0; ri < (int)rows.size(); ri++) {
-        const auto& row = rows[ri];
-        int kw, kgap;
-        if (ri == (int)rows.size() - 1) {   // wide action row
-            kw = (pw - 112 - 4 * 8) / 5;
-            kgap = 8;
-        } else {
-            kw = 80; kgap = gap;
-        }
-        int total = (int)row.size() * (kw + kgap) - kgap;
-        int x0 = px + (pw - total) / 2;
-        int y = ky0 + ri * (kh + gap);
-        for (int ci = 0; ci < (int)row.size(); ci++) {
-            int x = x0 + ci * (kw + kgap);
-            bool sel = app.kb_r == ri && app.kb_c == ci;
-            fill_rect(r, x, y, kw, kh, sel ? g_accent : C_PANEL);
-            std::string lab = row[ci];
-            if (lab == "ABC") lab = app.kb_shift ? "abc" : "ABC";
-            else if (lab == " ") lab = tr(T_KB_SPACE);
-            else if (lab == "DEL") lab = tr(T_KB_DEL);
-            else if (lab == "OK") lab = tr(T_KB_OK);
-            else if (lab == "X") lab = tr(T_KB_CANCEL);
-            else if (app.kb_shift && lab.size() == 1)
-                lab[0] = (char)toupper((unsigned char)lab[0]);
-            text(r, app.f_small, ellipsize(app.f_small, lab, kw - 12),
-                 x + kw / 2, y + 12, sel ? C_BG : C_TEXT, Align::Center);
-        }
-    }
-    text(r, app.f_small, tr(T_CONFIRM_HINT), W / 2, py + ph - 34, C_DIM, Align::Center);
 }
 
 void draw_wifi(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_WIFI), 32, 26, C_TEXT);
+    draw_topbar(r);
 
-    std::string right = tr(T_WIFI_DISCONNECTED);
-    SDL_Color rc = C_DIM;
-    if (app.wifi_state == "NOHW") {
-        right = tr(T_WIFI_UNAVAILABLE);
-    } else if (!app.wifi_ip.empty()) {
+    bool connected = !app.wifi_ip.empty();
+    bool nohw = app.wifi_state == "NOHW";
+    bool busy = app.wifi_busy || app.wifi_probe_busy;
+    top_plate(r, W / 2, 290, 142);
+    icon_wifi(r, W / 2 - 62, 228, 124,
+              connected ? C_ACCENT : with_alpha(C_DIM, 210),
+              connected ? 4 : 3);
+
+    std::string kicker, status;
+    SDL_Color sc = C_DIM;
+    if (nohw) {
+        status = tr(T_WIFI_UNAVAILABLE); sc = C_AMBER;
+    } else if (connected) {
         char b[64];
         snprintf(b, sizeof(b), tr(T_WIFI_CONNECTED_FMT), app.wifi_ip.c_str());
-        right = b;
-        rc = C_GREEN;
+        status = b; sc = C_GREEN;
+        kicker = app.wifi_link;
+    } else if (busy) {
+        status = tr(T_PROCESSING); sc = C_AMBER;
+    } else {
+        status = tr(T_WIFI_DISCONNECTED);
     }
-    text(r, app.f_body, ellipsize(app.f_body, right,
-         W - 88 - text_width(app.f_title, tr(T_WIFI))),
-         W - 32, 34, rc, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
-
-    const int rowh = 62, top = 116, vis = 7;
-    int n = (int)app.wifi_nets.size();
-    if (app.wifi_sel < app.wifi_scroll) app.wifi_scroll = app.wifi_sel;
-    if (app.wifi_sel >= app.wifi_scroll + vis) app.wifi_scroll = app.wifi_sel - vis + 1;
-    if (app.wifi_scroll < 0) app.wifi_scroll = 0;
-    for (int i = 0; i < vis; i++) {
-        int idx = app.wifi_scroll + i;
-        if (idx >= n) break;
-        int y = top + i * rowh;
-        const WifiNet& w = app.wifi_nets[idx];
-        if (idx == app.wifi_sel) {
-            fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
-            fill_rect(r, 24, y, 5, rowh - 6, g_accent);
-        }
-        SDL_Color tc = (idx == app.wifi_sel) ? C_TEXT : C_DIM;
-        // SSIDs are up to 32 bytes — a CJK one is wider than the row. Stop it
-        // before the saved/open badge, or the signal bars when there is none.
-        std::string badge = w.saved ? tr(T_WIFI_SAVED)
-                          : !w.secure ? tr(T_WIFI_OPEN) : "";
-        int ssidw = badge.empty() ? W - 152
-                    : W - 128 - text_width(app.f_small, badge) - 16 - 48;
-        text(r, app.f_body, ellipsize(app.f_body, w.ssid, ssidw), 48, y + 12, tc);
-        if (w.saved)
-            text(r, app.f_small, tr(T_WIFI_SAVED), W - 128, y + 18, C_GREEN, Align::Right);
-        else if (!w.secure)
-            text(r, app.f_small, tr(T_WIFI_OPEN), W - 128, y + 18, C_DIM, Align::Right);
-        int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3 : w.signal >= -78 ? 2 : 1;
-        for (int b = 0; b < 4; b++) {
-            int h = 6 + b * 5;
-            SDL_Color bc = (b < bars) ? g_accent : SDL_Color{ C_DIM.r, C_DIM.g, C_DIM.b, 90 };
-            fill_rect(r, W - 92 + b * 13, y + 36 - h, 8, h, bc);
-        }
-    }
-    if (n == 0 && !app.wifi_busy && !app.wifi_probe_busy)
-        text(r, app.f_body, ellipsize(app.f_body, tr(T_WIFI_NO_NETS), W - 120),
-             W / 2, top + 2 * rowh + 20, C_DIM, Align::Center);
-
-    std::string st = (app.wifi_busy || app.wifi_probe_busy)
-        ? tr(T_PROCESSING) : app.wifi_status;
-    if (!st.empty())
-        text(r, app.f_small, ellipsize(app.f_small, st, W - 80),
-             W / 2, H - 96, C_AMBER, Align::Center);
-    draw_hint(r, tr(T_WIFI_HINT));
-    if (app.wifi_kb) draw_kb(r);
+    std::string detail = busy ? std::string() : app.wifi_status;
+    top_hero(r, tr(T_WIFI), tr(T_WIFI), status, sc, detail);
 }
 
 const char* bt_kind_name(const std::string& k)
@@ -2478,244 +2127,76 @@ const char* bt_kind_name(const std::string& k)
 void draw_bluetooth(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_BT), 32, 26, C_TEXT);
-    text(r, app.f_body, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED), W - 32, 34,
-         app.bt_on ? C_GREEN : C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
+    draw_topbar(r);
 
-    const int rowh = 62, top = 116;
-    if (app.bt_sel == 0) {
-        fill_rect(r, 24, top, W - 48, rowh - 6, C_PANEL);
-        fill_rect(r, 24, top, 5, rowh - 6, g_accent);
+    top_plate(r, W / 2, 290, 142);
+    icon_bt(r, W / 2 - 62, 228, 124,
+            app.bt_on ? C_ACCENT : with_alpha(C_DIM, 210));
+
+    std::string status = app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED);
+    SDL_Color sc = app.bt_on ? C_GREEN : C_DIM;
+    std::string detail;
+    if (app.bt_busy) {
+        status = tr(T_PROCESSING);
+        sc = C_AMBER;
+    } else if (!app.bt_status.empty()) {
+        detail = app.bt_status;
+    } else if (app.bt_on && app.bt_devs.empty()) {
+        detail = tr(T_NO_DEVS);
     }
-    text(r, app.f_body, tr(T_BT_SWITCH), 48, top + 12, app.bt_sel == 0 ? C_TEXT : C_DIM);
-    text(r, app.f_body, app.bt_on ? tr(T_ON) : tr(T_OFF), W - 48, top + 12,
-         app.bt_on ? g_accent : C_DIM, Align::Right);
-
-    if (app.bt_on) {
-        const int vis = 8;
-        int n = (int)app.bt_devs.size();
-        if (app.bt_sel - 1 < app.bt_scroll) app.bt_scroll = app.bt_sel - 1;
-        if (app.bt_sel - 1 >= app.bt_scroll + vis) app.bt_scroll = app.bt_sel - vis;
-        if (app.bt_scroll < 0) app.bt_scroll = 0;
-        for (int i = 0; i < vis; i++) {
-            int idx = app.bt_scroll + i;
-            if (idx >= n) break;
-            int y = top + (i + 1) * rowh;
-            const BtDev& d = app.bt_devs[idx];
-            if (app.bt_sel == idx + 1) {
-                fill_rect(r, 24, y, W - 48, rowh - 6, C_PANEL);
-                fill_rect(r, 24, y, 5, rowh - 6, g_accent);
-            }
-            SDL_Color tc = (app.bt_sel == idx + 1) ? C_TEXT : C_DIM;
-            std::string right = bt_kind_name(d.kind);
-            if (d.connected) right += tr(T_CONN_SUFFIX);
-            else if (d.paired) right += tr(T_PAIRED_SUFFIX);
-            // device names are unbounded; keep them clear of the kind label
-            int namew = W - 96 - text_width(app.f_small, right) - 16;
-            text(r, app.f_body,
-                 ellipsize(app.f_body, d.name.empty() ? d.mac : d.name, namew),
-                 48, y + 12, tc);
-            text(r, app.f_small, right, W - 48, y + 16,
-                 d.connected ? C_GREEN : C_DIM, Align::Right);
-        }
-        if (n == 0 && !app.bt_busy)
-            text(r, app.f_body, ellipsize(app.f_body, tr(T_NO_DEVS), W - 120),
-                 W / 2, top + 2 * rowh + 20, C_DIM, Align::Center);
-    }
-
-    std::string st = app.bt_busy ? tr(T_PROCESSING) : app.bt_status;
-    if (!st.empty())
-        text(r, app.f_small, ellipsize(app.f_small, st, W - 80),
-             W / 2, H - 96, C_AMBER, Align::Center);
-    draw_hint(r, tr(T_BT_HINT));
+    top_hero(r, tr(T_BT), tr(T_BT), status, sc, detail);
 }
+
+// defined with the deck tiles; declared here so the top stage can share them
+const char* settings_label(int i);
+std::string settings_value(int i);
+void settings_icon(SDL_Renderer* r, int idx, int x, int y, int size, SDL_Color c);
 
 void draw_settings(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_SETTINGS), 32, 26, C_TEXT);
-    fill_rect(r, 0, 96, W, 3, g_accent);
+    draw_topbar(r);
 
-    const char* rows[] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
-                           tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
-                           tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP) };
-    const int rowh = 50, top = 100;
     app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
-    int hy = top + (int)(app.set_sel_f * rowh);
-    fill_rect(r, 120, hy, W - 240, rowh - 8, C_PANEL);
-    fill_rect(r, 120, hy, 5, rowh - 8, g_accent);
-    for (int i = 0; i < 12; i++) {
-        int y = top + i * rowh;
-        SDL_Color tc = (i == app.set_sel) ? C_TEXT : C_DIM;
-        std::string val;
-        TTF_Font* vf = app.f_body;
-        SDL_Color vc = tc;
-        if (i == 2) {
-            val = app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED);
-            vc = app.bt_on ? C_GREEN : C_DIM;
-        } else if (i == 3) {
-            val = app.wifi_state == "NOHW" ? tr(T_WIFI_UNAVAILABLE)
-                : !app.wifi_link.empty() ? app.wifi_link
-                : tr(T_WIFI_DISCONNECTED);
-            vc = !app.wifi_link.empty() ? C_GREEN : C_DIM;
-        } else if (i == 4) {
-            val = theme_name(app.settings.theme); vc = g_accent;
-        } else if (i == 5) {
-            val = lang_name(app.settings.language); vc = g_accent;
-        } else if (i == 6) {
-            vf = app.f_small;
-            char u[96];
-            if (app.upd_busy) {
-                val = (app.upd_op == "apply") ? tr(T_UPDATE_INSTALLING)
-                                              : tr(T_UPDATE_CHECKING);
-            } else if (app.upd_state == "available") {
-                val = fmt(tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
-                vc = C_GREEN;
-            } else if (app.upd_state == "uptodate") {
-                val = tr(T_UPDATE_UPTODATE); vc = C_GREEN;
-            } else if (app.upd_state == "ready") {
-                val = tr(T_UPDATE_REBOOT); vc = C_GREEN;
-            } else if (app.upd_state == "nowifi") {
-                val = tr(T_UPDATE_NOWIFI);
-            } else if (app.upd_state == "failed") {
-                snprintf(u, sizeof(u), tr(T_UPDATE_FAILED),
-                         app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
-                val = u;
-            } else {
-                val = tr(T_UPDATE_IDLE);
-            }
-        } else if (i == 7) {
-            char b[32];
-            snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size());
-            val = b;
-        }
-        if (i == 0 || i == 1) {
-            // slider rows: the label stops before the track, the percentage
-            // sits clear of the track's right end
-            text(r, app.f_body, ellipsize(app.f_body, rows[i], 394), 150, y + 10, tc);
-            int v = (i == 0) ? app.settings.brightness : app.settings.volume;
-            fill_rect(r, 560, y + 20, 220, 12, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
-            fill_rect(r, 560, y + 20, 220 * v / 100, 12, g_accent);
-            char b[16];
-            snprintf(b, sizeof(b), "%d%%", v);
-            text(r, app.f_body, b, 860, y + 6, tc, Align::Right);
-        } else {
-            // the label is navigation: keep its natural width unless a long
-            // value (32-char SSID, update error) needs the room — then the
-            // value takes the ellipsis, never the label below 340px
-            int vw = text_width(vf, val);
-            int lw = std::min(text_width(app.f_body, rows[i]),
-                              std::max(340, 686 - vw - 24));
-            text(r, app.f_body, ellipsize(app.f_body, rows[i], lw), 150, y + 10, tc);
-            if (!val.empty())
-                text(r, vf, ellipsize(vf, val, 686 - lw), 860, y + 10, vc, Align::Right);
-        }
+    top_plate(r, W / 2, 290, 142);
+    settings_icon(r, app.set_sel, W / 2 - 62, 228, 124, C_ACCENT);
+
+    SDL_Color vc = C_TEXT;
+    if (app.set_sel == 2) vc = app.bt_on ? C_GREEN : C_DIM;
+    if (app.set_sel == 3) vc = app.wifi_link.empty() ? C_DIM : C_GREEN;
+    if (app.set_sel == 4 || app.set_sel == 5) vc = C_ACCENT;
+    if (app.set_sel == 8) vc = C_RED;
+    top_hero(r, tr(T_SETTINGS), settings_label(app.set_sel),
+             settings_value(app.set_sel), vc, "");
+
+    if (app.set_sel == 0 || app.set_sel == 1) {
+        int pct = app.set_sel == 0 ? app.settings.brightness : app.settings.volume;
+        SDL_Rect track = { 262, 648, 500, 10 };
+        rrect(r, track, 5, with_alpha(C_DIM, 70));
+        if (pct > 0) rrect(r, { track.x, track.y, 500 * pct / 100, 10 }, 5, C_ACCENT);
+        circle(r, track.x + 500 * pct / 100, track.y + 5, 11, C_TEXT);
     }
-    draw_hint(r, tr(T_SETTINGS_HINT));
+    top_dots(r, 12, app.set_sel, 712);
 }
 
 void draw_saves(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_SAVES), 32, 26, C_TEXT);
+    draw_topbar(r);
+
+    top_plate(r, W / 2, 290, 142);
+    icon_clock(r, W / 2 - 62, 228, 124,
+               app.saves.empty() ? with_alpha(C_DIM, 210) : C_ACCENT);
+
     char b[64];
     snprintf(b, sizeof(b), tr(T_SAVE_COUNT_FMT), app.saves.size());
-    text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
-
-    if (app.saves.empty()) {
-        text(r, app.f_body, tr(T_NO_SAVES), W / 2, 300, C_TEXT, Align::Center);
-        int y = 360;
-        for (const auto& l : wrap(app.f_small, tr(T_SAVES_HELP), W - 120)) {
-            text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-            y += 32;
-        }
-    } else {
-        const int rowh = 60, top = 116, vis = 9;
-        if (app.save_sel < app.save_scroll) app.save_scroll = app.save_sel;
-        if (app.save_sel >= app.save_scroll + vis) app.save_scroll = app.save_sel - vis + 1;
-        app.save_scroll_f = damp(app.save_scroll_f, (float)app.save_scroll);
-        app.save_sel_f = damp(app.save_sel_f, (float)app.save_sel);
-        SDL_Rect clip = { 0, top, W, vis * rowh };
-        SDL_RenderSetClipRect(r, &clip);
-        int hy = top + (int)((app.save_sel_f - app.save_scroll_f) * rowh);
-        fill_rect(r, 24, hy, W - 48, rowh - 6, C_PANEL);
-        fill_rect(r, 24, hy, 5, rowh - 6, g_accent);
-        for (int i = -1; i <= vis; i++) {
-            int idx = (int)floorf(app.save_scroll_f) + i;
-            if (idx < 0 || idx >= (int)app.saves.size()) continue;
-            int y = top + (int)((idx - app.save_scroll_f) * rowh);
-            SDL_Color tc = (idx == app.save_sel) ? C_TEXT : C_DIM;
-            char kb[32];
-            snprintf(kb, sizeof(kb), "%ld KB", app.saves[idx].size / 1024);
-            int namew = W - 96 - text_width(app.f_small, kb) - 16;
-            text(r, app.f_body, ellipsize(app.f_body, app.saves[idx].name, namew),
-                 48, y + 10, tc);
-            text(r, app.f_small, kb, W - 48, y + 16, C_DIM, Align::Right);
-        }
-        SDL_RenderSetClipRect(r, nullptr);
-    }
-    draw_hint(r, tr(T_SAVES_HINT));
+    top_hero(r, tr(T_SAVES), tr(T_SAVES), b,
+             app.saves.empty() ? C_DIM : C_GREEN, tr(T_SAVES_HELP));
 }
 
 // ---------------------------------------------------------------------------
 // activity statistics / favorites / history
 // ---------------------------------------------------------------------------
-void draw_tabbar(SDL_Renderer* r, const std::vector<std::string>& names, float active_f)
-{
-    std::vector<std::pair<int, int>> rects;
-    int x = 32;
-    for (int i = 0; i < (int)names.size(); i++) {
-        int w = text_width(app.f_body, names[i]) + 32;
-        rects.push_back({ x, w });
-        x += w + 10;
-    }
-    int n = (int)rects.size();
-    int a0 = std::clamp((int)floorf(active_f), 0, n - 1);
-    int a1 = std::clamp(a0 + 1, 0, n - 1);
-    float f = std::clamp(active_f - a0, 0.0f, 1.0f);
-    int hx = (int)(rects[a0].first + (rects[a1].first - rects[a0].first) * f);
-    int hw = (int)(rects[a0].second + (rects[a1].second - rects[a0].second) * f);
-    fill_rect(r, hx, 104, hw, 46, C_PANEL);
-    fill_rect(r, hx, 146, hw, 4, g_accent);
-    for (int i = 0; i < n; i++)
-        text(r, app.f_body, names[i], rects[i].first + 16, 112,
-             fabsf(i - active_f) < 0.5f ? C_TEXT : C_DIM);
-}
-
-void draw_scrollbar(SDL_Renderer* r, int top, int vis, int rowh, int n, float scroll, int w)
-{
-    if (n <= vis) return;
-    int trackh = vis * rowh;
-    int barh = std::max(30, trackh * vis / n);
-    int bary = top + (int)((trackh - barh) * scroll / std::max(1, n - vis));
-    fill_rect(r, w - 14, top, 4, trackh, { C_DIM.r, C_DIM.g, C_DIM.b, 90 });
-    fill_rect(r, w - 14, bary, 4, barh, g_accent);
-}
-
-// Two-line selectable row: title above, dim meta below, one value on the right.
-// hy overrides the highlight position so it can glide between rows.
-void draw_row(SDL_Renderer* r, int y, int w, bool sel, const std::string& title,
-              const std::string& meta, const std::string& right, SDL_Color rightc,
-              int hy = -1)
-{
-    const int rowh = 76;
-    if (sel) {
-        int yy = hy >= 0 ? hy : y;
-        fill_rect(r, 24, yy, w - 48, rowh - 6, C_PANEL);
-        fill_rect(r, 24, yy, 5, rowh - 6, g_accent);
-    }
-    int rw = text_width(app.f_small, right);
-    text(r, app.f_body, ellipsize(app.f_body, title, w - 100 - rw),
-         48, y, sel ? C_TEXT : C_DIM);
-    text(r, app.f_small, ellipsize(app.f_small, meta, w - 100 - rw), 48, y + 44, C_DIM);
-    if (!right.empty()) text(r, app.f_small, right, w - 40, y + 26, rightc, Align::Right);
-}
-
 // Rows the current activity tab lets you select. Trends is a chart: nothing.
 static int act_row_count()
 {
@@ -2730,351 +2211,174 @@ static int act_row_count()
 void draw_activity(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_ACTIVITY), 32, 26, C_TEXT);
-    text(r, app.f_body, fmt_duration(app.act_total), W - 32, 34, C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
-    app.act_tab_f = damp(app.act_tab_f, (float)app.act_tab, 12.0f);
-    draw_tabbar(r, { tr(T_TAB_OVERVIEW), tr(T_TAB_TIMELINE),
-                     tr(T_TAB_TREND), tr(T_TAB_PICKS) }, app.act_tab_f);
+    draw_topbar(r);
 
-    const int top = 164, rowh = 76, vis = 7;
-    app.act_scroll_f = damp(app.act_scroll_f, (float)app.act_scroll);
-    app.act_sel_f = damp(app.act_sel_f, (float)app.act_sel);
+    const char* tabs[4] = { tr(T_TAB_OVERVIEW), tr(T_TAB_TIMELINE),
+                            tr(T_TAB_TREND), tr(T_TAB_PICKS) };
+    bool has = !app.act_games.empty();
+    top_plate(r, W / 2, 290, 142);
+    icon_trophy(r, W / 2 - 62, 228, 124,
+                has ? C_ACCENT : with_alpha(C_DIM, 210));
 
-    if (app.act_tab == 0) {
-        long long today = app.act_daily.empty() ? 0 : app.act_daily.back();
-        long long week = 0;
-        for (int i = std::max(0, (int)app.act_daily.size() - 7);
-             i < (int)app.act_daily.size(); i++)
-            week += app.act_daily[i];
+    long long today = app.act_daily.empty() ? 0 : app.act_daily.back();
+    long long week = 0;
+    for (int i = std::max(0, (int)app.act_daily.size() - 7);
+         i < (int)app.act_daily.size(); i++)
+        week += app.act_daily[i];
+    // act_sessions is capped at the newest 200 for browsing; the total has to
+    // come from the per-game aggregates, which are not capped.
+    long long sess_total = 0;
+    for (const auto& g : app.act_games) sess_total += g.sessions;
 
-        const char* labels[] = { tr(T_ACT_TOTAL), tr(T_ACT_SESSIONS),
-                                 tr(T_ACT_GAMES_PLAYED), tr(T_ACT_TODAY) };
-        // act_sessions is capped at the newest 200 for browsing; the count tile
-        // must be the real total, which the per-game aggregates still carry.
-        long long sess_total = 0;
-        for (const auto& g : app.act_games) sess_total += g.sessions;
-        char v1[32], v2[64];
-        snprintf(v1, sizeof(v1), "%lld", sess_total);
-        snprintf(v2, sizeof(v2), tr(T_ACT_GAMES_FMT), app.act_games.size());
-        std::string vals[] = { fmt_duration(app.act_total), v1, v2, fmt_duration(today) };
-        // 2x2 rather than 4-across: a localised "9999 小时 59 分" needs 213px
-        // at 30pt, which a 228px tile cannot show without truncating.
-        for (int i = 0; i < 4; i++) {
-            int x = 32 + (i % 2) * 488, y = 170 + (i / 2) * 108;
-            fill_rect(r, x, y, 472, 96, C_PANEL);
-            fill_rect(r, x, y, 472, 3, g_accent);
-            text(r, app.f_small, labels[i], x + 16, y + 12, C_DIM);
-            text(r, app.f_body, ellipsize(app.f_body, vals[i], 440), x + 16, y + 44, C_TEXT);
-        }
-        text(r, app.f_small, tr(T_ACT_WEEK) + std::string(" · ") + fmt_duration(week),
-             32, 390, C_DIM);
-        text(r, app.f_body, tr(T_ACT_MOST), 32, 424, C_TEXT);
-
-        if (app.act_games.empty()) {
-            text(r, app.f_body, tr(T_ACT_EMPTY), W / 2, 500, C_TEXT, Align::Center);
-            int y = 556;
-            for (const auto& l : wrap(app.f_small, tr(T_ACT_EMPTY_HELP), W - 120)) {
-                text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-                y += 32;
-            }
-        } else {
-            int hy = 466 + (int)(app.act_sel_f * 48);
-            fill_rect(r, 24, hy, W - 48, 44, C_PANEL);
-            fill_rect(r, 24, hy, 5, 44, g_accent);
-            for (int i = 0; i < act_row_count(); i++) {
-                const GameStat& g = app.act_games[i];
-                int y = 466 + i * 48;
-                bool sel = (i == app.act_sel);
-                char rk[8], ss[64];
-                snprintf(rk, sizeof(rk), "%d", i + 1);
-                snprintf(ss, sizeof(ss), tr(T_ACT_SESSIONS_FMT), g.sessions);
-                text(r, app.f_body, rk, 48, y + 6, sel ? g_accent : C_DIM);
-                text(r, app.f_body, ellipsize(app.f_body, g.title, 440),
-                     96, y + 6, sel ? C_TEXT : C_DIM);
-                text(r, app.f_small, console_badge(g.sys), W - 420, y + 11, C_DIM, Align::Right);
-                text(r, app.f_small, ss, W - 250, y + 11, C_DIM, Align::Right);
-                text(r, app.f_small, fmt_duration(g.seconds), W - 48, y + 11,
-                     g_accent, Align::Right);
-            }
-        }
-    } else if (app.act_tab == 1) {
-        if (app.act_sessions.empty()) {
-            text(r, app.f_body, tr(T_ACT_EMPTY), W / 2, 330, C_TEXT, Align::Center);
-            int y = 386;
-            for (const auto& l : wrap(app.f_small, tr(T_ACT_EMPTY_HELP), W - 120)) {
-                text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-                y += 32;
-            }
-        } else {
-            if (app.act_sel < app.act_scroll) app.act_scroll = app.act_sel;
-            if (app.act_sel >= app.act_scroll + vis) app.act_scroll = app.act_sel - vis + 1;
-            SDL_Rect clip = { 0, top, W, vis * rowh };
-            SDL_RenderSetClipRect(r, &clip);
-            int hy = top + (int)((app.act_sel_f - app.act_scroll_f) * rowh);
-            for (int i = -1; i <= vis; i++) {
-                int idx = (int)floorf(app.act_scroll_f) + i;
-                if (idx < 0 || idx >= (int)app.act_sessions.size()) continue;
-                const PlaySession& s = app.act_sessions[idx];
-                draw_row(r, top + (int)((idx - app.act_scroll_f) * rowh), W,
-                         idx == app.act_sel, s.title,
-                         fmt_when(s.start) + " · " + console_badge(s.sys),
-                         fmt_duration(s.seconds), g_accent, hy);
-            }
-            draw_scrollbar(r, top, vis, rowh, (int)app.act_sessions.size(),
-                           app.act_scroll_f, W);
-            SDL_RenderSetClipRect(r, nullptr);
-        }
-    } else if (app.act_tab == 2) {
-        long long mx = 0;
-        for (long long v : app.act_daily) mx = std::max(mx, v);
-        text(r, app.f_body, tr(T_ACT_TREND_TITLE), 32, 170, C_TEXT);
-        if (mx == 0) {
-            text(r, app.f_body, tr(T_ACT_NO_TREND), W / 2, 330, C_TEXT, Align::Center);
-        } else {
-            const int n = (int)app.act_daily.size();
-            const int cx0 = 48, cw = W - 96, base = 430, ch = 200;
-            int slot = cw / n, bw = slot - 14;
-            time_t now = time(nullptr);
-            for (int i = 0; i < n; i++) {
-                int x = cx0 + i * slot + 7;
-                int h = (int)(ch * app.act_daily[i] / mx);
-                fill_rect(r, x, base - ch, bw, ch, { C_DIM.r, C_DIM.g, C_DIM.b, 60 });
-                if (h > 0) fill_rect(r, x, base - h, bw, h, g_accent);
-                // label by local calendar day, not now - k*86400: a DST change
-                // would otherwise shift every label after it by one day
-                struct tm tmv;
-                localtime_r(&now, &tmv);
-                tmv.tm_hour = 0; tmv.tm_min = 0; tmv.tm_sec = 0;
-                tmv.tm_mday -= (n - 1 - i);
-                // -1, not today's tm_isdst: the shifted day can be on the other
-                // side of a DST change, and a stale flag makes mktime move the
-                // hour — which can roll the label back to the previous day.
-                tmv.tm_isdst = -1;
-                mktime(&tmv);
-                char d[8];
-                snprintf(d, sizeof(d), "%d", tmv.tm_mday);
-                text(r, app.f_small, d, x + bw / 2, base + 8, C_DIM, Align::Center);
-            }
-            fill_rect(r, cx0, base, cw, 2, { C_DIM.r, C_DIM.g, C_DIM.b, 200 });
-        }
-        text(r, app.f_body, tr(T_ACT_BY_CONSOLE), 32, 486, C_TEXT);
-        long long per[5] = { 0, 0, 0, 0, 0 };
-        for (const auto& g : app.act_games) {
-            int ci = console_index(g.sys);
-            if (ci < 5) per[ci] += g.seconds;
-        }
-        long long pmx = 0;
-        for (long long v : per) pmx = std::max(pmx, v);
-        for (int i = 0; i < 5; i++) {
-            int y = 534 + i * 36;
-            text(r, app.f_small, consoles()[i].name_en, 48, y, C_DIM);
-            fill_rect(r, 140, y + 6, 600, 14, { C_DIM.r, C_DIM.g, C_DIM.b, 60 });
-            if (pmx > 0 && per[i] > 0)
-                fill_rect(r, 140, y + 6, (int)(600 * per[i] / pmx), 14, g_accent);
-            text(r, app.f_small, fmt_duration(per[i]), W - 48, y, C_DIM, Align::Right);
+    std::string status, detail;
+    SDL_Color sc = C_DIM;
+    if (has) {
+        char s1[64], s2[64];
+        snprintf(s1, sizeof(s1), tr(T_ACT_SESSIONS_FMT), (int)sess_total);
+        snprintf(s2, sizeof(s2), tr(T_ACT_GAMES_FMT), app.act_games.size());
+        status = std::string(s1) + "  ·  " + s2;
+        sc = with_alpha(C_TEXT, 235);
+        if (app.act_tab == 0) {
+            detail = std::string(tr(T_ACT_WEEK)) + " " + fmt_duration(week) +
+                     "   ·   " + tr(T_ACT_TODAY) + " " + fmt_duration(today);
         }
     } else {
-        if (app.act_picks.empty()) {
-            text(r, app.f_body, tr(T_ACT_PICKS_EMPTY), W / 2, 330, C_TEXT, Align::Center);
-            int y = 386;
-            for (const auto& l : wrap(app.f_small, tr(T_ACT_PICKS_HELP), W - 120)) {
-                text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-                y += 32;
-            }
-        } else {
-            if (app.act_sel < app.act_scroll) app.act_scroll = app.act_sel;
-            if (app.act_sel >= app.act_scroll + vis) app.act_scroll = app.act_sel - vis + 1;
-            const char* reasons[] = { tr(T_PICK_FAV_NEW), tr(T_PICK_FAV_BACK),
-                                      tr(T_PICK_NEW), tr(T_PICK_BACK),
-                                      tr(T_PICK_REGULAR) };
-            SDL_Rect clip = { 0, top, W, vis * rowh };
-            SDL_RenderSetClipRect(r, &clip);
-            int hy = top + (int)((app.act_sel_f - app.act_scroll_f) * rowh);
-            for (int i = -1; i <= vis; i++) {
-                int idx = (int)floorf(app.act_scroll_f) + i;
-                if (idx < 0 || idx >= (int)app.act_picks.size()) continue;
-                const Pick& p = app.act_picks[idx];
-                std::string right;
-                if (p.idle_days > 0) {
-                    char b[64];
-                    snprintf(b, sizeof(b), tr(T_PICK_IDLE_FMT), p.idle_days);
-                    right = b;
-                } else if (p.seconds > 0) {
-                    right = fmt_duration(p.seconds);
-                }
-                draw_row(r, top + (int)((idx - app.act_scroll_f) * rowh), W,
-                         idx == app.act_sel, p.title,
-                         std::string(reasons[p.reason]) + " · " + console_badge(p.sys),
-                         right, C_AMBER, hy);
-            }
-            draw_scrollbar(r, top, vis, rowh, (int)app.act_picks.size(), app.act_scroll_f, W);
-            SDL_RenderSetClipRect(r, nullptr);
-        }
+        status = tr(T_ACT_EMPTY);
     }
-    draw_hint(r, tr(T_ACTIVITY_HINT));
+    // The trend tab answers with a 14-day sparkline instead of prose.
+    long long mx = 0;
+    for (long long v : app.act_daily) mx = std::max(mx, v);
+    if (app.act_tab == 2 && has && mx == 0) detail = tr(T_ACT_NO_TREND);
+    top_hero(r, tabs[app.act_tab], fmt_duration(app.act_total), status, sc, detail);
+
+    if (app.act_tab == 2 && has && mx > 0 && !app.act_daily.empty()) {
+        const int n = (int)app.act_daily.size();
+        const int cw = 720, x0 = (W - cw) / 2, base = 694, ch = 52;
+        int slot = cw / n, bw = std::max(8, slot - 10);
+        for (int i = 0; i < n; i++) {
+            int x = x0 + i * slot + (slot - bw) / 2;
+            int h = (int)(ch * app.act_daily[i] / mx);
+            rrect(r, { x, base - ch, bw, ch }, 4, with_alpha(C_DIM, 45));
+            if (h > 0)
+                rrect(r, { x, base - h, bw, h }, 4,
+                      i == n - 1 ? C_ACCENT : with_alpha(C_ACCENT, 165));
+        }
+        fill_rect(r, x0, base + 1, cw, 1, with_alpha(C_DIM, 130));
+    }
+    top_dots(r, 4, app.act_tab, 720);
 }
 
 void draw_quick(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, 96, C_PANEL);
-    text(r, app.f_title, tr(T_QUICK), 32, 26, C_TEXT);
-    char b[96];
-    snprintf(b, sizeof(b), tr(T_QUICK_COUNT_FMT), app.quick.size());
-    text(r, app.f_body, b, W - 32, 34, C_DIM, Align::Right);
-    fill_rect(r, 0, 96, W, 3, g_accent);
-    app.quick_tab_f = damp(app.quick_tab_f, (float)app.quick_tab, 12.0f);
-    draw_tabbar(r, { tr(T_TAB_FAV), tr(T_TAB_HISTORY) }, app.quick_tab_f);
+    draw_topbar(r);
 
-    const int top = 164, rowh = 76, vis = 7;
-    const int listw = W - 360;   // leave room for the cover panel
-    app.quick_scroll_f = damp(app.quick_scroll_f, (float)app.quick_scroll);
-    app.quick_sel_f = damp(app.quick_sel_f, (float)app.quick_sel);
+    bool fav = app.quick_tab == 0;
+    bool has = !app.quick.empty();
+    top_plate(r, W / 2, 290, 142);
+    icon_star(r, W / 2 - 62, 228, 124,
+              has ? (fav ? C_AMBER : C_ACCENT) : with_alpha(C_DIM, 210), fav);
 
-    if (app.quick.empty()) {
-        text(r, app.f_body,
-             ellipsize(app.f_body,
-                       app.quick_tab == 0 ? tr(T_QUICK_EMPTY_FAV) : tr(T_QUICK_EMPTY_HIST),
-                       listw - 64),
-             listw / 2, 330, C_TEXT, Align::Center);
-        int y = 386;
-        for (const auto& l : wrap(app.f_small,
-                 app.quick_tab == 0 ? tr(T_QUICK_EMPTY_FAV_HELP) : tr(T_QUICK_EMPTY_HIST_HELP),
-                 listw - 64)) {
-            text(r, app.f_small, l, listw / 2, y, C_DIM, Align::Center);
-            y += 32;
+    std::string hero, status, detail;
+    SDL_Color sc = C_DIM;
+    if (has) {
+        const QuickEntry& e = app.quick[app.quick_sel];
+        hero = e.game.title;
+        char b[96];
+        snprintf(b, sizeof(b), tr(T_QUICK_COUNT_FMT), app.quick.size());
+        status = std::string(tr(fav ? T_TAB_FAV : T_TAB_HISTORY)) + "  ·  " + b;
+        sc = with_alpha(C_TEXT, 235);
+        detail = console_badge(e.sys);
+        if (e.missing) {
+            detail += "  ·  " + std::string(tr(T_QUICK_MISSING));
+        } else if (e.last > 0) {
+            detail += "  ·  " + fmt_when(e.last) + "  ·  " + fmt_duration(e.seconds);
         }
     } else {
-        if (app.quick_sel < app.quick_scroll) app.quick_scroll = app.quick_sel;
-        if (app.quick_sel >= app.quick_scroll + vis) app.quick_scroll = app.quick_sel - vis + 1;
-        SDL_Rect clip = { 0, top, listw, vis * rowh };
-        SDL_RenderSetClipRect(r, &clip);
-        int hy = top + (int)((app.quick_sel_f - app.quick_scroll_f) * rowh);
-        for (int i = -1; i <= vis; i++) {
-            int idx = (int)floorf(app.quick_scroll_f) + i;
-            if (idx < 0 || idx >= (int)app.quick.size()) continue;
-            const QuickEntry& e = app.quick[idx];
-            std::string title = e.game.title;
-            if (fav_contains(e.sys, title)) title = "★ " + title;
-            std::string meta = console_badge(e.sys);
-            if (e.missing) {
-                meta += " · " + std::string(tr(T_QUICK_MISSING));
-            } else if (e.last > 0) {
-                meta += " · " + fmt_when(e.last) + " · " + fmt_duration(e.seconds);
-            }
-            // No right-hand value column: the meta line already carries the
-            // duration, and duplicating it would cost the title 156px.
-            draw_row(r, top + (int)((idx - app.quick_scroll_f) * rowh), listw,
-                     idx == app.quick_sel, title, meta, "", C_DIM, hy);
-        }
-        draw_scrollbar(r, top, vis, rowh, (int)app.quick.size(), app.quick_scroll_f, listw);
-        SDL_RenderSetClipRect(r, nullptr);
-
-        const QuickEntry& e = app.quick[app.quick_sel];
-        int px = W - 320, py = 190, pw = 280, ph = 280;
-        fill_rect(r, px - 8, py - 8, pw + 16, ph + 16, C_PANEL);
-        SDL_Texture* cv = e.missing ? nullptr
-                                    : cover_tex(r, cover_path(e.sys, e.game.title));
-        if (cv) {
-            SDL_Rect dst = { px, py, pw, ph };
-            draw_tex(r, cv, dst);
-        } else if (!e.missing && app.icons[e.con]) {
-            SDL_Rect dst = { px + 40, py + 40, pw - 80, ph - 80 };
-            draw_tex(r, app.icons[e.con], dst, 160);
-        }
-        text(r, app.f_small, tr(T_COVER), px + pw / 2, py + ph + 20, C_DIM, Align::Center);
+        hero = tr(fav ? T_QUICK_EMPTY_FAV : T_QUICK_EMPTY_HIST);
+        detail = tr(fav ? T_QUICK_EMPTY_FAV_HELP : T_QUICK_EMPTY_HIST_HELP);
     }
-    draw_hint(r, tr(T_QUICK_HINT));
+    top_hero(r, tr(T_QUICK), hero, status, sc, detail);
+    top_dots(r, 2, app.quick_tab, 712);
 }
 
 void draw_msg(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 170 });
+    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 185 });
     int pw = 820, ph = 460, px = (W - pw) / 2, py = (H - ph) / 2;
-    fill_rect(r, px, py, pw, ph, C_PANEL);
-    fill_rect(r, px, py, pw, 4, C_AMBER);
-    text(r, app.f_title, ellipsize(app.f_title, app.msg_title, pw - 80),
-         W / 2, py + 40, C_AMBER, Align::Center);
-    auto lines = wrap(app.f_body, app.msg_body, pw - 100);
+    glow(r, W / 2, py + ph / 2, 380, C_AMBER, 12, 18);
+    card(r, { px, py, pw, ph }, 36, false, 246);
+
+    const int cx = W / 2, cy = py + 86;
+    circle(r, cx, cy, 44, with_alpha(C_AMBER, 26));
+    ring(r, cx, cy, 44, 1, with_alpha(C_AMBER, 110));
+    text(r, app.f_hero, "!", cx, cy - 36, C_AMBER, Align::Center);
+
+    text(r, app.f_title, ellipsize(app.f_title, app.msg_title, pw - 100),
+         cx, py + 152, C_TEXT, Align::Center);
+    auto lines = wrap(app.f_body, app.msg_body, pw - 140);
     // the body must stay above the back hint; overlong errors are cut, not
     // allowed to draw over it
-    const size_t maxlines = 6;
-    int y = py + 120;
+    const size_t maxlines = 4;
+    int y = py + 212;
     for (size_t i = 0; i < lines.size() && i < maxlines; i++) {
         std::string l = lines[i];
         if (i + 1 == maxlines && lines.size() > maxlines)
-            l = ellipsize(app.f_body, l + "…", pw - 100);
-        text(r, app.f_body, l, W / 2, y, C_TEXT, Align::Center);
-        y += 44;
+            l = ellipsize(app.f_body, l + "…", pw - 140);
+        text(r, app.f_body, l, cx, y, C_TEXT, Align::Center);
+        y += 42;
     }
-    text(r, app.f_small, tr(T_BACK), W / 2, py + ph - 52, C_DIM, Align::Center);
+    text(r, app.f_small, tr(T_BACK), cx, py + ph - 52,
+         with_alpha(C_DIM, 200), Align::Center);
 }
 
 void draw_confirm(SDL_Renderer* r)
 {
     draw_background(r);
-    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 170 });
-    int pw = 640, ph = 300, px = (W - pw) / 2, py = (H - ph) / 2;
-    fill_rect(r, px, py, pw, ph, C_PANEL);
-    fill_rect(r, px, py, pw, 4, C_RED);
-    if (app.confirm == ConfirmAct::Update) {
+    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 185 });
+    int pw = 680, ph = 340, px = (W - pw) / 2, py = (H - ph) / 2;
+
+    bool update = app.confirm == ConfirmAct::Update;
+    SDL_Color ac = update ? C_ACCENT
+                 : app.confirm == ConfirmAct::Reboot ? C_AMBER : C_RED;
+    glow(r, W / 2, py + 64, 300, ac, 10, 16);
+    card(r, { px, py, pw, ph }, 36, false, 246);
+
+    const int cx = W / 2, cy = py + 64;
+    circle(r, cx, cy, 42, with_alpha(ac, 26));
+    ring(r, cx, cy, 42, 1, with_alpha(ac, 120));
+    if (update) icon_download(r, cx - 22, cy - 22, 44, ac);
+    else if (app.confirm == ConfirmAct::Reboot) icon_refresh(r, cx - 22, cy - 22, 44, ac);
+    else if (app.confirm == ConfirmAct::PowerOff) icon_power(r, cx - 22, cy - 22, 44, ac);
+    else icon_trash(r, cx - 22, cy - 22, 44, ac);
+
+    std::string title, body;
+    if (update) {
         // second confirmation before anything is downloaded or written
-        std::string b = fmt(tr(T_UPDATE_CONFIRM), app.upd_version.c_str());
-        text(r, app.f_title, ellipsize(app.f_title, b, pw - 64),
-             W / 2, py + 48, C_TEXT, Align::Center);
-        auto lines = wrap(app.f_small, tr(T_UPDATE_CONFIRM_BODY), pw - 96);
-        const size_t maxlines = 3;   // keep clear of the confirm hint below
-        int y = py + 116;
+        title = fmt(tr(T_UPDATE_CONFIRM), app.upd_version.c_str());
+        body = tr(T_UPDATE_CONFIRM_BODY);
+    } else {
+        title = (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
+              : (app.confirm == ConfirmAct::Reboot) ? tr(T_CONFIRM_REBOOT)
+              : tr(T_CONFIRM_DEL);
+    }
+    text(r, app.f_title, ellipsize(app.f_title, title, pw - 64),
+         cx, py + 122, C_TEXT, Align::Center);
+    if (!body.empty()) {
+        auto lines = wrap(app.f_small, body, pw - 112);
+        const size_t maxlines = 2;
+        int y = py + 184;
         for (size_t i = 0; i < lines.size() && i < maxlines; i++) {
             std::string l = lines[i];
             if (i + 1 == maxlines && lines.size() > maxlines)
-                l = ellipsize(app.f_small, l + "…", pw - 96);
-            text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
-            y += 34;
+                l = ellipsize(app.f_small, l + "…", pw - 112);
+            text(r, app.f_small, l, cx, y, C_DIM, Align::Center);
+            y += 32;
         }
-        text(r, app.f_body, tr(T_CONFIRM_HINT), W / 2, py + 236, C_DIM, Align::Center);
-        return;
     }
-    const char* t = (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
-                  : (app.confirm == ConfirmAct::Reboot) ? tr(T_CONFIRM_REBOOT)
-                  : tr(T_CONFIRM_DEL);
-    text(r, app.f_title, ellipsize(app.f_title, t, pw - 64),
-         W / 2, py + 60, C_TEXT, Align::Center);
-    text(r, app.f_body, tr(T_CONFIRM_HINT), W / 2, py + 170, C_DIM, Align::Center);
-}
-
-// ---------------------------------------------------------------------------
-// bottom panel: ambient clock
-// ---------------------------------------------------------------------------
-void draw_ambient()
-{
-    if (!app.ren_bot) return;
-    SDL_Renderer* r = app.ren_bot;
-    if (app.ambient) {
-        SDL_Rect dst = { 0, 0, W, H };
-        draw_tex(r, app.ambient, dst);
-    } else {
-        fill_rect(r, 0, 0, W, H, C_BG);
-        fill_rect(r, 0, H - 6, W, 6, g_accent);
-    }
-    // theme tint over the bottom panel (stronger than top for a live feel)
-    fill_rect(r, 0, 0, W, H, { g_accent.r, g_accent.g, g_accent.b, (Uint8)g_tint_bot });
-
-    text(r, app.f_logo, "gameOS", W / 2, 170, g_accent, Align::Center);
-
-    time_t now = time(nullptr);
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    std::string hhmm = two(tmv.tm_hour) + ":" + two(tmv.tm_min);
-    text(r, app.f_clock, hhmm, W / 2, 260, C_TEXT, Align::Center);
-
-    std::string date = format_date(tmv);
-    text(r, app.f_body, date, W / 2, 420, C_DIM, Align::Center);
-    text(r, app.f_small, tr(T_TAGLINE), W / 2, 500, C_DIM, Align::Center);
-    SDL_RenderPresent(r);
+    text(r, app.f_small, tr(T_CONFIRM_HINT), cx, py + ph - 52,
+         with_alpha(C_DIM, 200), Align::Center);
 }
 
 // ---------------------------------------------------------------------------
@@ -3533,7 +2837,11 @@ void confirm_btn()
 
 void start_btn()
 {
-    if (app.screen == Screen::Home) {
+    if (app.wifi_kb) {
+        sound_play(SND_BACK);
+        kb_cancel();
+    }
+    else if (app.screen == Screen::Home) {
         sound_play(SND_CONFIRM);
         app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
         wifi_probe_start();      // fills in the WiFi row when the probe lands
@@ -3646,6 +2954,1653 @@ void navigate(int dx, int dy)
 }
 
 // ---------------------------------------------------------------------------
+// bottom deck: the touch-first control surface
+//
+// The top panel shows one thing well (hero, detail, dashboard); the deck
+// carries every control. Regions are registered while drawing and hit-tested
+// against the last rendered frame, so touch always matches what is on screen.
+// ---------------------------------------------------------------------------
+SDL_Texture* g_deck_tex[2] = { nullptr, nullptr };
+int g_deck_cur = 0;
+Screen g_deck_last = Screen::Home;
+int g_deck_last_step = -1;
+bool g_deck_last_kb = false;
+Uint32 g_deck_start = 0;
+
+static SDL_Rect g_slider_rect = { 0, 0, 1, 1 };
+
+void hit_add(SDL_Rect rc, int id, int a = 0, int b = 0)
+{
+    ui_hit_add(rc, id, a, b);
+}
+
+void deck_header(SDL_Renderer* r, const char* title, const char* right = nullptr)
+{
+    rrect(r, { W / 2 - 34, 12, 68, 4 }, 2, with_alpha(C_DIM, 85));
+    if (title) {
+        text(r, app.f_body, title, 48, 26, C_TEXT);
+    } else if (app.logo_bot) {
+        int tw = 0, th = 0;
+        SDL_QueryTexture(app.logo_bot, nullptr, nullptr, &tw, &th);
+        if (th > 0) {
+            SDL_Rect dst = { 48, 26, tw * 28 / th, 28 };
+            draw_tex(r, app.logo_bot, dst, 220);
+        }
+    } else {
+        text(r, app.f_logo, "gameOS", 48, 20, C_ACCENT);
+    }
+    if (right && *right) {
+        text(r, app.f_small, ellipsize(app.f_small, right, 300),
+             W - 48, 32, with_alpha(C_DIM, 230), Align::Right);
+    } else {
+        text(r, app.f_small, clock_hm(), W - 48, 32, with_alpha(C_DIM, 220),
+             Align::Right);
+    }
+}
+
+void deck_hint(SDL_Renderer* r, const char* s)
+{
+    if (!s || !*s) return;
+    text(r, app.f_small, ellipsize(app.f_small, s, W - 120),
+         W / 2, H - 42, with_alpha(C_DIM, 160), Align::Center);
+}
+
+void deck_base(SDL_Renderer* r)
+{
+    fill_rect(r, 0, 0, W, H, C_BG);
+    if (app.ambient) {
+        SDL_SetTextureAlphaMod(app.ambient, 70);
+        SDL_Rect dst = { 0, 0, W, H };
+        draw_tex(r, app.ambient, dst, 255);
+        SDL_SetTextureAlphaMod(app.ambient, 255);
+    }
+    fill_rect(r, 0, 0, W, H, { C_BG.r, C_BG.g, C_BG.b, 165 });
+    glow(r, W - 90, H - 30, 360, g_accent, 8, 16);
+    fill_rect(r, 0, 0, W, 2, with_alpha(C_ACCENT, 80));
+}
+
+void deck_volume_osd(SDL_Renderer* r)
+{
+    if (app.vol_osd < 0) return;
+    Uint32 el = SDL_GetTicks() - app.vol_osd_at;
+    if (el > 1600) return;
+    int a = 255;
+    if (el > 1100) a = (int)(255 * (1600 - el) / 500);
+    SDL_Rect rc = { W / 2 - 180, 10, 360, 68 };
+    rrect(r, rc, 34, rgba(C_PANEL.r, C_PANEL.g, C_PANEL.b, (Uint8)(235 * a / 255)));
+    rrect_stroke(r, rc, 34, with_alpha(C_ACCENT, a / 2), 1);
+    icon_speaker(r, rc.x + 22, rc.y + 20, 28, with_alpha(C_TEXT, a));
+    SDL_Color fill = with_alpha(C_ACCENT, a);
+    int w = 190;
+    rrect(r, { rc.x + 66, rc.y + 31, w, 7 }, 3, with_alpha(C_TRACK, a));
+    if (app.vol_osd > 0)
+        rrect(r, { rc.x + 66, rc.y + 31, w * app.vol_osd / 100, 7 }, 3, fill);
+    char b[16];
+    snprintf(b, sizeof(b), "%d%%", app.vol_osd);
+    text(r, app.f_small, b, rc.x + rc.w - 26, rc.y + 20, with_alpha(C_TEXT, a),
+         Align::Right);
+}
+
+void volume_show(int v)
+{
+    app.vol_osd = std::clamp(v, 0, 100);
+    app.vol_osd_at = SDL_GetTicks();
+}
+
+// Sets the level locally, pushes it to ALSA at a human rate, and persists on
+// release. Shared by the deck slider, L2/R2 and the hardware keys' state file.
+void volume_set(int v, bool persist)
+{
+    v = std::clamp(v, 0, 100);
+    bool changed = v != app.settings.volume;
+    app.settings.volume = v;
+    Uint32 now = SDL_GetTicks();
+    if (changed || persist) {
+        if (persist || now - app.slider_at > 110) {
+            app.slider_at = now;
+            apply_volume(v);
+        }
+    }
+    if (changed) sound_play(SND_ADJUST);
+    volume_show(v);
+    if (persist) save_settings(app.settings);
+}
+
+void brightness_set(int v, bool persist)
+{
+    v = std::clamp(v, 10, 100);
+    bool changed = v != app.settings.brightness;
+    app.settings.brightness = v;
+    Uint32 now = SDL_GetTicks();
+    if (persist || (changed && now - app.slider_at > 110)) {
+        app.slider_at = now;
+        apply_brightness(v);
+    }
+    if (persist) save_settings(app.settings);
+}
+
+static void refresh_recent()
+{
+    Uint32 now = SDL_GetTicks();
+    if (app.recent_at && now - app.recent_at < 8000) return;
+    app.recent_at = now;
+    auto ses = activity_sessions();
+    if (ses.empty()) { app.recent_ok = false; return; }
+    QuickEntry e = resolve_entry(ses[0].sys, ses[0].title);
+    e.seconds = ses[0].seconds;
+    e.last = ses[0].start;
+    app.recent = std::move(e);
+    app.recent_ok = !app.recent.missing;
+}
+
+// A horizontal row of quiet info/control chips.
+void deck_round(SDL_Renderer* r, SDL_Rect rc, bool focus = false)
+{
+    rrect(r, rc, rc.w / 2, rgba(255, 255, 255, focus ? 22 : 9));
+    rrect_stroke(r, rc, rc.w / 2, rgba(255, 255, 255, focus ? 34 : 14), 1);
+}
+
+void deck_row(SDL_Renderer* r, SDL_Rect rc, bool sel, const std::string& title,
+              const std::string& meta, const std::string& right,
+              SDL_Color rightc)
+{
+    rrect(r, rc, 18, rgba(255, 255, 255, sel ? 17 : 7));
+    rrect_stroke(r, rc, 18, rgba(255, 255, 255, sel ? 24 : 9), 1);
+    if (sel) rrect(r, { rc.x + 16, rc.y + 18, 4, rc.h - 36 }, 2, C_ACCENT);
+    int rw = right.empty() ? 0 : text_width(app.f_small, right) + 28;
+    int tw = rc.w - 64 - rw;
+    if (meta.empty()) {
+        text(r, app.f_body, ellipsize(app.f_body, title, tw),
+             rc.x + 34, rc.y + (rc.h - 38) / 2, sel ? C_TEXT : with_alpha(C_TEXT, 205));
+    } else {
+        text(r, app.f_body, ellipsize(app.f_body, title, tw),
+             rc.x + 34, rc.y + 12, sel ? C_TEXT : with_alpha(C_TEXT, 205));
+        text(r, app.f_small, ellipsize(app.f_small, meta, tw),
+             rc.x + 34, rc.y + rc.h - 34, C_DIM);
+    }
+    if (!right.empty())
+        text(r, app.f_small, right, rc.x + rc.w - 24, rc.y + (rc.h - 28) / 2,
+             rightc, Align::Right);
+}
+
+// ---------------------------------------------------------------------------
+// home deck
+// ---------------------------------------------------------------------------
+void deck_home(SDL_Renderer* r)
+{
+    deck_header(r, nullptr);
+    refresh_recent();
+
+    int y = 84;
+
+    // continue card: always present, so the layout never jumps between boots
+    SDL_Rect rc = { 48, y, 928, 136 };
+    card(r, rc, 26, false, 224);
+    if (app.recent_ok) {
+        SDL_Texture* cv = cover_tex(r, cover_path(app.recent.sys,
+                                                  app.recent.game.title));
+        SDL_Rect art = { 68, y + 18, 100, 100 };
+        rrect(r, art, 18, rgba(255, 255, 255, 10));
+        if (cv) {
+            draw_tex(r, cv, art);
+        } else if (app.icons_bot[app.recent.con]) {
+            SDL_Rect dst = { 82, y + 32, 72, 72 };
+            draw_tex(r, app.icons_bot[app.recent.con], dst, 180);
+        }
+        text(r, app.f_small, tr(T_RECENT), 192, y + 22, C_ACCENT);
+        text(r, app.f_body, ellipsize(app.f_body, app.recent.game.title, 620),
+             192, y + 52, C_TEXT);
+        std::string meta = console_badge(app.recent.sys);
+        if (app.recent.seconds > 0)
+            meta += " · " + fmt_duration(app.recent.seconds);
+        if (app.recent.last > 0) meta += " · " + fmt_when(app.recent.last);
+        text(r, app.f_small, ellipsize(app.f_small, meta, 620),
+             192, y + 98, C_DIM);
+        deck_round(r, { W - 128, y + 36, 64, 64 }, true);
+        icon_play(r, W - 114, y + 50, 36, C_ACCENT);
+    } else {
+        deck_round(r, { 68, y + 36, 64, 64 });
+        icon_clock(r, 82, y + 50, 36, with_alpha(C_DIM, 190));
+        text(r, app.f_body, tr(T_ACT_EMPTY), 156, y + 34, with_alpha(C_TEXT, 210));
+        text(r, app.f_small, tr(T_QUICK_EMPTY_HIST_HELP),
+             156, y + 80, C_DIM);
+    }
+    hit_add(rc, HIT_RECENT);
+    y += 160;
+
+    // the five consoles: one tap opens, like the physical shortcut it is
+    SDL_Rect swipe = { 48, y, 928, 212 };
+    hit_add(swipe, HIT_SYS, -1);           // background horizontal swipe
+    for (int i = 0; i < 5; i++) {
+        SDL_Rect tile = { 48 + i * 188, y, 176, 212 };
+        bool sel = app.carousel == i;
+        if (sel) card(r, tile, 24, true, 238);
+        else {
+            rrect(r, tile, 24, rgba(255, 255, 255, 7));
+            rrect_stroke(r, tile, 24, rgba(255, 255, 255, 10), 1);
+        }
+        if (app.icons_bot[i]) {
+            SDL_Rect dst = { tile.x + 20, tile.y + 24, 56, 56 };
+            draw_tex(r, app.icons_bot[i], dst, sel ? 255 : 200);
+        } else {
+            text(r, app.f_title, consoles()[i].name_en, tile.x + 20, tile.y + 26,
+                 sel ? C_ACCENT : C_DIM);
+        }
+        char b[32];
+        snprintf(b, sizeof(b), tr(T_LIST_COUNT_FMT), games_for(i).size());
+        text(r, app.f_body, ellipsize(app.f_body, console_name(consoles()[i].id), 146),
+             tile.x + 15, tile.y + 104, sel ? C_TEXT : with_alpha(C_TEXT, 200));
+        text(r, app.f_small, b, tile.x + 15, tile.y + 158,
+             sel ? with_alpha(C_ACCENT, 220) : C_DIM);
+        hit_add(tile, HIT_SYS, i);
+    }
+    y += 236;
+
+    // hub shortcuts
+    for (int j = 0; j < 3; j++) {
+        SDL_Rect tile = { 48 + j * 314, y, 296, 132 };
+        rrect(r, tile, 22, rgba(255, 255, 255, 8));
+        rrect_stroke(r, tile, 22, rgba(255, 255, 255, 12), 1);
+        SDL_Texture* ico = j == 0 ? app.icon_activity_bot
+                          : j == 1 ? app.icon_quick_bot : app.icon_settings_bot;
+        if (ico) {
+            SDL_Rect dst = { tile.x + 24, tile.y + 44, 44, 44 };
+            draw_tex(r, ico, dst, 220);
+        }
+        const char* name = j == 0 ? tr(T_ACTIVITY) : j == 1 ? tr(T_QUICK)
+                                                           : tr(T_SETTINGS);
+        text(r, app.f_body, name, tile.x + 94, tile.y + 47, C_TEXT);
+        icon_chevron(r, tile.x + tile.w - 44, tile.y + 52, 28,
+                     with_alpha(C_DIM, 170), false);
+        hit_add(tile, HIT_HUB, j);
+    }
+
+    deck_hint(r, tr(T_TOUCH_HOME));
+}
+
+// ---------------------------------------------------------------------------
+// game list deck
+// ---------------------------------------------------------------------------
+void deck_list(SDL_Renderer* r)
+{
+    const Console& c = consoles()[app.carousel];
+    char b[96];
+    snprintf(b, sizeof(b), tr(T_LIST_COUNT_FMT), app.games.size());
+    std::string cnt = b;
+    if (app.fav_only) cnt += tr(T_FAV_SUFFIX);
+    deck_header(r, console_name(c.id), cnt.c_str());
+
+    const int top = 92, rowh = 88, vis = 6, listx = 48, listw = 928;
+    if (app.games.empty()) {
+        bool data_err = !app.fav_only && !userdata_mounted();
+        SDL_Rect ec = { 112, 196, 800, 252 };
+        card(r, ec, 30, false, 232);
+        text(r, app.f_body, app.fav_only ? tr(T_NO_FAV)
+             : data_err ? tr(T_DATA_ERROR) : tr(T_NO_GAMES),
+             W / 2, 252, data_err ? C_AMBER : C_TEXT, Align::Center);
+        std::string p = app.fav_only ? tr(T_FAV_HELP)
+                       : data_err ? tr(T_DATA_ERROR_HELP)
+                       : fmt(tr(T_COPY_ROMS_FMT), c.id);
+        int ty = 312;
+        for (const auto& l : wrap(app.f_small, p, 700)) {
+            text(r, app.f_small, l, W / 2, ty, C_DIM, Align::Center);
+            ty += 32;
+        }
+        deck_round(r, { 48, 640, 64, 64 });
+        icon_chevron(r, 60, 652, 40, C_TEXT, true);
+        hit_add({ 48, 640, 64, 64 }, HIT_BACK);
+        return;
+    }
+
+    if (app.sel < app.scroll) app.scroll = app.sel;
+    if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
+    app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll);
+    app.list_sel_f = damp(app.list_sel_f, (float)app.sel);
+
+    SDL_Rect rows = { listx, top, listw, vis * rowh - 4 };
+    hit_add(rows, HIT_LIST_ROWS);
+
+    SDL_Rect clip = { listx - 4, top - 4, listw + 8, vis * rowh };
+    set_clip(r, &clip);
+    int first = (int)floorf(app.list_scroll_f);
+    int fy = top + (int)((app.list_sel_f - app.list_scroll_f) * rowh);
+    card(r, { listx, fy, listw, rowh - 8 }, 18, true, 235);
+    rrect(r, { listx + 16, fy + 20, 4, rowh - 48 }, 2, C_ACCENT);
+    for (int idx = first - 1; idx <= first + vis; idx++) {
+        if (idx < 0 || idx >= (int)app.games.size()) continue;
+        int ry = top + (int)((idx - app.list_scroll_f) * rowh);
+        bool sel = idx == app.sel;
+        if (!sel) {
+            rrect(r, { listx, ry, listw, rowh - 8 }, 18, rgba(255, 255, 255, 7));
+            rrect_stroke(r, { listx, ry, listw, rowh - 8 }, 18,
+                         rgba(255, 255, 255, 9), 1);
+        }
+        const Game& g = app.games[idx];
+        bool fav = fav_contains(c.id, g.title);
+        bool tf2 = on_tf2(g.path);
+        int maxw = listw - 84 - (fav ? 40 : 0) - (tf2 ? 82 : 0);
+        text(r, app.f_body, ellipsize(app.f_body, g.title, maxw),
+             listx + 34, ry + 22, sel ? C_TEXT : with_alpha(C_TEXT, 205));
+        if (fav) icon_star(r, listx + listw - 94, ry + 26, 34, C_AMBER, true);
+        if (tf2) {
+            rrect(r, { listx + listw - 72, ry + 28, 44, 24 }, 12,
+                  rgba(255, 255, 255, 16));
+            text(r, app.f_small, "TF2", listx + listw - 50, ry + 24, C_DIM,
+                 Align::Center);
+        }
+        hit_add({ listx, ry, listw, rowh - 8 }, HIT_LIST_ROW, idx);
+    }
+    set_clip(r, nullptr);
+
+    // controls
+    deck_round(r, { 48, 644, 64, 64 });
+    icon_chevron(r, 60, 656, 40, C_TEXT, true);
+    hit_add({ 48, 644, 64, 64 }, HIT_BACK);
+
+    deck_round(r, { 124, 644, 64, 64 }, fav_contains(c.id, app.games[app.sel].title));
+    icon_star(r, 138, 658, 36,
+              fav_contains(c.id, app.games[app.sel].title) ? C_AMBER : C_TEXT,
+              fav_contains(c.id, app.games[app.sel].title));
+    hit_add({ 124, 644, 64, 64 }, HIT_FAV);
+
+    deck_round(r, { 200, 644, 64, 64 });
+    icon_refresh(r, 214, 658, 36, C_TEXT);
+    hit_add({ 200, 644, 64, 64 }, HIT_REFRESH);
+
+    SDL_Rect filt = { 300, 644, 176, 64 };
+    rrect(r, filt, 32, app.fav_only ? with_alpha(C_ACCENT, 40)
+                                    : rgba(255, 255, 255, 8));
+    if (app.fav_only) rrect_stroke(r, filt, 32, with_alpha(C_ACCENT, 190), 1);
+    icon_star(r, filt.x + 20, filt.y + 16, 32, app.fav_only ? C_AMBER : C_DIM,
+              app.fav_only);
+    text(r, app.f_body, tr(T_TAB_FAV), filt.x + 66, filt.y + 12,
+         app.fav_only ? C_ACCENT : C_TEXT);
+    hit_add(filt, HIT_FAV_FILTER);
+
+    SDL_Rect play = { W - 48 - 300, 644, 300, 64 };
+    button(r, play, tr(T_PLAY), true, false);
+    hit_add(play, HIT_PLAY);
+
+    deck_hint(r, tr(T_TOUCH_LIST));
+}
+
+// ---------------------------------------------------------------------------
+// settings deck: 12 direct tiles, two columns
+// ---------------------------------------------------------------------------
+const char* settings_label(int i)
+{
+    const char* rows[12] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
+                             tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
+                             tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP) };
+    return rows[std::clamp(i, 0, 11)];
+}
+
+std::string settings_value(int i)
+{
+    char b[160];
+    switch (i) {
+    case 0: snprintf(b, sizeof(b), "%d%%", app.settings.brightness); return b;
+    case 1: snprintf(b, sizeof(b), "%d%%", app.settings.volume); return b;
+    case 2: return app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED);
+    case 3:
+        if (app.wifi_state == "NOHW") return tr(T_WIFI_UNAVAILABLE);
+        return app.wifi_link.empty() ? tr(T_WIFI_DISCONNECTED) : app.wifi_link;
+    case 4: return theme_name(app.settings.theme);
+    case 5: return lang_name(app.settings.language);
+    case 6:
+        if (app.upd_busy)
+            return app.upd_op == "apply" ? tr(T_UPDATE_INSTALLING)
+                                         : tr(T_UPDATE_CHECKING);
+        if (app.upd_state == "available") return fmt(tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
+        if (app.upd_state == "uptodate") return tr(T_UPDATE_UPTODATE);
+        if (app.upd_state == "ready") return tr(T_UPDATE_REBOOT);
+        if (app.upd_state == "nowifi") return tr(T_UPDATE_NOWIFI);
+        if (app.upd_state == "failed")
+            return fmt(tr(T_UPDATE_FAILED),
+                       app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
+        return tr(T_UPD_CHECK);
+    case 7: snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size()); return b;
+    default: return "";
+    }
+}
+
+void settings_icon(SDL_Renderer* r, int idx, int x, int y, int size, SDL_Color c)
+{
+    switch (idx) {
+    case 0: icon_sun(r, x, y, size, c); break;
+    case 1: icon_speaker(r, x, y, size, c); break;
+    case 2: icon_bt(r, x, y, size, c); break;
+    case 3: icon_wifi(r, x, y, size, c); break;
+    case 4: icon_image(r, x, y, size, c); break;
+    case 5: icon_globe(r, x, y, size, c); break;
+    case 6: icon_download(r, x, y, size, c); break;
+    case 7: icon_clock(r, x, y, size, c); break;
+    case 8: icon_power(r, x, y, size, c); break;
+    case 9: icon_refresh(r, x, y, size, c); break;
+    case 10: icon_gear(r, x, y, size, c); break;
+    default: icon_gamepad(r, x, y, size, c); break;
+    }
+}
+
+void deck_settings(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_SETTINGS));
+    app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
+
+    const int tw = 452, th = 92, gx = 12, gy = 8;
+    for (int i = 0; i < 12; i++) {
+        int col = i % 2, row = i / 2;
+        SDL_Rect tile = { 48 + col * (tw + gx), 84 + row * (th + gy), tw, th };
+        bool sel = i == app.set_sel;
+        SDL_Color vc = C_DIM;
+        if (i == 2 || i == 3) vc = (i == 2 ? app.bt_on : !app.wifi_link.empty())
+                                       ? C_GREEN : C_DIM;
+        if (i == 4 || i == 5) vc = C_ACCENT;
+        if (sel) card(r, tile, 20, true, 238);
+        else {
+            rrect(r, tile, 20, rgba(255, 255, 255, 7));
+            rrect_stroke(r, tile, 20, rgba(255, 255, 255, 9), 1);
+        }
+        settings_icon(r, i, tile.x + 18, tile.y + 18, 28,
+                      (i == 8) ? C_RED : sel ? C_ACCENT : C_DIM);
+        text(r, app.f_body, settings_label(i), tile.x + 58, tile.y + 14,
+             i == 8 ? C_RED : C_TEXT);
+        std::string v = settings_value(i);
+        if (!v.empty())
+            text(r, app.f_small, ellipsize(app.f_small, v, tw - 80),
+                 tile.x + 58, tile.y + 54, vc);
+        if (i == 0 || i == 1) {
+            int pct = i == 0 ? app.settings.brightness : app.settings.volume;
+            SDL_Rect track = { tile.x + tw - 190, tile.y + 54, 160, 24 };
+            rrect(r, { track.x, track.y + 9, track.w, 6 }, 3, with_alpha(C_DIM, 60));
+            rrect(r, { track.x, track.y + 9, track.w * pct / 100, 6 }, 3,
+                  i == 8 ? C_RED : C_ACCENT);
+            circle(r, track.x + track.w * pct / 100, track.y + 12, 8, C_TEXT);
+            hit_add(track, HIT_SET_SLIDER, i);
+        }
+        hit_add(tile, HIT_SET_TILE, i);
+    }
+    deck_hint(r, tr(T_TOUCH_SETTINGS));
+}
+
+// ---------------------------------------------------------------------------
+// shared on-screen keyboard
+// ---------------------------------------------------------------------------
+void deck_kb(SDL_Renderer* r)
+{
+    const std::string& buf = app.kb_generic ? *app.kb_buf : app.wifi_pw;
+    std::string title = app.kb_generic ? app.kb_title : std::string(tr(T_WIFI_PASSWORD));
+    deck_header(r, nullptr);
+    text(r, app.f_title, ellipsize(app.f_title, title, W - 96), 48, 68, C_TEXT);
+    if (!app.kb_generic && !app.wifi_target.empty())
+        text(r, app.f_small, ellipsize(app.f_small, app.wifi_target, W - 96),
+             48, 120, C_DIM);
+
+    SDL_Rect field = { 48, 150, 928, 76 };
+    rrect(r, field, 22, rgba(255, 255, 255, 12));
+    rrect_stroke(r, field, 22, with_alpha(C_ACCENT, 90), 1);
+    std::string disp = app.kb_mask ? std::string(buf.size(), '*') : buf;
+    const int dispw = field.w - 48;
+    while (!disp.empty() && text_width(app.f_body, disp + "_") > dispw) {
+        size_t len = 1;
+        unsigned char ch = (unsigned char)disp[0];
+        if (ch >= 0xF0) len = 4; else if (ch >= 0xE0) len = 3;
+        else if (ch >= 0xC0) len = 2;
+        disp.erase(0, len);
+    }
+    text(r, app.f_body, disp, field.x + 22, field.y + 16, C_TEXT);
+    int cx = field.x + 22 + text_width(app.f_body, disp);
+    rrect(r, { cx + 2, field.y + 18, 3, 38 }, 1, C_ACCENT);
+
+    const auto& rows = kb_rows();
+    const int kh = 64, gap = 10, ky0 = 262;
+    for (int ri = 0; ri < (int)rows.size(); ri++) {
+        const auto& row = rows[ri];
+        std::vector<int> widths;
+        int total = 0;
+        if (ri == (int)rows.size() - 1) {
+            widths = { 170, 340, 140, 180, 78 };
+        } else {
+            widths.assign(row.size(), 84);
+        }
+        for (size_t k = 0; k < widths.size(); k++)
+            total += widths[k] + (k ? gap : 0);
+        int x = (W - total) / 2;
+        int y = ky0 + ri * (kh + gap);
+        for (int ci = 0; ci < (int)row.size(); ci++) {
+            int w = ci < (int)widths.size() ? widths[ci] : 84;
+            bool sel = app.kb_r == ri && app.kb_c == ci;
+            rrect(r, { x, y, w, kh }, 16,
+                  sel ? with_alpha(C_ACCENT, 200) : rgba(255, 255, 255, 10));
+            if (sel) rrect_stroke(r, { x, y, w, kh }, 16, C_ACCENT, 2);
+            std::string lab = row[ci];
+            if (lab == "ABC") lab = app.kb_shift ? "abc" : "ABC";
+            else if (lab == " ") lab = tr(T_KB_SPACE);
+            else if (lab == "DEL") lab = tr(T_KB_DEL);
+            else if (lab == "OK") lab = tr(T_KB_OK);
+            else if (lab == "X") lab = tr(T_KB_CANCEL);
+            else if (app.kb_shift && lab.size() == 1)
+                lab[0] = (char)toupper((unsigned char)lab[0]);
+            text(r, app.f_body, ellipsize(app.f_body, lab, w - 14),
+                 x + w / 2, y + 14, sel ? C_TEXT : with_alpha(C_TEXT, 225),
+                 Align::Center);
+            hit_add({ x, y, w, kh }, HIT_KB_KEY, ri, ci);
+            x += w + gap;
+        }
+    }
+    deck_hint(r, tr(T_KB_DECK_HINT));
+}
+
+// ---------------------------------------------------------------------------
+// wifi deck
+// ---------------------------------------------------------------------------
+void deck_wifi(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_WIFI));
+
+    const int top = 96, rowh = 84, vis = 6;
+    int n = (int)app.wifi_nets.size();
+    if (app.wifi_sel < app.wifi_scroll) app.wifi_scroll = app.wifi_sel;
+    if (app.wifi_sel >= app.wifi_scroll + vis) app.wifi_scroll = app.wifi_sel - vis + 1;
+    if (app.wifi_scroll < 0) app.wifi_scroll = 0;
+    SDL_Rect rows = { 48, top, 928, vis * rowh - 6 };
+    hit_add(rows, HIT_LIST_ROWS);
+
+    for (int i = 0; i < vis; i++) {
+        int idx = app.wifi_scroll + i;
+        if (idx >= n) break;
+        int y = top + i * rowh;
+        const WifiNet& w = app.wifi_nets[idx];
+        SDL_Rect rc = { 48, y, 928, rowh - 8 };
+        bool sel = idx == app.wifi_sel;
+        deck_row(r, rc, sel, w.ssid,
+                 w.saved ? tr(T_WIFI_SAVED) : !w.secure ? tr(T_WIFI_OPEN) : "",
+                 "", C_DIM);
+        int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3 : w.signal >= -78 ? 2 : 1;
+        for (int b = 0; b < 4; b++) {
+            int h = 6 + b * 5;
+            fill_rect(r, rc.x + rc.w - 62 + b * 13, rc.y + rc.h / 2 + 14 - h,
+                      8, h, b < bars ? g_accent : with_alpha(C_DIM, 80));
+        }
+        if (w.saved) icon_check(r, rc.x + rc.w - 132, rc.y + 26, 26, C_GREEN);
+        hit_add(rc, HIT_WIFI_NET, idx);
+    }
+    if (n == 0) {
+        const char* msg = app.wifi_state == "NOHW" ? tr(T_WIFI_UNAVAILABLE)
+                        : (app.wifi_busy || app.wifi_probe_busy) ? tr(T_WIFI_SCANNING)
+                                                                 : tr(T_WIFI_EMPTY);
+        text(r, app.f_body, msg, W / 2, top + 150, C_DIM, Align::Center);
+    }
+
+    std::string st = (app.wifi_busy || app.wifi_probe_busy) ? tr(T_PROCESSING)
+                                                            : app.wifi_status;
+    if (!st.empty())
+        text(r, app.f_small, ellipsize(app.f_small, st, W - 200),
+             W / 2, 646, C_AMBER, Align::Center);
+
+    deck_round(r, { 48, 672, 64, 64 });
+    icon_chevron(r, 60, 684, 40, C_TEXT, true);
+    hit_add({ 48, 672, 64, 64 }, HIT_BACK);
+
+    if (app.wifi_sel >= 0 && app.wifi_sel < n && app.wifi_nets[app.wifi_sel].saved) {
+        SDL_Rect fg = { 136, 672, 200, 64 };
+        button(r, fg, tr(T_FORGET), false, false);
+        hit_add(fg, HIT_WIFI_TEST);          // forget the selected network
+    }
+
+    SDL_Rect scan = { W - 48 - 200, 672, 200, 64 };
+    button(r, scan, app.wifi_busy ? tr(T_SCANNING) : tr(T_SCAN), false, false);
+    hit_add(scan, HIT_WIFI_SCAN);
+    deck_hint(r, tr(T_TOUCH_WIFI));
+}
+
+// ---------------------------------------------------------------------------
+// bluetooth deck
+// ---------------------------------------------------------------------------
+void deck_bt(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_BT));
+    SDL_Rect sw = { 48, 88, 928, 84 };
+    rrect(r, sw, 20, rgba(255, 255, 255, 9));
+    rrect_stroke(r, sw, 20, rgba(255, 255, 255, 12), 1);
+    icon_bt(r, sw.x + 22, sw.y + 22, 38, app.bt_on ? C_ACCENT : C_DIM);
+    text(r, app.f_body, tr(T_BT_SWITCH), sw.x + 76, sw.y + 22, C_TEXT);
+    text(r, app.f_small, app.bt_on ? tr(T_ENABLED) : tr(T_DISABLED),
+         sw.x + 76, sw.y + 54, app.bt_on ? C_GREEN : C_DIM);
+    toggle(r, { sw.x + sw.w - 92, sw.y + 24, 68, 36 }, app.bt_on ? 1.0f : 0.0f,
+           C_ACCENT);
+    hit_add(sw, HIT_BT_TOGGLE);
+
+    if (!app.bt_on)
+        text(r, app.f_small, ellipsize(app.f_small, tr(T_BT_OFF_HELP), W - 200),
+             W / 2, 214, C_DIM, Align::Center);
+
+    if (app.bt_on) {
+        const int top = 196, rowh = 84, vis = 5;
+        int n = (int)app.bt_devs.size();
+        if (app.bt_sel - 1 < app.bt_scroll) app.bt_scroll = app.bt_sel - 1;
+        if (app.bt_sel - 1 >= app.bt_scroll + vis) app.bt_scroll = app.bt_sel - vis;
+        if (app.bt_scroll < 0) app.bt_scroll = 0;
+        hit_add({ 48, top, 928, vis * rowh - 6 }, HIT_LIST_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.bt_scroll + i;
+            if (idx >= n) break;
+            const BtDev& d = app.bt_devs[idx];
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            std::string meta = bt_kind_name(d.kind);
+            if (d.connected) meta += tr(T_CONN_SUFFIX);
+            else if (d.paired) meta += tr(T_PAIRED_SUFFIX);
+            deck_row(r, rc, app.bt_sel == idx + 1,
+                     d.name.empty() ? d.mac : d.name,
+                     meta, "", C_DIM);
+            if (d.connected) icon_check(r, rc.x + rc.w - 56, rc.y + 26, 28, C_GREEN);
+            hit_add(rc, HIT_BT_DEV, idx);
+        }
+        if (n == 0 && !app.bt_busy)
+            text(r, app.f_body, tr(T_NO_DEVS), W / 2, top + 150, C_DIM, Align::Center);
+    }
+
+    std::string st = app.bt_busy ? tr(T_PROCESSING) : app.bt_status;
+    if (!st.empty())
+        text(r, app.f_small, ellipsize(app.f_small, st, W - 240),
+             W / 2, 648, C_AMBER, Align::Center);
+
+    deck_round(r, { 48, 672, 64, 64 });
+    icon_chevron(r, 60, 684, 40, C_TEXT, true);
+    hit_add({ 48, 672, 64, 64 }, HIT_BACK);
+    if (app.bt_on) {
+        SDL_Rect sc = { W - 48 - 200, 672, 200, 64 };
+        button(r, sc, app.bt_busy ? tr(T_SCANNING) : tr(T_SCAN), false, false);
+        hit_add(sc, HIT_BT_SCAN);
+        deck_hint(r, tr(T_TOUCH_LIST));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// saves deck
+// ---------------------------------------------------------------------------
+void deck_saves(SDL_Renderer* r)
+{
+    char b[64];
+    snprintf(b, sizeof(b), tr(T_SAVE_COUNT_FMT), app.saves.size());
+    deck_header(r, tr(T_SAVES), b);
+
+    const int top = 88, rowh = 82, vis = 6;
+    if (app.saves.empty()) {
+        text(r, app.f_body, tr(T_NO_SAVES), W / 2, 240, C_TEXT, Align::Center);
+        int y = 300;
+        for (const auto& l : wrap(app.f_small, tr(T_SAVES_HELP), W - 240)) {
+            text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
+            y += 32;
+        }
+    } else {
+        if (app.save_sel < app.save_scroll) app.save_scroll = app.save_sel;
+        if (app.save_sel >= app.save_scroll + vis) app.save_scroll = app.save_sel - vis + 1;
+        hit_add({ 48, top, 928, vis * rowh - 6 }, HIT_LIST_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.save_scroll + i;
+            if (idx >= (int)app.saves.size()) break;
+            const SaveEntry& s = app.saves[idx];
+            char kb[32];
+            snprintf(kb, sizeof(kb), "%ld KB", s.size / 1024);
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            deck_row(r, rc, idx == app.save_sel, s.name, "", kb, C_DIM);
+            hit_add(rc, HIT_SAVE_ROW, idx);
+        }
+    }
+
+    deck_round(r, { 48, 640, 64, 64 });
+    icon_chevron(r, 60, 652, 40, C_TEXT, true);
+    hit_add({ 48, 640, 64, 64 }, HIT_BACK);
+    if (!app.saves.empty()) {
+        SDL_Rect del = { W - 48 - 240, 640, 240, 64 };
+        rrect(r, del, 18, with_alpha(C_RED, 36));
+        rrect_stroke(r, del, 18, with_alpha(C_RED, 160), 1);
+        icon_trash(r, del.x + 26, del.y + 18, 28, C_RED);
+        text(r, app.f_body, tr(T_DELETE_SAVE), del.x + 70, del.y + 12, C_RED);
+        hit_add(del, HIT_SAVE_DEL);
+        deck_hint(r, tr(T_TOUCH_LIST));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// update deck
+// ---------------------------------------------------------------------------
+void deck_update(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_UPDATE));
+
+    std::string head, detail;
+    SDL_Color tone = C_TEXT;
+    char b[192];
+    bool downloading = app.upd_busy && app.upd_op == "apply" &&
+                       app.upd_state == "downloading";
+    if (downloading) {
+        snprintf(b, sizeof(b), tr(T_UPDATE_DOWNLOADING), app.upd_pct);
+        head = b;
+        tone = C_ACCENT;
+    } else if (app.upd_busy && app.upd_op == "apply") {
+        head = tr(T_UPDATE_INSTALLING);
+        tone = C_AMBER;
+    } else if (app.upd_busy) {
+        head = tr(T_UPDATE_CHECKING);
+        tone = C_DIM;
+    } else if (app.upd_state == "available") {
+        snprintf(b, sizeof(b), tr(T_UPDATE_AVAILABLE), app.upd_version.c_str());
+        head = b;
+        detail = tr(T_UPDATE_CONFIRM_BODY);
+        tone = C_GREEN;
+    } else if (app.upd_state == "uptodate") {
+        head = tr(T_UPDATE_UPTODATE);
+        tone = C_GREEN;
+    } else if (app.upd_state == "ready") {
+        head = tr(T_UPDATE_READY);
+        tone = C_GREEN;
+    } else if (app.upd_state == "nowifi") {
+        head = tr(T_UPDATE_NOWIFI);
+        tone = C_AMBER;
+    } else if (app.upd_state == "failed") {
+        snprintf(b, sizeof(b), tr(T_UPDATE_FAILED),
+                 app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
+        head = b;
+        tone = C_RED;
+    } else {
+        detail = tr(T_UPDATE_CONFIRM_BODY);
+    }
+
+    SDL_Rect info = { 48, 92, 928, 224 };
+    card(r, info, 30, false, 232);
+    rrect(r, { info.x + 36, info.y + 44, 112, 112 }, 34,
+          with_alpha(C_ACCENT, 24));
+    icon_download(r, info.x + 68, info.y + 76, 48,
+                  app.upd_busy ? with_alpha(C_ACCENT, 160) : C_ACCENT);
+
+    const int tx = info.x + 176, tw = info.w - 176 - 40;
+    char vb[128] = { 0 };
+    bool has_ver = !app.upd_cur.empty();
+    if (has_ver)
+        snprintf(vb, sizeof(vb), tr(T_UPDATE_CURRENT), app.upd_cur.c_str());
+    int hy;
+    if (head.empty() && has_ver) {
+        text(r, app.f_title, vb, tx, info.y + 52, C_TEXT);
+        hy = info.y + 118;
+    } else {
+        if (has_ver) text(r, app.f_small, vb, tx, info.y + 34, C_DIM);
+        hy = info.y + 72;
+        auto lines = wrap(app.f_body, head, tw);
+        for (size_t i = 0; i < lines.size() && i < 2; i++) {
+            text(r, app.f_body, ellipsize(app.f_body, lines[i], tw), tx, hy,
+                 tone);
+            hy += 42;
+        }
+    }
+    if (!detail.empty() && hy + 34 < info.y + info.h - 12) {
+        text(r, app.f_small, ellipsize(app.f_small, detail, tw),
+             tx, hy + 2, with_alpha(C_DIM, 235));
+    }
+    if (downloading) {
+        progress_bar(r, { info.x + 36, info.y + info.h - 32, info.w - 72, 10 },
+                     app.upd_pct / 100.0f, C_ACCENT, C_TRACK);
+    }
+
+    bool install = !app.upd_busy && app.upd_state == "available";
+    bool reboot = !app.upd_busy && app.upd_state == "ready";
+    const char* label = app.upd_busy
+        ? (app.upd_op == "apply" ? tr(T_UPDATE_INSTALLING)
+                                 : tr(T_UPDATE_CHECKING))
+        : reboot ? tr(T_UPDATE_REBOOT)
+        : install ? tr(T_UPD_DOWNLOAD)
+        : (app.upd_state == "failed" || app.upd_state == "nowifi" ||
+           app.upd_state == "uptodate") ? tr(T_UPD_RECHECK)
+                                        : tr(T_UPD_CHECK);
+    SDL_Rect act = { 48, 360, 928, 84 };
+    if (app.upd_busy) {
+        rrect(r, act, 24, rgba(255, 255, 255, 8));
+        rrect_stroke(r, act, 24, rgba(255, 255, 255, 20), 1);
+        text(r, app.f_body, label, W / 2, act.y + 24, C_DIM, Align::Center);
+    } else {
+        button(r, act, label, true, false);
+        hit_add(act, reboot ? HIT_UPD_REBOOT
+                            : install ? HIT_UPD_APPLY : HIT_UPD_CHECK);
+    }
+
+    deck_round(r, { 48, 672, 64, 64 });
+    icon_chevron(r, 60, 684, 40, C_TEXT, true);
+    hit_add({ 48, 672, 64, 64 }, HIT_BACK);
+}
+
+// ---------------------------------------------------------------------------
+// activity deck
+// ---------------------------------------------------------------------------
+void deck_activity(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_ACTIVITY));
+    const char* tabs[4] = { tr(T_TAB_OVERVIEW), tr(T_TAB_TIMELINE),
+                            tr(T_TAB_TREND), tr(T_TAB_PICKS) };
+    int x = 48;
+    for (int i = 0; i < 4; i++) {
+        int w = text_width(app.f_body, tabs[i]) + 44;
+        SDL_Rect tab = { x, 82, w, 52 };
+        rrect(r, tab, 26, i == app.act_tab ? with_alpha(C_ACCENT, 46)
+                                           : rgba(255, 255, 255, 8));
+        if (i == app.act_tab) rrect_stroke(r, tab, 26, with_alpha(C_ACCENT, 190), 1);
+        text(r, app.f_small, tabs[i], x + w / 2, 92,
+             i == app.act_tab ? C_ACCENT : C_DIM, Align::Center);
+        hit_add(tab, HIT_ACT_TAB, i);
+        x += w + 10;
+    }
+
+    const int top = 154, rowh = 88;
+    int n = act_row_count();
+    if (app.act_tab == 2) {
+        long long per[5] = { 0, 0, 0, 0, 0 };
+        for (const auto& g : app.act_games) {
+            int ci = console_index(g.sys);
+            if (ci < 5) per[ci] += g.seconds;
+        }
+        long long pmx = 0;
+        for (long long v : per) pmx = std::max(pmx, v);
+        if (pmx == 0) {
+            text(r, app.f_body, tr(T_ACT_NO_TREND), W / 2, 330, C_TEXT, Align::Center);
+        } else {
+            for (int i = 0; i < 5; i++) {
+                int y = 168 + i * 92;
+                text(r, app.f_body, consoles()[i].name_en, 48, y, C_TEXT);
+                text(r, app.f_body, fmt_duration(per[i]), W - 48, y, C_DIM,
+                     Align::Right);
+                rrect(r, { 48, y + 44, 928, 12 }, 6, with_alpha(C_DIM, 55));
+                int w = (int)(928 * per[i] / pmx);
+                if (w > 0) rrect(r, { 48, y + 44, w, 12 }, 6, C_ACCENT);
+            }
+        }
+    } else if (n == 0) {
+        text(r, app.f_body, app.act_tab == 3 ? tr(T_ACT_PICKS_EMPTY)
+                                             : tr(T_ACT_EMPTY),
+             W / 2, 300, C_TEXT, Align::Center);
+        text(r, app.f_small, app.act_tab == 3 ? tr(T_ACT_PICKS_HELP)
+                                              : tr(T_ACT_EMPTY_HELP),
+             W / 2, 356, C_DIM, Align::Center);
+    } else {
+        const int vis = 5;
+        if (app.act_sel < app.act_scroll) app.act_scroll = app.act_sel;
+        if (app.act_sel >= app.act_scroll + vis) app.act_scroll = app.act_sel - vis + 1;
+        hit_add({ 48, top, 928, vis * rowh - 6 }, HIT_ACT_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.act_scroll + i;
+            if (idx >= n) break;
+            std::string title, meta, right;
+            SDL_Color rc2 = C_DIM;
+            if (app.act_tab == 0) {
+                const GameStat& g = app.act_games[idx];
+                title = g.title;
+                meta = console_badge(g.sys);
+                char b[64];
+                snprintf(b, sizeof(b), tr(T_ACT_SESSIONS_FMT), g.sessions);
+                right = fmt_duration(g.seconds);
+                if (idx == 0) meta += " · " + std::string(b);
+            } else if (app.act_tab == 1) {
+                const PlaySession& s = app.act_sessions[idx];
+                title = s.title;
+                meta = fmt_when(s.start) + " · " + console_badge(s.sys);
+                right = fmt_duration(s.seconds);
+                rc2 = g_accent;
+            } else {
+                const Pick& p = app.act_picks[idx];
+                title = p.title;
+                const char* reasons[] = { tr(T_PICK_FAV_NEW), tr(T_PICK_FAV_BACK),
+                                          tr(T_PICK_NEW), tr(T_PICK_BACK),
+                                          tr(T_PICK_REGULAR) };
+                meta = std::string(reasons[p.reason]) + " · " + console_badge(p.sys);
+                if (p.idle_days > 0) {
+                    char b[64];
+                    snprintf(b, sizeof(b), tr(T_PICK_IDLE_FMT), p.idle_days);
+                    right = b;
+                } else if (p.seconds > 0) right = fmt_duration(p.seconds);
+                rc2 = C_AMBER;
+            }
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            deck_row(r, rc, idx == app.act_sel, title, meta, right, rc2);
+            hit_add(rc, HIT_ACT_ROW, idx);
+        }
+    }
+
+    deck_round(r, { 48, 640, 64, 64 });
+    icon_chevron(r, 60, 652, 40, C_TEXT, true);
+    hit_add({ 48, 640, 64, 64 }, HIT_BACK);
+    if (n > 0 && app.act_tab != 2) {
+        SDL_Rect play = { W - 48 - 280, 640, 280, 64 };
+        button(r, play, tr(T_PLAY), true, false);
+        hit_add(play, HIT_PLAY);
+        deck_hint(r, tr(T_TOUCH_LIST));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// favorites / history deck
+// ---------------------------------------------------------------------------
+void deck_quick(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_QUICK));
+    const char* tabs[2] = { tr(T_TAB_FAV), tr(T_TAB_HISTORY) };
+    int x = 48;
+    for (int i = 0; i < 2; i++) {
+        int w = text_width(app.f_body, tabs[i]) + 48;
+        SDL_Rect tab = { x, 82, w, 52 };
+        rrect(r, tab, 26, i == app.quick_tab ? with_alpha(C_ACCENT, 46)
+                                             : rgba(255, 255, 255, 8));
+        if (i == app.quick_tab) rrect_stroke(r, tab, 26, with_alpha(C_ACCENT, 190), 1);
+        text(r, app.f_small, tabs[i], x + w / 2, 92,
+             i == app.quick_tab ? C_ACCENT : C_DIM, Align::Center);
+        hit_add(tab, HIT_QUICK_TAB, i);
+        x += w + 10;
+    }
+
+    const int top = 154, rowh = 88, vis = 5;
+    if (app.quick.empty()) {
+        text(r, app.f_body,
+             app.quick_tab == 0 ? tr(T_QUICK_EMPTY_FAV) : tr(T_QUICK_EMPTY_HIST),
+             W / 2, 280, C_TEXT, Align::Center);
+        int y = 340;
+        for (const auto& l : wrap(app.f_small,
+                 app.quick_tab == 0 ? tr(T_QUICK_EMPTY_FAV_HELP)
+                                    : tr(T_QUICK_EMPTY_HIST_HELP), W - 300)) {
+            text(r, app.f_small, l, W / 2, y, C_DIM, Align::Center);
+            y += 32;
+        }
+    } else {
+        if (app.quick_sel < app.quick_scroll) app.quick_scroll = app.quick_sel;
+        if (app.quick_sel >= app.quick_scroll + vis) app.quick_scroll = app.quick_sel - vis + 1;
+        hit_add({ 48, top, 928, vis * rowh - 6 }, HIT_QUICK_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.quick_scroll + i;
+            if (idx >= (int)app.quick.size()) break;
+            const QuickEntry& e = app.quick[idx];
+            std::string meta = console_badge(e.sys);
+            if (e.missing) meta += " · " + std::string(tr(T_QUICK_MISSING));
+            else if (e.last > 0)
+                meta += " · " + fmt_when(e.last) + " · " + fmt_duration(e.seconds);
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            deck_row(r, rc, idx == app.quick_sel,
+                     e.missing ? e.game.title : e.game.title, meta, "",
+                     C_DIM);
+            if (fav_contains(e.sys, e.game.title))
+                icon_star(r, rc.x + rc.w - 58, rc.y + 26, 30, C_AMBER, true);
+            hit_add(rc, HIT_QUICK_ROW, idx);
+        }
+    }
+
+    deck_round(r, { 48, 640, 64, 64 });
+    icon_chevron(r, 60, 652, 40, C_TEXT, true);
+    hit_add({ 48, 640, 64, 64 }, HIT_BACK);
+    if (!app.quick.empty()) {
+        bool fav = fav_contains(app.quick[app.quick_sel].sys,
+                                app.quick[app.quick_sel].game.title);
+        deck_round(r, { 124, 640, 64, 64 }, fav);
+        icon_star(r, 138, 654, 36, fav ? C_AMBER : C_TEXT, fav);
+        hit_add({ 124, 640, 64, 64 }, HIT_FAV);
+        SDL_Rect play = { W - 48 - 280, 640, 280, 64 };
+        button(r, play, tr(T_PLAY), true, false);
+        hit_add(play, HIT_PLAY);
+        deck_hint(r, tr(T_TOUCH_LIST));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wizard deck
+// ---------------------------------------------------------------------------
+void deck_setup(SDL_Renderer* r)
+{
+    const char* title = tr(T_SETUP_TITLE);
+    switch (app.setup_step) {
+    case 0: title = tr(T_LANGUAGE); break;
+    case 1: title = tr(T_WIFI); break;
+    case 2: title = tr(T_SETUP_TZ_TITLE); break;
+    case 3: title = tr(T_SETUP_NAME_TITLE); break;
+    case 4: title = tr(T_SETUP_RA_TITLE); break;
+    case 5: title = tr(T_COVERS); break;
+    default: title = tr(T_SETUP_DONE_TITLE); break;
+    }
+    char sb[64];
+    int shown = std::min(app.setup_step + 1, SETUP_STEPS - 1);
+    snprintf(sb, sizeof(sb), tr(T_SETUP_STEP_FMT), shown, SETUP_STEPS - 1);
+    deck_header(r, title, sb);
+
+    if (app.setup_step == 0) {
+        const int tw = 296, th = 132;
+        for (int i = 0; i < (int)LANG_COUNT; i++) {
+            int col = i % 3, row = i / 3;
+            SDL_Rect tile = { 48 + col * (tw + 20), 96 + row * (th + 16), tw, th };
+            bool sel = i == app.settings.language;
+            if (sel) card(r, tile, 24, true, 238);
+            else {
+                rrect(r, tile, 24, rgba(255, 255, 255, 7));
+                rrect_stroke(r, tile, 24, rgba(255, 255, 255, 10), 1);
+            }
+            icon_globe(r, tile.x + 24, tile.y + 22, 32, sel ? C_ACCENT : C_DIM);
+            text(r, app.f_title, lang_name(i), tile.x + 24, tile.y + 66,
+                 sel ? C_TEXT : with_alpha(C_TEXT, 210));
+            if (sel) icon_check(r, tile.x + tw - 48, tile.y + 24, 28, C_ACCENT);
+            hit_add(tile, HIT_SETUP_OPT, i, 0);
+        }
+        deck_hint(r, tr(T_TOUCH_LANG));
+        return;
+    }
+
+    if (app.setup_step == 1) {
+        const int top = 92, rowh = 84, vis = 5;
+        int nets = (int)app.wifi_nets.size();
+        int n = nets + 2;
+        setup_scroll_into_view(vis);
+        hit_add({ 48, top, 928, vis * rowh - 6 }, HIT_LIST_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.setup_scroll + i;
+            if (idx >= n) break;
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            bool sel = idx == app.setup_sel;
+            if (idx < nets) {
+                const WifiNet& w = app.wifi_nets[idx];
+                std::string meta = w.saved ? tr(T_WIFI_SAVED)
+                                 : !w.secure ? tr(T_WIFI_OPEN) : "";
+                deck_row(r, rc, sel, w.ssid, meta, "", C_DIM);
+                int bars = w.signal >= -55 ? 4 : w.signal >= -67 ? 3
+                         : w.signal >= -78 ? 2 : 1;
+                for (int b = 0; b < 4; b++) {
+                    int h = 6 + b * 5;
+                    fill_rect(r, rc.x + rc.w - 62 + b * 13,
+                              rc.y + rc.h / 2 + 14 - h, 8, h,
+                              b < bars ? g_accent : with_alpha(C_DIM, 80));
+                }
+            } else {
+                deck_row(r, rc, sel,
+                         idx == nets ? tr(T_WIFI_TEST) : tr(T_NEXT),
+                         "", "", C_DIM);
+            }
+            hit_add(rc, HIT_SETUP_OPT, idx, 0);
+        }
+        std::string link = tr(T_WIFI_DISCONNECTED);
+        SDL_Color lc = C_DIM;
+        if (app.wifi_state == "NOHW") link = tr(T_WIFI_UNAVAILABLE);
+        else if (!app.wifi_ip.empty()) {
+            link = fmt(tr(T_WIFI_CONNECTED_FMT), app.wifi_ip.c_str());
+            lc = C_GREEN;
+        }
+        text(r, app.f_small, ellipsize(app.f_small, link, W - 240),
+             W / 2, 604, lc, Align::Center);
+        std::string st = (app.wifi_busy || app.wifi_probe_busy)
+            ? tr(T_PROCESSING) : app.wifi_status;
+        if (!st.empty())
+            text(r, app.f_small, ellipsize(app.f_small, st, W - 240),
+                 W / 2, 642, C_AMBER, Align::Center);
+        if (nets == 0 && !app.wifi_busy && !app.wifi_probe_busy &&
+            app.wifi_state != "NOHW")
+            text(r, app.f_body, ellipsize(app.f_body, tr(T_WIFI_EMPTY), W - 200),
+                 W / 2, 344, C_DIM, Align::Center);
+
+        SDL_Rect scan = { W - 48 - 160, 668, 160, 64 };
+        button(r, scan, app.wifi_busy ? tr(T_SCANNING) : tr(T_SCAN), false, false);
+        hit_add(scan, HIT_WIFI_SCAN);
+        return;
+    }
+
+    if (app.setup_step == 2) {
+        const auto& regs = tz_regions();
+        int x = 48;
+        for (int i = 0; i < (int)regs.size(); i++) {
+            const char* nm = tr(regs[i].name);
+            int w = text_width(app.f_small, nm) + 36;
+            SDL_Rect chip = { x, 92, w, 48 };
+            bool cur = i == app.setup_region;
+            rrect(r, chip, 24, cur ? with_alpha(C_ACCENT, 44)
+                                   : rgba(255, 255, 255, 8));
+            if (cur) rrect_stroke(r, chip, 24, with_alpha(C_ACCENT, 190), 1);
+            text(r, app.f_small, nm, chip.x + w / 2, 100,
+                 cur ? C_ACCENT : C_DIM, Align::Center);
+            hit_add(chip, HIT_SETUP_OPT, i, 0);
+            x += w + 10;
+        }
+        const auto& zs = regs[app.setup_region].zones;
+        const int top = 168, rowh = 82, vis = 5;
+        setup_scroll_into_view(vis);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.setup_scroll + i;
+            if (idx >= (int)zs.size()) break;
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            bool sel = app.setup_col == 1 && idx == app.setup_sel;
+            deck_row(r, rc, sel, zs[idx], "", app.setup_tz == zs[idx]
+                                                     ? tr(T_TEST_OK) : "", C_GREEN);
+            hit_add(rc, HIT_SETUP_OPT, idx, 1);
+        }
+        std::string preview = zs[std::clamp(app.setup_sel, 0, (int)zs.size() - 1)];
+        text(r, app.f_small,
+             fmt(tr(T_TZ_NOW_FMT), zone_time(preview).c_str()),
+             W / 2, 608, C_DIM, Align::Center);
+        text(r, app.f_small, ellipsize(app.f_small, tr(T_TOUCH_TZ), W - 420),
+             48, 684, with_alpha(C_DIM, 160));
+        SDL_Rect next = { W - 48 - 160, 668, 160, 64 };
+        button(r, next, tr(T_NEXT), false, false);
+        hit_add(next, HIT_SETUP_NEXT);
+        return;
+    }
+
+    if (app.setup_step == 3) {
+        SDL_Rect field = { 48, 96, 928, 84 };
+        rrect(r, field, 22, rgba(255, 255, 255, 10));
+        rrect_stroke(r, field, 22, with_alpha(C_ACCENT, 100), 1);
+        icon_keyboard(r, field.x + 24, field.y + 24, 34, C_ACCENT);
+        text(r, app.f_body, app.setup_name.empty() ? tr(T_SETUP_NAME_TITLE)
+                                                   : app.setup_name,
+             field.x + 76, field.y + 22, app.setup_name.empty() ? C_DIM : C_TEXT);
+        hit_add(field, HIT_SETUP_OPT, 0, 0);
+
+        SDL_Rect next = { 48, 200, 928, 84 };
+        button(r, next, tr(T_NEXT), true, true);
+        hit_add(next, HIT_SETUP_NEXT);
+
+        int y = 320;
+        for (const auto& l : wrap(app.f_small, tr(T_SETUP_NAME_HELP), 880)) {
+            text(r, app.f_small, l, 60, y, C_DIM);
+            y += 32;
+        }
+        auto rl = wrap(app.f_small, tr(T_NAME_INVALID), 880);
+        y += 16;
+        for (size_t i = 0; i < rl.size() && i < 3; i++) {
+            text(r, app.f_small, rl[i], 60, y, with_alpha(C_DIM, 180));
+            y += 32;
+        }
+        if (!app.setup_status.empty())
+            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 120),
+                 W / 2, 624, C_AMBER, Align::Center);
+        deck_hint(r, tr(T_TOUCH_NAME));
+        return;
+    }
+
+    if (app.setup_step == 4) {
+        std::string login = tr(T_RA_LOGIN);
+        if (app.setup_ra_logged)
+            login = fmt(tr(T_RA_LOGGED_FMT), app.setup_ra_name.c_str());
+        std::string vals[6] = {
+            app.setup_ra_user,
+            std::string(app.setup_ra_pass.size(), '*'),
+            app.setup_ra_hardcore ? tr(T_ON) : tr(T_OFF),
+            login, tr(T_RA_LOGOUT), tr(T_NEXT)
+        };
+        const int rowh = 80;
+        for (int i = 0; i < 6; i++) {
+            SDL_Rect rc = { 48, 92 + i * rowh, 928, rowh - 8 };
+            std::string label;
+            switch (i) {
+            case 0: label = tr(T_RA_USER); break;
+            case 1: label = tr(T_RA_PASS); break;
+            case 2: label = tr(T_RA_HARDCORE); break;
+            case 3: label = login; break;
+            case 4: label = tr(T_RA_LOGOUT); break;
+            default: label = tr(T_NEXT); break;
+            }
+            bool sel = i == app.setup_sel;
+            std::string right = (i == 0 || i == 1) ? ellipsize(app.f_small, vals[i], 340)
+                              : i == 2 ? vals[2] : "";
+            if (i == 5) button(r, rc, label, true, sel);
+            else deck_row(r, rc, sel, label, "", right,
+                          i == 3 ? C_GREEN : C_DIM);
+            hit_add(rc, HIT_SETUP_OPT, i, 0);
+        }
+        int y = 592;
+        for (const auto& l : wrap(app.f_small, tr(T_RA_HARDCORE_HELP), 880)) {
+            text(r, app.f_small, l, 60, y, with_alpha(C_DIM, 190));
+            y += 30;
+        }
+        if (!app.setup_status.empty())
+            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 120),
+                 W / 2, 676, C_AMBER, Align::Center);
+        deck_hint(r, tr(T_TOUCH_LIST));
+        return;
+    }
+
+    if (app.setup_step == 5) {
+        SDL_Rect ringrc = { 48, 100, 280, 280 };
+        card(r, ringrc, 32, false, 230);
+        float p = app.cov_total > 0 ? (float)app.cov_done / app.cov_total : 0;
+        int cx = ringrc.x + ringrc.w / 2, cy = ringrc.y + 120;
+        ring(r, cx, cy, 74, 10, with_alpha(C_DIM, 50));
+        arc(r, cx, cy, 74, -90, -90 + 360 * p, 10, C_ACCENT);
+        char b[32];
+        snprintf(b, sizeof(b), "%d%%", (int)(p * 100));
+        text(r, app.f_title, b, cx, cy - 24, C_TEXT, Align::Center);
+        snprintf(b, sizeof(b), "%d / %d", app.cov_done, app.cov_total);
+        text(r, app.f_small, b, cx, ringrc.y + 230, C_DIM, Align::Center);
+
+        SDL_Rect info = { 356, 100, 620, 280 };
+        rrect(r, info, 30, rgba(255, 255, 255, 7));
+        rrect_stroke(r, info, 30, rgba(255, 255, 255, 10), 1);
+        text(r, app.f_body, tr(T_COVER_START), info.x + 32, info.y + 34, C_TEXT);
+        int y = info.y + 90;
+        for (const auto& l : wrap(app.f_small, tr(T_SETUP_COVER_HELP), info.w - 64)) {
+            text(r, app.f_small, l, info.x + 32, y, C_DIM);
+            y += 30;
+        }
+        if (app.cov_total > 0)
+            progress_bar(r, { info.x + 32, info.y + info.h - 44, info.w - 64, 12 },
+                         p, C_ACCENT, C_TRACK);
+        if (!app.cov_current.empty())
+            text(r, app.f_small, ellipsize(app.f_small, app.cov_current, info.w - 64),
+                 info.x + 32, info.y + info.h - 84, with_alpha(C_DIM, 170));
+
+        bool running = app.setup_busy && app.setup_op == "covers";
+        SDL_Rect act = { 48, 420, 452, 84 };
+        button(r, act, running ? tr(T_COVER_STOP) : tr(T_COVER_START), true, false);
+        hit_add(act, HIT_SETUP_ACTION, 0);
+        SDL_Rect next = { 524, 420, 452, 84 };
+        button(r, next, tr(T_NEXT), false, false);
+        hit_add(next, HIT_SETUP_NEXT);
+
+        if (!app.setup_status.empty())
+            text(r, app.f_small, ellipsize(app.f_small, app.setup_status, W - 120),
+                 W / 2, 552, C_AMBER, Align::Center);
+        deck_hint(r, tr(T_TOUCH_COVER));
+        return;
+    }
+
+    // done page
+    text(r, app.f_hero, tr(T_SETUP_DONE_TITLE), W / 2, 200, g_accent, Align::Center);
+    auto lines = wrap(app.f_body, tr(T_SETUP_DONE_BODY), W - 240);
+    int y = 300;
+    for (const auto& l : lines) {
+        text(r, app.f_body, l, W / 2, y, C_TEXT, Align::Center);
+        y += 44;
+    }
+    SDL_Rect go = { 232, 460, 560, 96 };
+    button(r, go, tr(T_PLAY), true, true);
+    hit_add(go, HIT_SETUP_ACTION, 1);
+}
+
+// ---------------------------------------------------------------------------
+// dialogs
+// ---------------------------------------------------------------------------
+void deck_msg(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_EMU_FAIL));
+    SDL_Rect body = { 112, 160, 800, 240 };
+    card(r, body, 30, false, 232);
+    text(r, app.f_title, ellipsize(app.f_title, app.msg_title, body.w - 80),
+         W / 2, body.y + 36, C_AMBER, Align::Center);
+    auto lines = wrap(app.f_body, app.msg_body, body.w - 90);
+    int y = body.y + 110;
+    for (size_t i = 0; i < lines.size() && i < 3; i++) {
+        text(r, app.f_body, ellipsize(app.f_body, lines[i], body.w - 90),
+             W / 2, y, C_TEXT, Align::Center);
+        y += 42;
+    }
+    SDL_Rect ok = { 332, 450, 360, 84 };
+    button(r, ok, tr(T_KB_OK), true, true);
+    hit_add(ok, HIT_DLG_OK);
+}
+
+void deck_confirm(SDL_Renderer* r)
+{
+    deck_header(r, nullptr);
+    const char* title = app.confirm == ConfirmAct::PowerOff ? tr(T_CONFIRM_OFF)
+                      : app.confirm == ConfirmAct::Reboot ? tr(T_CONFIRM_REBOOT)
+                      : app.confirm == ConfirmAct::Update ? tr(T_UPDATE)
+                                                         : tr(T_CONFIRM_DEL);
+    text(r, app.f_title, ellipsize(app.f_title, title, W - 160),
+         W / 2, 180, C_TEXT, Align::Center);
+    if (app.confirm == ConfirmAct::Update && !app.upd_version.empty())
+        text(r, app.f_body, fmt(tr(T_UPDATE_CONFIRM), app.upd_version.c_str()),
+             W / 2, 260, C_AMBER, Align::Center);
+    else if (app.confirm == ConfirmAct::Update)
+        text(r, app.f_small, tr(T_UPDATE_CONFIRM_BODY), W / 2, 260, C_DIM,
+             Align::Center);
+
+    SDL_Rect cancel = { 112, 360, 380, 96 };
+    button(r, cancel, tr(T_KB_CANCEL), false, false);
+    hit_add(cancel, HIT_DLG_CANCEL);
+    SDL_Rect ok = { 532, 360, 380, 96 };
+    button(r, ok, tr(T_KB_OK), true, true);
+    hit_add(ok, HIT_DLG_OK);
+}
+
+void draw_deck_content(SDL_Renderer* r)
+{
+    if (app.wifi_kb) { deck_kb(r); return; }
+    switch (app.screen) {
+    case Screen::Home:      deck_home(r); break;
+    case Screen::List:      deck_list(r); break;
+    case Screen::Settings:  deck_settings(r); break;
+    case Screen::Wifi:      deck_wifi(r); break;
+    case Screen::Bluetooth: deck_bt(r); break;
+    case Screen::Saves:     deck_saves(r); break;
+    case Screen::Update:    deck_update(r); break;
+    case Screen::Setup:     deck_setup(r); break;
+    case Screen::Activity:  deck_activity(r); break;
+    case Screen::Quick:     deck_quick(r); break;
+    case Screen::Msg:       deck_msg(r); break;
+    case Screen::Confirm:   deck_confirm(r); break;
+    }
+}
+
+void draw_deck()
+{
+    if (!app.ren_bot) return;
+    SDL_Renderer* r = app.ren_bot;
+    if (app.screen != g_deck_last || app.setup_step != g_deck_last_step ||
+        app.wifi_kb != g_deck_last_kb) {
+        g_deck_last = app.screen;
+        g_deck_last_step = app.setup_step;
+        g_deck_last_kb = app.wifi_kb;
+        g_deck_cur ^= 1;
+        g_deck_start = SDL_GetTicks();
+    }
+    if (!g_deck_tex[0]) {
+        for (auto& t : g_deck_tex) {
+            t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888,
+                                  SDL_TEXTUREACCESS_TARGET, W, H);
+            SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+        }
+        g_deck_start = SDL_GetTicks() - 1000;
+    }
+    if (!g_deck_tex[g_deck_cur]) return;
+
+    SDL_SetRenderTarget(r, g_deck_tex[g_deck_cur]);
+    ui_hit_begin();
+    deck_base(r);
+    draw_deck_content(r);
+    deck_volume_osd(r);
+    SDL_SetRenderTarget(r, nullptr);
+
+    // the deck follows the top panel's fade/slide, at a shorter distance
+    Uint32 te = SDL_GetTicks() - g_deck_start;
+    SDL_Rect full = { 0, 0, W, H };
+    if (te < 200 && g_deck_tex[g_deck_cur ^ 1]) {
+        float p = ease_out(te / 200.0f);
+        SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur ^ 1], 255);
+        SDL_RenderCopy(r, g_deck_tex[g_deck_cur ^ 1], nullptr, &full);
+        SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur], (Uint8)(255 * p));
+        SDL_Rect dst = { 0, (int)((1 - p) * 18), W, H };
+        SDL_RenderCopy(r, g_deck_tex[g_deck_cur], nullptr, &dst);
+    } else {
+        SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur], 255);
+        SDL_RenderCopy(r, g_deck_tex[g_deck_cur], nullptr, &full);
+    }
+    SDL_RenderPresent(r);
+}
+
+// ---------------------------------------------------------------------------
+// touch dispatch
+// ---------------------------------------------------------------------------
+void deck_activate(int id, int a, int b)
+{
+    switch (id) {
+    case HIT_BACK:
+        go_back();
+        break;
+    case HIT_HOME:
+        if (app.screen == Screen::Setup) setup_finish();
+        else app.screen = Screen::Home;
+        break;
+    case HIT_SYS:
+        if (a >= 0 && a < 5) {
+            app.carousel = a;
+            enter_selection();
+        }
+        break;
+    case HIT_HUB:
+        if (a == 0) { rebuild_activity(); app.screen = Screen::Activity; }
+        else if (a == 1) { rebuild_quick(); app.screen = Screen::Quick; }
+        else { app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+               wifi_probe_start(); update_refresh(); app.screen = Screen::Settings; app.set_sel = 0; }
+        break;
+    case HIT_RECENT:
+        if (app.recent_ok) launch_one(consoles()[app.recent.con], app.recent.game);
+        else { rebuild_quick(); app.screen = Screen::Quick; app.quick_tab = 1; rebuild_quick(); }
+        break;
+    case HIT_LIST_ROW:
+        if (a >= 0 && a < (int)app.games.size()) {
+            if (app.sel == a) do_launch();
+            else { app.sel = a; sound_play(SND_MOVE); }
+        }
+        break;
+    case HIT_FAV:
+        toggle_fav();
+        break;
+    case HIT_FAV_FILTER:
+        toggle_fav_only();
+        break;
+    case HIT_REFRESH:
+        refresh_games();
+        break;
+    case HIT_PLAY:
+        confirm_btn();      // launches the focused row on list/quick/activity
+        break;
+    case HIT_SET_TILE:
+        app.set_sel = std::clamp(a, 0, 11);
+        if (a == 2) bt_enter();
+        else if (a == 3) wifi_enter();
+        else if (a == 4) cycle_theme();
+        else if (a == 5) cycle_lang();
+        else if (a == 6) update_enter();
+        else if (a == 7) {
+            app.saves = scan_saves();
+            app.save_sel = 0;
+            app.save_scroll = 0;
+            app.screen = Screen::Saves;
+        } else if (a == 8) { app.confirm = ConfirmAct::PowerOff; app.screen = Screen::Confirm; }
+        else if (a == 9) { app.confirm = ConfirmAct::Reboot; app.screen = Screen::Confirm; }
+        else if (a == 10) show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
+        else if (a == 11) setup_enter();
+        else sound_play(SND_MOVE);
+        break;
+    case HIT_WIFI_NET:
+        if (a >= 0 && a < (int)app.wifi_nets.size()) {
+            app.wifi_sel = a;
+            wifi_press_net();
+        }
+        break;
+    case HIT_WIFI_SCAN:
+        if (!app.wifi_busy) {
+            sound_play(SND_SWITCH);
+            app.wifi_status = tr(T_WIFI_SCANNING);
+            wifi_start("scan");
+        }
+        break;
+    case HIT_WIFI_TEST:
+        if (!app.wifi_busy) {
+            sound_play(SND_BACK);
+            wifi_forget_net();
+        }
+        break;
+    case HIT_BT_TOGGLE:
+        if (!app.bt_busy) {
+            app.bt_status = app.bt_on ? tr(T_TURNING_OFF) : tr(T_TURNING_ON);
+            bt_start(app.bt_on ? "down" : "up");
+            app.bt_sel = 0;
+        }
+        break;
+    case HIT_BT_DEV:
+        if (!app.bt_busy && a >= 0 && a < (int)app.bt_devs.size()) {
+            app.bt_sel = a + 1;
+            confirm_btn();
+        }
+        break;
+    case HIT_BT_SCAN:
+        if (app.bt_on && !app.bt_busy) {
+            sound_play(SND_SWITCH);
+            app.bt_status = tr(T_SCANNING);
+            bt_start("scan");
+        }
+        break;
+    case HIT_SAVE_ROW:
+        if (a >= 0 && a < (int)app.saves.size()) {
+            if (app.save_sel == a) {
+                app.save_del_idx = a;
+                app.confirm = ConfirmAct::DeleteSave;
+                app.screen = Screen::Confirm;
+            } else { app.save_sel = a; sound_play(SND_MOVE); }
+        }
+        break;
+    case HIT_SAVE_DEL:
+        if (!app.saves.empty()) {
+            app.save_del_idx = app.save_sel;
+            app.confirm = ConfirmAct::DeleteSave;
+            app.screen = Screen::Confirm;
+        }
+        break;
+    case HIT_UPD_CHECK:
+        if (!app.upd_busy) { sound_play(SND_CONFIRM); update_start("check"); }
+        break;
+    case HIT_UPD_APPLY:
+        if (!app.upd_busy && app.upd_state == "available") {
+            app.confirm = ConfirmAct::Update;
+            app.screen = Screen::Confirm;
+        }
+        break;
+    case HIT_UPD_REBOOT:
+        if (!app.upd_busy && app.upd_state == "ready") {
+            sound_play(SND_CONFIRM);
+            app.exit_code = 91;
+            app.running = false;
+        }
+        break;
+    case HIT_ACT_TAB:
+        if (a >= 0 && a < 4) {
+            app.act_tab = a;
+            app.act_sel = 0;
+            app.act_scroll = 0;
+            sound_play(SND_SWITCH);
+        }
+        break;
+    case HIT_ACT_ROW:
+        if (app.act_sel == a) confirm_btn();
+        else if (a >= 0 && a < act_row_count()) { app.act_sel = a; sound_play(SND_MOVE); }
+        break;
+    case HIT_QUICK_TAB:
+        if (a >= 0 && a < 2) {
+            app.quick_tab = a;
+            app.quick_sel = 0;
+            rebuild_quick();
+            sound_play(SND_SWITCH);
+        }
+        break;
+    case HIT_QUICK_ROW:
+        if (a >= 0 && a < (int)app.quick.size()) {
+            if (app.quick_sel == a) confirm_btn();
+            else { app.quick_sel = a; sound_play(SND_MOVE); }
+        }
+        break;
+    case HIT_SETUP_OPT:
+        app.setup_sel = a;
+        if (app.setup_step == 2) app.setup_col = b;
+        setup_activate();
+        break;
+    case HIT_SETUP_NEXT:
+        setup_next();
+        break;
+    case HIT_SETUP_SKIP:
+        setup_next();
+        break;
+    case HIT_SETUP_ACTION:
+        if (a == 1) setup_finish();
+        else {
+            app.setup_sel = 0;
+            setup_activate();
+        }
+        break;
+    case HIT_KB_KEY:
+        app.kb_r = a;
+        app.kb_c = b;
+        kb_press();
+        sound_play(SND_MOVE);
+        break;
+    case HIT_DLG_OK:
+        confirm_btn();
+        break;
+    case HIT_DLG_CANCEL:
+        go_back();
+        break;
+    default:
+        break;
+    }
+}
+
+void deck_touch(const TouchEvent& e)
+{
+    if (e.phase == TouchPhase::Down) {
+        const UiHit* h = ui_hit_at(e.x, e.y);
+        app.t_id = h ? h->id : HIT_NONE;
+        app.t_a = h ? h->a : 0;
+        app.t_b = h ? h->b : 0;
+        app.t_x0 = e.x;
+        app.t_y0 = e.y;
+        app.t_ly = e.y;
+        app.t_at = SDL_GetTicks();
+        app.t_moved = false;
+        app.t_acc = 0;
+        app.slider_drag = false;
+        if (h && h->id == HIT_SET_SLIDER) {
+            app.slider_drag = true;
+            g_slider_rect = h->rect;
+            int pct = std::clamp((int)((e.x - h->rect.x) * 100 / std::max(1, h->rect.w)), 0, 100);
+            if (h->a == 0) brightness_set(pct, false);
+            else volume_set(pct, false);
+        }
+        return;
+    }
+    if (e.phase == TouchPhase::Move) {
+        if (app.t_id == HIT_NONE) return;
+        if (std::abs(e.x - app.t_x0) > 10 || std::abs(e.y - app.t_y0) > 10)
+            app.t_moved = true;
+        if (app.slider_drag) {
+            int pct = std::clamp((int)((e.x - g_slider_rect.x) * 100 /
+                                 std::max(1, g_slider_rect.w)), 0, 100);
+            if (app.t_id == HIT_SET_SLIDER && app.t_a == 0) brightness_set(pct, false);
+            else volume_set(pct, false);
+            return;
+        }
+        if (!app.t_moved) return;
+        int dy = e.y - app.t_ly;
+        int dx = e.x - app.t_x0;
+        app.t_ly = e.y;
+        if (app.t_id == HIT_LIST_ROWS || app.t_id == HIT_ACT_ROWS ||
+            app.t_id == HIT_QUICK_ROWS) {
+            app.t_acc += dy;
+            while (app.t_acc >= 52) { navigate(0, -1); app.t_acc -= 52; }
+            while (app.t_acc <= -52) { navigate(0, 1); app.t_acc += 52; }
+        } else if (app.t_id == HIT_SYS && app.t_a == -1 && std::abs(dx) > 70) {
+            navigate(dx < 0 ? 1 : -1, 0);
+            app.t_x0 = e.x;
+        }
+        return;
+    }
+    // Up
+    if (app.slider_drag) {
+        if (app.t_id == HIT_SET_SLIDER && app.t_a == 0) brightness_set(app.settings.brightness, true);
+        else volume_set(app.settings.volume, true);
+        app.slider_drag = false;
+    } else if (app.t_id != HIT_NONE && !app.t_moved) {
+        const UiHit* h = ui_hit_at(e.x, e.y);
+        if (h && h->id == app.t_id && h->a == app.t_a && h->b == app.t_b)
+            deck_activate(h->id, h->a, h->b);
+    }
+    app.t_id = HIT_NONE;
+}
+
+void volume_poll()
+{
+    Uint32 now = SDL_GetTicks();
+    if (now - app.vol_poll_at < 500) return;
+    app.vol_poll_at = now;
+    std::string s = read_file("/run/gameos/volume.level");
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+        s.pop_back();
+    if (s.empty()) return;
+    int v = atoi(s.c_str());
+    if (v >= 0 && v <= 100 && v != app.settings.volume) {
+        app.settings.volume = v;
+        volume_show(v);
+        save_settings(app.settings);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // main loop
 // ---------------------------------------------------------------------------
 void handle_button(SDL_ControllerButtonEvent& b)
@@ -3673,6 +4628,16 @@ void handle_button(SDL_ControllerButtonEvent& b)
                 app.wifi_status = tr(T_WIFI_SCANNING);
                 wifi_start("scan");
             }
+        } else if (app.screen == Screen::Settings) {
+            sound_play(SND_SWITCH);
+            app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+            wifi_probe_start();
+            update_refresh();
+        } else if (app.screen == Screen::Saves) {
+            sound_play(SND_ADJUST);
+            int keep = app.save_sel;
+            app.saves = scan_saves();
+            app.save_sel = std::clamp(keep, 0, std::max(0, (int)app.saves.size() - 1));
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -3692,13 +4657,21 @@ void handle_button(SDL_ControllerButtonEvent& b)
             }
         } else if (app.screen == Screen::Update) {
             // nothing to forget here
+        } else if (app.screen == Screen::Home) {
+            sound_play(SND_CONFIRM);
+            rebuild_quick();
+            app.quick_tab = 0;
+            app.screen = Screen::Quick;
         } else toggle_fav();
         break;
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: toggle_fav_only(); break; // physical R
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: go_back(); break;          // physical L
     case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
     case SDL_CONTROLLER_BUTTON_GUIDE:  // physical MENU (BTN_MODE)
+        // typing first: a stray MENU/HOME press should not discard the input
+        if (app.wifi_kb) { sound_play(SND_BACK); kb_cancel(); }
         // leaving the wizard by any deliberate exit means "do not ask again"
-        if (app.screen == Screen::Setup) setup_finish();
+        else if (app.screen == Screen::Setup) setup_finish();
         else if (app.screen != Screen::Confirm) app.screen = Screen::Home;
         break;
     case SDL_CONTROLLER_BUTTON_DPAD_UP:    navigate(0, -1); break;
@@ -3734,6 +4707,16 @@ void handle_key(SDL_KeyboardEvent& k)
                 app.wifi_status = tr(T_WIFI_SCANNING);
                 wifi_start("scan");
             }
+        } else if (app.screen == Screen::Settings) {
+            sound_play(SND_SWITCH);
+            app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+            wifi_probe_start();
+            update_refresh();
+        } else if (app.screen == Screen::Saves) {
+            sound_play(SND_ADJUST);
+            int keep = app.save_sel;
+            app.saves = scan_saves();
+            app.save_sel = std::clamp(keep, 0, std::max(0, (int)app.saves.size() - 1));
         } else refresh_games();
         break;
     case SDLK_f:
@@ -3753,9 +4736,20 @@ void handle_key(SDL_KeyboardEvent& k)
             }
         } else if (app.screen == Screen::Update) {
             // nothing to forget here
+        } else if (app.screen == Screen::Home) {
+            sound_play(SND_CONFIRM);
+            rebuild_quick();
+            app.quick_tab = 0;
+            app.screen = Screen::Quick;
         } else toggle_fav();
         break;
     case SDLK_TAB: toggle_fav_only(); break;
+    case SDLK_MINUS:
+        volume_set(app.settings.volume - 5, true);
+        break;
+    case SDLK_EQUALS:
+        volume_set(app.settings.volume + 5, true);
+        break;
     case SDLK_UP:    navigate(0, -1); break;
     case SDLK_DOWN:  navigate(0, 1); break;
     case SDLK_LEFT:  navigate(-1, 0); break;
@@ -3778,6 +4772,21 @@ void poll_repeat()
         Sint16 ay = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_LEFTY);
         if (ax < -16000) { dx = -1; from_btn = false; } else if (ax > 16000) { dx = 1; from_btn = false; }
         if (ay < -16000) { dy = -1; from_btn = false; } else if (ay > 16000) { dy = 1; from_btn = false; }
+        // right stick scrolls lists / moves across carousel tiles
+        Sint16 rx = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_RIGHTX);
+        Sint16 ry = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_RIGHTY);
+        if (!dx && rx < -16000) { dx = -1; from_btn = false; } else if (!dx && rx > 16000) { dx = 1; from_btn = false; }
+        if (!dy && ry < -16000) { dy = -1; from_btn = false; } else if (!dy && ry > 16000) { dy = 1; from_btn = false; }
+
+        // L2/R2 are analog triggers in SDL2: use them as volume keys with
+        // hysteresis so holding one steps the volume exactly once.
+        static bool lt_down = false, rt_down = false;
+        Sint16 lt = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        Sint16 rt = SDL_GameControllerGetAxis(app.pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+        if (!lt_down && lt > 16000) { volume_set(app.settings.volume - 5, true); lt_down = true; }
+        else if (lt_down && lt < 8000) lt_down = false;
+        if (!rt_down && rt > 16000) { volume_set(app.settings.volume + 5, true); rt_down = true; }
+        else if (rt_down && rt < 8000) rt_down = false;
     }
     int dir = dy ? dy * 2 : dx; // encode: vertical takes priority
     auto step = [&]() {
@@ -3916,6 +4925,10 @@ int main(int, char**)
         tf2_poll();
         setup_poll();
 
+        TouchEvent te;
+        while (touch_poll(te)) deck_touch(te);
+        volume_poll();
+
         // Tell S99update the UI really got on screen: boot.scr only clears the
         // boot counter once this marker exists, so a rootfs whose session
         // never renders still rolls back after four tries.
@@ -3969,10 +4982,10 @@ int main(int, char**)
 
         const bool dialog = app.screen == Screen::Msg || app.screen == Screen::Confirm;
         const Uint32 dur = dialog ? 160 : 200;
-        Uint32 te = now - g_trans_start;
+        Uint32 trans_elapsed = now - g_trans_start;
         SDL_Rect full = { 0, 0, W, H };
-        if (te < dur) {
-            float p = ease_out(te / (float)dur);
+        if (trans_elapsed < dur) {
+            float p = ease_out(trans_elapsed / (float)dur);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur ^ 1], 255);
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur ^ 1], nullptr, &full);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur], (Uint8)(255 * p));
@@ -3990,7 +5003,7 @@ int main(int, char**)
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur], nullptr, &full);
         }
         SDL_RenderPresent(r);
-        draw_ambient();
+        draw_deck();
         // cap at ~60 fps: uncapped rendering burned CPU and battery for no
         // visible gain on a 60 Hz panel
         Uint32 frame_ms = SDL_GetTicks() - now;

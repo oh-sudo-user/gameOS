@@ -1,0 +1,71 @@
+#!/bin/sh
+# gameos-volume — the one volume path for keys, UI and scripts.
+#
+#   gameos-volume up|down       step by 5, print the new level
+#   gameos-volume set <0-100>   absolute level
+#   gameos-volume get           print the last level
+#
+# Card indices swap between boots (rk817 jack / aw88166 speakers), so every
+# sound card is tried by number. Only controls advertising "Playback" are
+# touched: the amps also expose capture gain and jack switches.
+STATE=/run/gameos/volume.level
+mkdir -p /run/gameos 2>/dev/null
+
+current()
+{
+    v=$(cat "$STATE" 2>/dev/null)
+    case "$v" in
+        ''|*[!0-9]*) v=70 ;;
+    esac
+    [ "$v" -gt 100 ] && v=100
+    echo "$v"
+}
+
+apply()
+{
+    pct=$1
+    for carddir in /proc/asound/card[0-9]*; do
+        [ -d "$carddir" ] || continue
+        card=${carddir##*card}
+        for ctl in 'Master' 'Master Playback Volume' 'PCM' 'Left PCM' 'Right PCM' \
+                   'Playback Volume' 'DAC Playback Volume' 'Headphone Playback Volume' \
+                   'Speaker Playback Volume' 'Digital Volume'; do
+            caps=$(amixer -c "$card" sget "$ctl" 2>/dev/null) || continue
+            case "$caps" in *Playback*) ;; *) continue ;; esac
+            amixer -c "$card" sset "$ctl" "${pct}%" >/dev/null 2>&1
+            if [ "$pct" -gt 0 ]; then
+                amixer -c "$card" sset "$ctl" unmute >/dev/null 2>&1
+            fi
+        done
+    done
+    # Bluetooth headphones keep their own A2DP volume.
+    if [ -f /run/gameos/bt-audio ]; then
+        gameos-bt volume "$pct" >/dev/null 2>&1
+    fi
+    echo "$pct" > "$STATE"
+    echo "$pct"
+}
+
+case "$1" in
+    up)
+        v=$(current); v=$((v + 5)); [ "$v" -gt 100 ] && v=100
+        apply "$v"
+        ;;
+    down)
+        v=$(current); v=$((v - 5)); [ "$v" -lt 0 ] && v=0
+        apply "$v"
+        ;;
+    set)
+        v=$2
+        case "$v" in ''|*[!0-9]*) echo "gameos-volume: bad level" >&2; exit 1 ;; esac
+        [ "$v" -gt 100 ] && v=100
+        apply "$v"
+        ;;
+    get)
+        current
+        ;;
+    *)
+        echo "usage: gameos-volume up|down|set <0-100>|get" >&2
+        exit 1
+        ;;
+esac

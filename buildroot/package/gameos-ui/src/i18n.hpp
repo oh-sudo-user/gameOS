@@ -95,6 +95,16 @@ enum TKey {
     T_ACTIVITY_HINT, T_QUICK_HINT,
     // data partition could not be mounted (never auto-formatted)
     T_DATA_ERROR, T_DATA_ERROR_HELP,
+    // 2.0 touch-first deck
+    T_PLAY, T_SKIP, T_RECENT,
+    T_TOUCH_HOME, T_TOUCH_LIST, T_TOUCH_SETTINGS, T_TOUCH_WIFI,
+    // update deck actions
+    T_UPD_CHECK, T_UPD_RECHECK, T_UPD_DOWNLOAD,
+    // touch-first wifi deck
+    T_SCAN, T_FORGET, T_WIFI_EMPTY,
+    // touch hints for wizard steps and the deck keyboard
+    T_TOUCH_LANG, T_TOUCH_NAME, T_TOUCH_COVER, T_KB_DECK_HINT, T_TOUCH_TZ,
+    T_DELETE_SAVE, T_BT_OFF_HELP,
     T_COUNT
 };
 

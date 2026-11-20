@@ -233,11 +233,13 @@ static void handle_volume(int code, int value)
         clock_gettime(CLOCK_MONOTONIC, &last);
     }
 
-    // rk817 headphone = "Master"; aw88166 speakers = "PCM". Card order can
-    // swap, so fall back Master->PCM on each card.
+    // One shared helper owns the mixer map: card order swaps between boots and
+    // the speaker amps expose Left/Right PCM instead of Master. Running the
+    // same script as the UI also keeps /run/gameos/volume.level in sync, so
+    // the settings screen and the on-screen volume toast follow the keys.
     const char *cmd = (code == KEY_VOLUMEUP)
-        ? "amixer -c 0 sset Master 5%+ >/dev/null 2>&1 || amixer -c 0 sset PCM 5%+ >/dev/null 2>&1; amixer -c 1 sset Master 5%+ >/dev/null 2>&1 || amixer -c 1 sset PCM 5%+ >/dev/null 2>&1"
-        : "amixer -c 0 sset Master 5%- >/dev/null 2>&1 || amixer -c 0 sset PCM 5%- >/dev/null 2>&1; amixer -c 1 sset Master 5%- >/dev/null 2>&1 || amixer -c 1 sset PCM 5%- >/dev/null 2>&1";
+        ? "/usr/bin/gameos-volume up"
+        : "/usr/bin/gameos-volume down";
     // Run the mixer change in a child. system() would block this poll loop
     // while ALSA is busy, freezing every button and the analog stick too.
     // Children are reaped at the top of the main loop.

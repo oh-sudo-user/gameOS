@@ -353,24 +353,22 @@ void apply_brightness(int pct)
 void apply_volume(int pct)
 {
     pct = std::clamp(pct, 0, 100);
-    // rk817 headphone exposes "Master"; aw88166 speakers expose "PCM" or
-    // "Left PCM"/"Right PCM" (attenuation, no dB scale). Card probe order can
-    // swap 0/1, so fall back Master->PCM->Left/Right PCM per card.
-    char cmd[640];
-    snprintf(cmd, sizeof(cmd),
+    // gameos-volume owns the mixer map (card order swaps, the amps expose
+    // Left/Right PCM instead of Master, Bluetooth has its own control) and
+    // records the level so the hardware keys and the UI stay in sync. On a
+    // host build without the script, fall back to the direct mixer calls.
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "gameos-volume set %d >/dev/null 2>&1", pct);
+    if (system(cmd) == 0) return;
+
+    char fb[640];
+    snprintf(fb, sizeof(fb),
              "amixer -c 0 sset Master %d%% >/dev/null 2>&1 || amixer -c 0 sset PCM %d%% >/dev/null 2>&1 || "
              "{ amixer -c 0 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 0 sset 'Right PCM' %d%% >/dev/null 2>&1; }; "
              "amixer -c 1 sset Master %d%% >/dev/null 2>&1 || amixer -c 1 sset PCM %d%% >/dev/null 2>&1 || "
              "{ amixer -c 1 sset 'Left PCM' %d%% >/dev/null 2>&1; amixer -c 1 sset 'Right PCM' %d%% >/dev/null 2>&1; }",
              pct, pct, pct, pct, pct, pct, pct, pct);
-    if (system(cmd) != 0) { /* ignore */ }
-    // Bluetooth headphones have their own volume (bluealsa per-device control);
-    // the hw mixers above do not touch the A2DP stream.
-    if (access("/run/gameos/bt-audio", F_OK) == 0) {
-        char bt[96];
-        snprintf(bt, sizeof(bt), "gameos-bt volume %d >/dev/null 2>&1", pct);
-        if (system(bt) != 0) { /* ignore */ }
-    }
+    if (system(fb) != 0) { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
