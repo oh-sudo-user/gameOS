@@ -103,7 +103,7 @@
     /* gameOS: DSI-2 (lid) is the main/top panel; DRM lists DSI-1 first, so
      * re-point the primary connector at DSI-2 for single-panel games too. */
     {
-@@ -1299,6 +1359,21 @@
+@@ -1299,6 +1359,24 @@
        }
     }
  
@@ -118,6 +118,9 @@
 +         usleep(5000);
 +         waited += 5;
 +      }
++      /* We opened the card while the UI was master, so we were not promoted
++       * when it let go; claim master before the modesets below. */
++      drmSetMaster(g_drm_fd);
 +      gameos_dlog("gate: UI release after %dms%s", waited,
 +            waited >= 10000 ? " (timeout)" : "");
 +   }
