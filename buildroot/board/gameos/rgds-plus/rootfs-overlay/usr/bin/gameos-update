@@ -21,7 +21,9 @@
 # block write; the boot tar is member-whitelisted and staged before install.
 # The boot state (slot switch) is written LAST, only after every asset is
 # written, verified and synced. HTTPS + same-origin SHA256 detects corruption
-# but is NOT publisher authentication; manifest signing is a separate task.
+# but is NOT publisher authentication: manifest.json.sig is an Ed25519
+# signature checked against /etc/gameos/ota-pub.pem BEFORE any field of the
+# manifest is parsed, so a compromised release host cannot swap both.
 
 REPO=oh-sudo-user/gameOS
 BASE="https://github.com/$REPO/releases/latest/download"
@@ -31,6 +33,9 @@ STATE=$RUN/update-state
 OUT=$RUN/update-op.out
 RC=$RUN/update-op.rc
 MANIFEST=$APPDIR/manifest.json
+SIG=$APPDIR/manifest.json.sig
+PUBKEY=/etc/gameos/ota-pub.pem
+SIG_LEN=64
 ROOTFS=$APPDIR/rootfs.ext4.gz
 BOOT=$APPDIR/boot.tar.gz
 RAW_TMP=$APPDIR/rootfs.ext4.tmp
@@ -173,6 +178,22 @@ validate_manifest() {
     return 0
 }
 
+# --- publisher authentication ----------------------------------------------
+# The manifest carries every hash the updater trusts, so its authenticity is
+# the root of the OTA chain. The signature is detached (manifest.json.sig,
+# raw 64-byte Ed25519) and verified over the exact downloaded bytes before
+# validation parses a single field. A missing key or missing signature is a
+# hard failure, never a fallback to "unsigned is fine".
+verify_manifest_signature() {  # <manifest> <signature>
+    [ -f "$1" ] && [ -f "$2" ] && [ -f "$PUBKEY" ] || return 1
+    sz=$(wc -c < "$2" 2>/dev/null)
+    case "$sz" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$sz" = "$SIG_LEN" ] || return 1
+    command -v openssl >/dev/null 2>&1 || return 1
+    openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin \
+        -in "$1" -sigfile "$2" >/dev/null 2>&1
+}
+
 fetch() {  # fetch <url> <file> <expected-size> <label> ; progress to update-state
     rm -f "$2.part"
     curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 20 \
@@ -236,6 +257,18 @@ do_check() {
         state "state=failed" "pct=0" "version=" "msg=manifest size $msz"
         return 1
     fi
+    # Publisher authentication before parsing: fetch the detached signature
+    # for the manifest we just downloaded and verify the exact byte stream.
+    if ! fetch "$BASE/manifest.json.sig" "$SIG" "$SIG_LEN" "signature"; then
+        rm -f "$MANIFEST.part" "$SIG"
+        state "state=failed" "pct=0" "version=" "msg=manifest signature download failed"
+        return 1
+    fi
+    if ! verify_manifest_signature "$MANIFEST.part" "$SIG"; then
+        rm -f "$MANIFEST.part" "$SIG"
+        state "state=failed" "pct=0" "version=" "msg=manifest signature invalid"
+        return 1
+    fi
     mv -f "$MANIFEST.part" "$MANIFEST"
     if ! validate_manifest; then
         state "state=failed" "pct=0" "version=" "msg=bad manifest"
@@ -252,6 +285,11 @@ do_check() {
 
 do_apply() {
     [ -f "$MANIFEST" ] || do_check || return 1
+    # The manifest and signature live on writable /userdata, so re-verify at
+    # apply time instead of trusting whatever do_check saw earlier.
+    if ! verify_manifest_signature "$MANIFEST" "$SIG"; then
+        state "state=failed" "version=" "msg=manifest signature invalid"; return 1
+    fi
     if ! validate_manifest; then
         state "state=failed" "version=" "msg=bad manifest"; return 1
     fi

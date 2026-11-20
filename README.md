@@ -114,7 +114,7 @@ The first power-on runs a short wizard: language, Wi-Fi (with a link / route / D
 
 - **A launch sequence for every console.** A game card drops into a console on the top screen while the bottom reports percentage, sector address, transfer rate and a live graph; it ends on black exactly as the emulator takes over.
 - **Wi-Fi.** WPA2/WPA3 via wpa_supplicant, managed from Settings with the gamepad keyboard; reconnects after sleep.
-- **Updates over the air.** The latest release is checked at boot, written to the idle A/B slot after confirmation, and rolled back automatically if the new slot fails four times. Games and saves are never touched.
+- **Updates over the air.** The latest release is checked at boot, written to the idle A/B slot after confirmation, and rolled back automatically if the new slot fails four times. Games and saves are never touched. OTA manifests are Ed25519-signed and verified before parsing — see [docs/OTA-SIGNING.md](docs/OTA-SIGNING.md).
 - **A library that stays out of the way.** Favorites, play history, optional box art (local or downloaded), subfolders, and multi-disc PS1 games shown as one entry.
 - **Activity.** Play time per game, a day-by-day timeline, trends and a "what to play next" pick.
 - **Look and language.** Four complete themes (Neon, Pixel, Fresh, Ink) and six languages; both switch instantly, and emulator menus follow the language.
@@ -289,7 +289,7 @@ GAMEOS-DATA/
 
 - **每台机器的启动仪式。** 打开游戏时上屏会插进一张游戏卡，下屏同步报告百分比、扇区地址、传输速率和活动图；动画在模拟器接手的那一刻正好落到全黑。
 - **Wi-Fi。** wpa_supplicant 支持 WPA2/WPA3，全部在设置里用手柄键盘操作；休眠唤醒后自动重连。
-- **OTA 更新。** 联网开机检查最新 release，确认后写入空闲的 A/B 槽；新槽四次启动失败会自动回滚。更新不碰游戏和存档。
+- **OTA 更新。** 联网开机检查最新 release，确认后写入空闲的 A/B 槽；新槽四次启动失败会自动回滚。更新不碰游戏和存档。OTA 清单使用 Ed25519 签名，设备解析前先验签，详见 [docs/OTA-SIGNING.md](docs/OTA-SIGNING.md)。
 - **省心的游戏库。** 收藏、游玩历史、可选封面（本地或在线下载）、子文件夹，多盘 PS1 游戏合成一条。
 - **Activity 统计。** 总时长与单游戏时长、逐日时间线、趋势，以及"下一款玩什么"推荐。
 - **外观与语言。** 四套完整主题（霓虹、像素、清新、水墨）和六种语言，都是即时切换；模拟器菜单也跟随语言。

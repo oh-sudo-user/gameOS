@@ -27,6 +27,14 @@ no(){ FAIL=$((FAIL+1)); printf 'FAIL %s\n' "$1"; }
 
 SB=$(mktemp -d)
 trap 'rm -rf "$SB"' EXIT INT TERM
+
+# Publisher authentication is mandatory, so every apply test needs a real
+# key pair and a real signature over the manifest it serves.
+TESTKEY="$SB/ota-test-ed25519.pem"
+openssl genpkey -algorithm ED25519 -out "$TESTKEY" 2>/dev/null \
+  || { echo "SKIP: openssl with Ed25519 support is required"; exit 0; }
+openssl pkey -in "$TESTKEY" -pubout -out "$SB/ota-pub.pem" 2>/dev/null
+
 HEX64A="0000000000000000000000000000000000000000000000000000000000000000"
 
 # --- sourceable copy: var block + function block, paths redirected to $SB ----
@@ -44,6 +52,7 @@ awk '
       -e "s#/boot/#$SB/boot/#g" \
       -e "s#/boot\([ ;]\)#$SB/boot\1#g" \
       -e "s#/etc/gameos-version#$SB/gameos-version#g" \
+      -e "s#/etc/gameos/ota-pub.pem#$SB/ota-pub.pem#g" \
       -e "s#/etc/ssl/certs/ca-certificates.crt#$SB/cacert#g" \
       -e "s#/proc/self/mounts#$SB/mounts#g" \
       -e "s#/proc/cmdline#$SB/cmdline#g" \
@@ -53,6 +62,7 @@ awk '
   > "$SB/funcs.sh"
 # shellcheck disable=SC1091
 . "$SB/funcs.sh"
+PUBKEY="$SB/ota-pub.pem"
 
 # ===========================================================================
 # Part A -- pure-function validation (real coreutils, no stubs yet)
@@ -201,6 +211,8 @@ write_manifest(){ # <ver> <rsha> <rsize> <rgz> <bsha> <bsize>
   "image_rgds": { "file": "gameOS-rgds.img.gz", "sha256": "$2", "size": 1000 }
 }
 EOF
+  openssl pkeyutl -sign -inkey "$TESTKEY" -rawin \
+    -in "$MANIFEST" -out "$SIG" 2>/dev/null
 }
 
 make_default_fixtures(){
@@ -273,6 +285,17 @@ setup; write_manifest 1.0.1 "$HEX64A" "$RSIZE" "$RGZ" "$BSHA" "$BSIZE"
 run_case "apply: rootfs checksum mismatch -> no switch" failed a
 setup; write_manifest 1.0.1 "$RSHA" "$RSIZE" "$RGZ" "$HEX64A" "$BSIZE"
 run_case "apply: boot checksum mismatch -> no switch" failed a
+
+# publisher authentication: a manifest changed after signing, a missing
+# signature and a truncated signature must all stop before any block write
+setup; printf 'x' >> "$MANIFEST"
+run_case "apply: tampered manifest -> no switch" failed a
+
+setup; rm -f "$SIG"
+run_case "apply: missing manifest signature -> no switch" failed a
+
+setup; head -c 63 "$SIG" > "$SB/sig.t"; mv "$SB/sig.t" "$SIG"
+run_case "apply: truncated manifest signature -> no switch" failed a
 
 # truncated gzip (sha recomputed so checksum passes, gzip -t fails)
 setup

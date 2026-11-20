@@ -101,3 +101,15 @@ gameOS 不会写入机器内部存储，随便折腾。
    - `dropped`：帧间隔超过 20ms（相当于掉一帧）的次数。
 4. 把 `ui-perf.log` 附到 Issue。排查完删掉 `ui-perf.on` 即关闭记录，
    日志文件留着不影响运行。
+
+## 11. OTA 更新失败：manifest signature invalid
+
+1.0.1 之后的固件只安装带有效 Ed25519 签名的 release。更新状态文件
+`/run/gameos/update-state` 里出现 `manifest signature invalid` 时：
+
+1. 确认该 release 上传了 `manifest.json.sig`，并且是对当前
+   `manifest.json` 原始字节的签名（不能改一个空格后再签）。
+2. 确认设备固件里的公钥与发布私钥配对；换过公钥的过渡版本要先刷入。
+3. 旧 release 没有签名，设备会按设计拒绝；从第一个已签名 release 开始升级。
+
+签名、私钥备份和发布命令见 `docs/OTA-SIGNING.md`。

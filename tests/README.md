@@ -12,10 +12,14 @@ device-presence predicates into a temp sandbox.
 
 | file | covers | doc |
 |------|--------|-----|
-| `test-gameos-update.sh` | strict manifest validation matrix; version compare (no downgrade / no same-release rebuild); `do_apply` fault injection at **every** stage — the invariant is `/boot/state` is switched **LAST** and **never** on any failure; malicious boot tars (traversal / symlink / missing / extra / empty member) | §4.5 |
+| `test-gameos-update.sh` | strict manifest validation matrix; version compare (no downgrade / no same-release rebuild); Ed25519 manifest signature required; `do_apply` fault injection at **every** stage — the invariant is `/boot/state` is switched **LAST** and **never** on any failure; malicious boot tars (traversal / symlink / missing / extra / empty member) | §4.5 |
+| `test-ota-signature.sh` | extracts `verify_manifest_signature()` verbatim; valid signature, one-byte tamper, wrong key, 63-byte truncated signature, missing signature and missing public key | §4.3 |
 | `test-firstboot-data.sh` | an **existing** p4 is **NEVER** auto-formatted (exFAT preserved, corrupt/foreign preserved); format only after create+verify succeed; sgdisk/parted/node-timeout/mkfs/verify failures all keep the first-boot marker | §3.3 / §0 |
 | `test-boot-state.sh` | `confirm()` records slot=fallback=current, n=0; `reconcile_bootscr()` atomically deploys the model-matched script; the start gate runs confirm **only** after `ui-ok` exists | §2.3 |
 | `test-ui-perf.sh` | compiles `tests/host/test-ui-perf.cpp` against the real `src/perf.cpp`; nearest-rank percentiles, window cap/dropped/reset, and the disabled-path no-op | §10 |
+
+The OTA tests need `openssl` with Ed25519 support (OpenSSL 3.x); they print
+`SKIP` only when the host has no openssl at all.
 
 Run locally (WSL example):
 

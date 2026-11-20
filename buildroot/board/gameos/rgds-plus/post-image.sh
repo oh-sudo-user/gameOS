@@ -148,5 +148,17 @@ cat > "$BINARIES_DIR/manifest.json" <<EOF
 }
 EOF
 
+# Publisher authentication: sign the exact manifest bytes. The private key is
+# never part of the repo or the image; a build without it produces an unsigned
+# manifest that devices with signature enforcement will refuse.
+OTA_KEY="${GAMEOS_OTA_SIGNING_KEY:-$HOME/.gameos-ota-signing/ed25519.pem}"
+if [ -f "$OTA_KEY" ]; then
+  openssl pkeyutl -sign -inkey "$OTA_KEY" -rawin \
+    -in "$BINARIES_DIR/manifest.json" -out "$BINARIES_DIR/manifest.json.sig"
+  echo "==> OTA:   manifest signed (Ed25519)"
+else
+  echo "==> WARNING: OTA signing key not found at $OTA_KEY; manifest is UNSIGNED and devices will reject OTA"
+fi
+
 echo "==> done: $BINARIES_DIR/gameOS-rgds-plus.img.gz + gameOS-rgds.img.gz"
 echo "==> OTA:   $BINARIES_DIR/manifest.json"
