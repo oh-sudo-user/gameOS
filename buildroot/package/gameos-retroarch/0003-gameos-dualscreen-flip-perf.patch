@@ -1,0 +1,127 @@
+--- a/gfx/drivers_context/drm_ctx.c
++++ b/gfx/drivers_context/drm_ctx.c
+@@ -159,6 +159,15 @@
+ static uint32_t g_gc_mode_bot, g_gc_active_bot;
+ static uint32_t g_gc_conn_top, g_gc_conn_bot;
+ static int g_gameos_flip_errors = 0;
++/* One atomic commit updates both CRTCs, and the kernel then queues one page
++ * flip event per CRTC. waiting_for_flip may only be cleared once both have
++ * fired; otherwise RetroArch thinks the buffer is free while the second panel
++ * still scans it out. */
++static int g_gameos_dual_pending = 0;
++static unsigned g_gameos_frame_count = 0;
++static unsigned g_gameos_busy_count = 0;
++static time_t g_gameos_stats_time = 0;
++static bool g_gameos_gate = false;
+ 
+ /* Field diagnostics: RetroArch's own log died with the power cut on the
+  * handheld, so dual-screen decisions are also fsynced to the data partition. */
+@@ -611,16 +620,44 @@
+       return false;
+    drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.fb_id, fb_id);
+    drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.fb_id, fb_id);
++   /* NONBLOCK is essential: without it the kernel commits synchronously and
++    * every frame sits in drm_atomic_helper_wait_for_vblanks, so drawing
++    * cannot overlap the panels' scanout and the game runs in slow motion. */
+    int ret = drmModeAtomicCommit(fd, req,
+-         DRM_MODE_PAGE_FLIP_EVENT, waiting);
++         DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK, waiting);
+    drmModeAtomicFree(req);
+    if (ret == 0)
++   {
+       *waiting = true;
+-   else if (g_gameos_flip_errors < 3)
++      g_gameos_dual_pending = 2;
++      g_gameos_frame_count++;
++   }
++   else
+    {
+-      g_gameos_flip_errors++;
+-      RARCH_ERR("[KMS] gameOS dual flip failed: %s\n", strerror(errno));
+-      gameos_dlog("flip: failed: %s", strerror(errno));
++      g_gameos_busy_count++;
++      if (g_gameos_flip_errors < 3)
++      {
++         g_gameos_flip_errors++;
++         RARCH_ERR("[KMS] gameOS dual flip failed: %s\n", strerror(errno));
++         gameos_dlog("flip: failed: %s", strerror(errno));
++      }
++   }
++
++   {
++      time_t now = time(NULL);
++      if (!g_gameos_stats_time)
++         g_gameos_stats_time = now;
++      else if (now - g_gameos_stats_time >= 5)
++      {
++         int span = (int)(now - g_gameos_stats_time);
++         gameos_dlog("flipstats: %u frames, %u busy in %ds (%.1f fps), pending=%d",
++               g_gameos_frame_count, g_gameos_busy_count, span,
++               (double)g_gameos_frame_count / (double)span,
++               g_gameos_dual_pending);
++         g_gameos_frame_count = 0;
++         g_gameos_busy_count = 0;
++         g_gameos_stats_time = now;
++      }
+    }
+    return ret == 0;
+ }
+@@ -1000,6 +1037,12 @@
+ static void drm_flip_handler(int fd, unsigned frame,
+       unsigned sec, unsigned usec, void *data)
+ {
++   if (g_gameos_dual && g_gameos_dual_pending > 0)
++   {
++      g_gameos_dual_pending--;
++      if (g_gameos_dual_pending > 0)
++         return; /* the other panel has not finished its flip yet */
++   }
+    *(bool*)data = false;
+ }
+ 
+@@ -1247,6 +1290,23 @@
+ 
+    drm_setup(fd);
+ 
++   /* gameOS launch gate: gfx_ctx_drm_init runs after the core has read the
++    * whole ROM, so this is the moment the UI's launch animation can end.
++    * Tell it, and wait (before the first modeset) until it has released DRM
++    * master. Only the dual-screen path opts in (GAMEOS_LAUNCH_GATE). */
++   {
++      const char *dual_env = getenv("GAMEOS_DUALSCREEN");
++      const char *gate_env = getenv("GAMEOS_LAUNCH_GATE");
++      if (dual_env && dual_env[0] == '1' && gate_env && gate_env[0] == '1')
++      {
++         FILE *gate = fopen("/tmp/gameos-ra-ready", "w");
++         if (gate)
++            fclose(gate);
++         g_gameos_gate = true;
++         gameos_dlog("gate: ROM loaded, waiting for UI");
++      }
++   }
++
+    /* gameOS: DSI-2 (lid) is the main/top panel; DRM lists DSI-1 first, so
+     * re-point the primary connector at DSI-2 for single-panel games too. */
+    {
+@@ -1299,6 +1359,21 @@
+       }
+    }
+ 
++   /* Hold the first modeset until the UI has stopped drawing and dropped
++    * DRM master; otherwise the dual modeset is rejected and we fall back to
++    * a single panel. The UI polls at 60 Hz, so this is normally <50 ms. */
++   if (g_gameos_gate)
++   {
++      int waited = 0;
++      while (access("/tmp/gameos-ui-release", F_OK) != 0 && waited < 10000)
++      {
++         usleep(5000);
++         waited += 5;
++      }
++      gameos_dlog("gate: UI release after %dms%s", waited,
++            waited >= 10000 ? " (timeout)" : "");
++   }
++
+    /* gameOS: optionally span both RG DS Plus panels */
+    {
+       const char *dual = getenv("GAMEOS_DUALSCREEN");

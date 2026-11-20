@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -967,6 +968,12 @@ void bt_start(const std::string& op, const std::string& arg = "")
     if (!arg.empty()) cmd += " " + arg;
     cmd += " > /run/gameos/bt-op.out 2>&1; echo $? > /run/gameos/bt-op.rc ) &";
     if (system(cmd.c_str()) != 0) { /* ignore */ }
+    {
+        char dbg[240];
+        snprintf(dbg, sizeof dbg, "gameos-ui: bt op start: %s%s%s\n",
+                 op.c_str(), arg.empty() ? "" : " ", arg.c_str());
+        ui_dbg(dbg);
+    }
     app.bt_op = op;
     app.bt_busy = true;
     app.bt_op_at = SDL_GetTicks();
@@ -1030,6 +1037,13 @@ void bt_poll()
     std::string out = read_file("/run/gameos/bt-op.out");
     std::string op = app.bt_op;
     app.bt_op.clear();
+    {
+        char dbg[240];
+        std::string last = bt_last_line(out);
+        snprintf(dbg, sizeof dbg, "gameos-ui: bt op done: %s rc=%d last=%.160s\n",
+                 op.c_str(), rc, last.c_str());
+        ui_dbg(dbg);
+    }
     if (op == "devices" || op == "scan") {
         bt_parse_devs(out);
         std::string last = bt_last_line(out);
@@ -1042,7 +1056,9 @@ void bt_poll()
         app.settings.bluetooth = app.bt_on ? 1 : 0;
         save_settings(app.settings);
         app.bt_status = app.bt_on ? tr(T_BT_ON_OK) : tr(T_BT_ON_FAIL);
-        if (app.bt_on) bt_start("devices");
+        // Search straight away: the device list should not sit empty until
+        // the user finds and presses scan.
+        if (app.bt_on) { app.bt_status = tr(T_SCANNING); bt_start("scan"); }
     } else if (op == "down") {
         app.bt_on = false;
         app.settings.bluetooth = 0;
@@ -3296,7 +3312,11 @@ void draw_launch_bot(SDL_Renderer* r, const Console& c, const Game& g, float t,
     if (out < 1.f) fill_rect(r, 0, 0, W, H, rgba(0, 0, 0, (Uint8)((1.f - out) * 255)));
 }
 
-void launch_anim(const Console& c, const Game& g)
+// gate_pid > 0: dual-screen launch. The emulator is already reading the ROM
+// (melonDS need_fullpath reads the whole image before opening DRM), so hold
+// the animation on its last visible frame until /tmp/gameos-ra-ready appears
+// or the child exits, then play the fade-out and return.
+void launch_anim(const Console& c, const Game& g, int gate_pid = 0)
 {
     if (!app.ren_top) return;
 
@@ -3325,9 +3345,34 @@ void launch_anim(const Console& c, const Game& g)
     size_t shot_i = 0;
 
     SDL_ShowCursor(SDL_DISABLE);
+    const float hold_t = LAUNCH_DUR - 0.24f;   // last frame before the fade
     Uint32 t0 = SDL_GetTicks();
+    Uint32 now = t0;
+    bool released = gate_pid <= 0;
     for (;;) {
-        float t = (SDL_GetTicks() - t0) / 1000.f;
+        now = SDL_GetTicks();
+        float t = (now - t0) / 1000.f;
+        if (!released) {
+            bool child_gone = kill(gate_pid, 0) != 0 && errno == ESRCH;
+            bool ready = access("/tmp/gameos-ra-ready", F_OK) == 0;
+            if (ready || child_gone || t >= 20.f) {
+                const char* why = child_gone ? " [child gone]"
+                                : (t >= 20.f ? " [timeout]" : "");
+                float waited = t;
+                released = true;
+                if (t > hold_t) {
+                    t0 = now - (Uint32)(hold_t * 1000.f);  // fade from here
+                    t = hold_t;
+                }
+                char dbg[160];
+                snprintf(dbg, sizeof dbg,
+                         "gameos-ui: launch gate open after %.1fs%s\n",
+                         (double)waited, why);
+                ui_dbg(dbg);
+            } else if (t > hold_t) {
+                t = hold_t;                            // stay readable
+            }
+        }
         draw_launch_top(app.ren_top, c, g, t, card, cover_t, icon_t);
         if (app.ren_bot)
             draw_launch_bot(app.ren_bot, c, g, t, cover_b, icon_b);
@@ -3351,6 +3396,27 @@ void launch_anim(const Console& c, const Game& g)
 
 // Launch one game from any screen (console list, favorites, history, a
 // recommendation). Records the session; the caller refreshes its own list.
+// Dual-screen overlap, called by launch_game right after the emulator fork:
+// the animation keeps the panels busy during the core's ROM read, then the
+// UI drops DRM master and writes /tmp/gameos-ui-release, which releases
+// RetroArch's first modeset (drm_ctx.c launch gate). A retry reaches this
+// with the UI already torn down; then the release is immediate.
+static void launch_gate_anim(int pid, const Console& c, const Game& g)
+{
+    unlink("/tmp/gameos-ui-release");
+    if (app.ren_top) {
+        Uint32 t0 = SDL_GetTicks();
+        launch_anim(c, g, pid);
+        shutdown_gfx();
+        char dbg[160];
+        snprintf(dbg, sizeof dbg,
+                 "gameos-ui: launch overlap: UI released DRM after %us\n",
+                 (unsigned)((SDL_GetTicks() - t0 + 500) / 1000));
+        ui_dbg(dbg);
+    }
+    write_file("/tmp/gameos-ui-release", "1");
+}
+
 static void launch_one(const Console& c, const Game& g)
 {
     long long wall_start = (long long)time(nullptr);
@@ -3360,13 +3426,21 @@ static void launch_one(const Console& c, const Game& g)
                  c.id, g.title.c_str(), g.path.c_str());
         ui_dbg(dbg);
     }
-    launch_anim(c, g);                 // card-insert read animation
-    shutdown_gfx();                    // release DRM master
+    if (!c.dual) {
+        launch_anim(c, g);             // card-insert read animation
+        shutdown_gfx();                // release DRM master
+    } else {
+        // Dual screen: launch_game starts the emulator first and then calls
+        // launch_gate_anim, so the ROM read happens behind this animation.
+        set_launch_overlap(launch_gate_anim);
+    }
     // CLOCK_MONOTONIC, not the wall clock: gameos-sleepd suspends to RAM on lid
     // close and CLOCK_REALTIME jumps forward by the sleep time on resume.
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     int rc = launch_game(c, g);
+    set_launch_overlap(nullptr);
+    if (c.dual && app.ren_top) shutdown_gfx();   // hand-over never happened
     struct timespec t1;
     clock_gettime(CLOCK_MONOTONIC, &t1);
     {

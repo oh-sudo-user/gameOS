@@ -135,6 +135,13 @@ bool battery_charging();
 // ---------------------------------------------------------------------------
 int launch_game(const Console& c, const Game& g);
 
+// Dual-screen launches fork the emulator first and let the UI keep drawing
+// until RetroArch reports the ROM is read, then the callback tears the UI
+// down and releases DRM master (/tmp/gameos-ui-release). Called from
+// launch_game right after the child is forked; must not be set for
+// single-panel consoles.
+void set_launch_overlap(void (*fn)(int pid, const Console&, const Game&));
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------

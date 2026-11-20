@@ -463,6 +463,17 @@ static void apply_perf(const char* profile)
     (void)system(cmd.c_str());
 }
 
+// Set by the UI for dual-screen launches: the emulator reads the ROM before
+// it opens DRM, so the launch animation can run during the read instead of
+// leaving a black screen. The callback returns only once the UI has stopped
+// drawing and written /tmp/gameos-ui-release.
+static void (*g_launch_overlap)(int, const Console&, const Game&) = nullptr;
+
+void set_launch_overlap(void (*fn)(int pid, const Console&, const Game&))
+{
+    g_launch_overlap = fn;
+}
+
 static int run_emu(const Console& c, const Game& g,
                    const std::string& override_cfg, long& seconds,
                    Diag& d, int attempt, const std::string& sid)
@@ -525,6 +536,8 @@ static int run_emu(const Console& c, const Game& g,
         logmode = "w";
     append_marker("\n===== gameos attempt %d at %s (%s) =====\n",
                   attempt, wall_clock().c_str(), g.path.c_str());
+    if (c.dual)
+        unlink("/tmp/gameos-ra-ready"); // stale marker from a previous attempt
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -553,10 +566,14 @@ static int run_emu(const Console& c, const Game& g,
             setenv("GAMEOS_TOUCH_Y_OFFSET", ph.c_str(), 1);
             setenv("GAMEOS_TOUCH_PANEL_H", ph.c_str(), 1);
             setenv("LIBGL_DEBUG", "verbose", 1);
+            // RetroArch reports the ROM is read and waits for the UI to drop
+            // DRM master before its first modeset (drm_ctx.c launch gate).
+            setenv("GAMEOS_LAUNCH_GATE", "1", 1);
         } else {
             unsetenv("GAMEOS_DUALSCREEN");
             unsetenv("GAMEOS_TOUCH_Y_OFFSET");
             unsetenv("GAMEOS_TOUCH_PANEL_H");
+            unsetenv("GAMEOS_LAUNCH_GATE");
             unsetenv("LIBGL_DEBUG");
         }
 
@@ -574,6 +591,13 @@ static int run_emu(const Console& c, const Game& g,
     // Publish the emulator pid for gameos-sleepd (lid-close pause/resume).
     mkdir("/run/gameos", 0755);
     write_file("/run/gameos/game.pid", std::to_string(pid));
+
+    // Dual-screen: keep the launch animation running while the core reads the
+    // whole ROM (~8 s for a 512 MiB NDS image) and only then hand the panels
+    // over. The emulator is already started but holds its first modeset until
+    // /tmp/gameos-ui-release appears, so the two never fight over DRM.
+    if (c.dual && g_launch_overlap)
+        g_launch_overlap((int)pid, c, g);
 
     struct timespec ts0 = {}, ts1 = {};
     clock_gettime(CLOCK_MONOTONIC, &ts0);
@@ -681,10 +705,10 @@ static int run_emu(const Console& c, const Game& g,
 
 // Some NDS titles (and, on a few units, melonDS itself) crash early with the
 // threaded software renderer or the JIT. When the first attempt dies quickly,
-// retry with the safer settings and remember the one that worked under
-// /userdata, so later launches start straight in the working mode. A crash
-// after a real session is not retried — that would replay the game file and
-// hide the failure.
+// retry with safer settings for this launch only. The choice is never
+// persisted: a saved "JIT off" made every later launch run in slow motion.
+// A crash after a real session is not retried — that would replay the game
+// file and hide the failure.
 static const char* NDS_SAFE_CFG = "/userdata/system/nds-safe.cfg";
 static const char* NDS_SAFE1 =
     "melonds_threaded_renderer = \"disabled\"\n";
@@ -713,7 +737,10 @@ int launch_game(const Console& c, const Game& g)
         }
     }
 
-    std::string cfg = read_file(NDS_SAFE_CFG);
+    // A safe cfg persisted by an older build must not apply any more: it may
+    // have JIT/threads disabled, which reads as "game runs in slow motion".
+    unlink(NDS_SAFE_CFG);
+    std::string cfg;
     dump_session_header(d, c, g, cfg);
     if (!c.core) d.stat_info("ppsspp-run", "/usr/bin/ppsspp-run");
 
@@ -729,8 +756,7 @@ int launch_game(const Console& c, const Game& g)
     cfg = NDS_SAFE1;
     rc = run_emu(c, g, cfg, secs, d, 2, sid);
     if (rc == 0) {
-        write_file(NDS_SAFE_CFG, cfg);
-        d.line("safe cfg (threaded renderer off) worked; saved to %s", NDS_SAFE_CFG);
+        d.line("retry with threaded renderer off worked (not persisted)");
         return 0;
     }
     if (secs >= 30) {
@@ -742,10 +768,8 @@ int launch_game(const Console& c, const Game& g)
            rc, secs);
     cfg = NDS_SAFE2;
     rc = run_emu(c, g, cfg, secs, d, 3, sid);
-    if (rc == 0) {
-        write_file(NDS_SAFE_CFG, cfg);
-        d.line("safe cfg (threaded renderer + JIT off) worked; saved to %s", NDS_SAFE_CFG);
-    }
+    if (rc == 0)
+        d.line("retry with threaded renderer + JIT off worked (not persisted)");
     return rc;
 }
 

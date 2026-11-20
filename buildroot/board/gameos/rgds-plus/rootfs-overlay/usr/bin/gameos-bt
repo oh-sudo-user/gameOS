@@ -163,20 +163,52 @@ up() {
     echo $! > "$RUN/bluetoothd.pid"
     # AutoEnable powers the adapter; the firmware download takes a second or two.
     # Verify it really reached Powered: a running bluetoothd with an off adapter
-    # looked healthy in Settings but every scan came back empty.
-    i=0
-    show=""
-    while [ $i -lt 16 ]; do
-        show=$(timeout 2 bluetoothctl show 2>/dev/null | tr -d '\r' \
-               | sed "s/$ESC\[[0-9;]*m//g")
-        echo "$show" | grep -q 'Powered: yes' && break
-        if [ $i -eq 2 ] || [ $i -eq 8 ]; then
-            log "up: power on attempt at wait $i"
-            timeout 8 bluetoothctl power on >/dev/null 2>&1
+    # looked healthy in Settings but every scan came back empty. hci0 can exist
+    # with an empty address when the serdev probe only half-worked; reloading
+    # hci_uart re-downloads the firmware, which has fixed every such unit.
+    power_on_loop() {   # $1 = seconds budget
+        po_end=$(( $(cut -d. -f1 /proc/uptime) + $1 ))
+        po_i=0
+        show=""
+        while [ "$(cut -d. -f1 /proc/uptime)" -lt $po_end ]; do
+            show=$(timeout 2 bluetoothctl show 2>/dev/null | tr -d '\r' \
+                   | sed "s/$ESC\[[0-9;]*m//g")
+            echo "$show" | grep -q 'Powered: yes' && return 0
+            case $po_i in
+            0|2|5|9|14)
+                log "up: power on attempt at wait $po_i"
+                timeout 8 bluetoothctl power on >/dev/null 2>&1
+                ;;
+            esac
+            sleep 0.5
+            po_i=$((po_i + 1))
+        done
+        return 1
+    }
+    power_on_loop 12 && show="Powered: yes" || {
+        log "up: adapter did not reach Powered; reloading hci_uart"
+        modprobe -r hci_uart 2>/dev/null
+        sleep 0.3
+        modprobe hci_uart 2>/dev/null
+        i=0
+        while [ $i -lt 10 ]; do
+            [ -s /sys/class/bluetooth/hci0/address ] && break
+            sleep 0.5; i=$((i + 1))
+        done
+        log "up: after reload hci0=$(ls /sys/class/bluetooth 2>/dev/null | tr '\n' ' ') wait=${i}"
+        if ! power_on_loop 12; then
+            log "up: still not powered; restarting bluetoothd"
+            stop "$RUN/bluetoothd.pid"
+            sleep 0.5
+            if have_data; then
+                /usr/libexec/bluetooth/bluetoothd -n -d 9>&- </dev/null >>"$BTLOG" 2>&1 &
+            else
+                /usr/libexec/bluetooth/bluetoothd -n 9>&- </dev/null >/dev/null 2>&1 &
+            fi
+            echo $! > "$RUN/bluetoothd.pid"
+            power_on_loop 8
         fi
-        sleep 0.5
-        i=$((i + 1))
-    done
+    }
     if ! echo "$show" | grep -q 'Powered: yes'; then
         log "up: adapter did not power on"
         log "up: show=$(printf '%s' "$show" | tr '\n' ';')"

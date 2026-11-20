@@ -193,8 +193,10 @@ start_supplicant() {
     rotate "$WPA_LOG" 4194304
     rotate "$WPS_ERR" 1048576
     log "start_supplicant: launching on $enc rfkill=$(rfkill_state)"
+    # 9>&-: the daemon must not inherit the wifi.lock fd 9, or it holds the
+    # lock for good and every later scan waits 15 s and fails with "ERROR busy".
     wpa_supplicant -B -D nl80211 -i "$enc" -c "$CONF" -f "$WPA_LOG" \
-        -P "/run/wpa_supplicant.$enc.pid" >/dev/null 2>>"$WPS_ERR" || {
+        -P "/run/wpa_supplicant.$enc.pid" >/dev/null 2>>"$WPS_ERR" 9>&- || {
         log "start_supplicant: wpa_supplicant failed to start on $enc"
         log_tail "$WPS_ERR" "wps-err" 20
         diag_snapshot
@@ -299,7 +301,8 @@ lease() {
     enc=$(iface)
     [ -n "$enc" ] || return 0
     kill_lease
-    udhcpc -i "$enc" -b -R -p "/run/udhcpc.$enc.pid" >/dev/null 2>&1
+    # 9>&- likewise: udhcpc -b backgrounds itself with fd 9 inherited.
+    udhcpc -i "$enc" -b -R -p "/run/udhcpc.$enc.pid" >/dev/null 2>&1 9>&-
     log "udhcpc: started iface=$enc pid=$(cat "/run/udhcpc.$enc.pid" 2>/dev/null) state=$(state)"
 }
 
@@ -317,6 +320,9 @@ do_up() {
     regen_conf
     [ -s "$CONF" ] || { log "up: no saved networks"; return 0; }
     start_supplicant || { log "up: supplicant failed"; echo "ERROR supplicant-failed"; return 1; }
+    # The supplicant is up and scanning on its own; release the lock so the UI
+    # can scan while association/DHCP finish (a 12 s hold made every scan wait).
+    flock -u 9
     start=$(now_s)
     end=$((start + 12))
     while [ "$(now_s)" -lt "$end" ]; do
