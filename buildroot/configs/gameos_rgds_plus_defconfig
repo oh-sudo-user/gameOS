@@ -39,6 +39,9 @@ BR2_TARGET_LOCALTIME="Asia/Shanghai"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/rootfs-overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/post-image.sh"
+# Out-of-tree package fixes (bluez5: restore bluetoothctl non-interactive
+# stdout). Layout: patches/<pkg>/<version>/NNNN-*.patch.
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_GAMEOS_PATH)/patches"
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_GAMEOS_PATH)/board/gameos/rgds-plus/busybox-fragment.config"
 
 # --- Kernel: mainline 7.2.11 (matches the vendored RK3566 patch set) ---

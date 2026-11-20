@@ -3,6 +3,8 @@
 A game system built from scratch for two handhelds: the Anbernic RG DS Plus and the Anbernic RG DS.
 为 Anbernic RG DS Plus 与 Anbernic RG DS 从零打造的游戏系统。
 
+**v1.3.0 — 第一个正式版本 / the first official release**
+
 ![gameOS](docs/assets/preview.png)
 
 [English](#english) · [简体中文](#简体中文) · [Releases](https://github.com/oh-sudo-user/gameOS/releases) · [gameOS Flasher](https://github.com/oh-sudo-user/gameOS-flasher)
@@ -19,6 +21,14 @@ One image per model, one system underneath: both devices share the same kernel a
 
 One thing worth knowing up front: these handhelds have no internal storage, and gameOS never writes to any. Everything lives on the microSD card. Pull the card and the device is back to exactly how it was — so feel free to experiment.
 
+### What's new in 1.3.0
+
+1.3.0 is the first official release — one clean baseline for everything the 1.x line learned on hardware.
+
+- **A launch animation for every console.** Starting a game inserts a game card on the top screen. The NDS appears as a vertical clamshell with two stacked screens, the card drops into the hinge slot and both panels power on one after the other; GBA, GBC, PS1 and PSP get a horizontal single-screen handheld with the controls flanking the screen. The scene is drawn from the active theme's palette, so Neon, Pixel, Fresh and Ink each get their own take on it.
+- **Home screen fixes.** The home background no longer flickers: the photo overlay is now blended instead of overwriting the scene's alpha, which is what made the whole top panel pulse between frames. Switching language is instant, with no restart.
+- **The 1.2.x stability work, included.** Correct first-boot volume mapping, serialized volume control, atomic mode-set for the dual-panel path, and quieter Wi-Fi / Bluetooth probing.
+
 ### What it plays
 
 | System | Emulator | Notes |
@@ -33,9 +43,9 @@ A word on expectations: NDS, GBA, GBC and PS1 run comfortably on this chip. PSP 
 
 ### Performance
 
-1.1.0 is mostly a performance release, so here is what it changes and what to expect. Numbers are labelled **measured** when we actually ran them, **calculated** when they are arithmetic, and **expected** when they follow from what the change does on this class of chip. An on-device benchmark table is next on the list and will be added here once it exists.
+1.1.0 is where the performance work landed, and every release since ships it. Here is what it changes and what to expect. Numbers are labelled **measured** when we actually ran them, **calculated** when they are arithmetic, and **expected** when they follow from what the change does on this class of chip. An on-device benchmark table is next on the list and will be added here once it exists.
 
-| Area | What 1.1.0 changes | Effect |
+| Area | What it changes | Effect |
 |---|---|---|
 | PSP · resolution | 1x internal resolution by default (2x before) | **calculated:** 4x fewer pixels per frame — 960×544 (522,240 px) → 480×272 (130,560 px) |
 | PSP · readback | the GPU→CPU frame copy is skipped | **calculated:** ~522 KB per frame, ~31 MB/s at 60 fps, no longer copied; **expected:** the 1–3 ms sync stall per frame goes away with it |
@@ -71,6 +81,7 @@ The first power-on runs a short setup wizard, and the boot animation shows what 
 
 ### Everyday features
 
+- **A launch sequence for each machine.** Press A on a game and a card drops into the console on the top screen — a vertical dual-screen clamshell for NDS, a horizontal handheld for everything else — while the bottom screen shows the read in progress: percentage, sector address, transfer rate and a live activity graph. It ends on black at the exact moment the emulator takes over, so there is no flash between UI and game.
 - **Wi-Fi.** WPA2/WPA3 via wpa_supplicant, managed entirely from Settings with a gamepad-friendly keyboard. Reconnects automatically after sleep.
 - **System updates over the air.** When online, gameOS checks the latest GitHub release at boot. It only ever offers something *newer* than what is running, asks for your confirmation, then writes the update into the idle boot slot. If the new slot fails to come up four times, the device rolls back to the old one on its own. Updates never touch your games or saves.
 - **RetroAchievements.** RetroArch is built with achievement support (including hardcore mode). Log in from the wizard or Settings; your password is never stored — only the login token is kept.
@@ -78,7 +89,7 @@ The first power-on runs a short setup wizard, and the boot animation shows what 
 - **Quick access.** A favorites list and a play-history list, both launchable directly, one button away from the home screen.
 - **A library that stays out of the way.** Favorites (and a favorites-only view), optional box art, subfolders for organizing, and multi-disc PS1 games shown as one entry instead of five.
 - **Covers, two ways.** Drop your own images into `covers/`, or let the wizard / Settings download them online (official libretro thumbnails with mirror fallbacks, verified to be real PNGs before saving).
-- **Four complete themes.** Neon, Pixel, Fresh and Ink — each one a full art set: home and ambient backgrounds, console icons, logo. Switching themes swaps the whole look, not just a color tint.
+- **Four complete themes.** Neon, Pixel, Fresh and Ink — each one a full art set: home and ambient backgrounds, console icons, logo. Switching themes swaps the whole look, not just a color tint; the launch sequence is drawn from the same palette, so it changes with the theme too.
 - **Six languages.** 简体中文, 繁體中文, 日本語, English, Русский, Español. Switch in Settings and the change is instant — the emulator menus follow along too.
 - **Two card slots (Plus).** Games on a second card in TF2 are scanned and merged into the same library automatically; missing NDS BIOS files are copied over from it when present.
 - **Save management.** Browse and delete save files from Settings — no card reader needed.
@@ -205,6 +216,14 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机。开机直接�
 
 有件事值得先说清楚：这两台掌机没有内置存储，gameOS 也不会往里面写任何东西。一切都在 microSD 卡上。拔掉卡，机器就恢复原样——所以放心折腾。
 
+### 1.3.0 新内容
+
+1.3.0 是第一个正式版本——把 1.x 一路在真机上积累的东西，收成一个干净的基线。
+
+- **每台机器都有自己的启动动画。** 打开游戏时，上屏会插进一张游戏卡：NDS 是一台竖着打开的双屏掌机，卡带落进转轴上的卡槽，上下两屏先后点亮；GBA、GBC、PS1、PSP 则是横向的单屏掌机，方向键和 ABXY 分列屏幕两侧。整幕会从当前主题的调色板里取色，所以霓虹、像素、清新、水墨各有一套自己的版本，而不是四份独立动画。
+- **主界面修复。** 上屏背景不再闪烁——背景图此前会覆盖整个场景的 alpha，让画面在奇偶帧之间发虚；现在改为正常混合。切换语言即时生效，不用重启。
+- **1.2.x 的稳定性工作全部包含。** 首次开机音量映射修正、音量调节串行化、双屏通路的原子模式设置，以及不再空等的 Wi-Fi / 蓝牙扫描。
+
 ### 能玩什么
 
 | 平台 | 模拟器 | 说明 |
@@ -219,9 +238,9 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机。开机直接�
 
 ### 性能
 
-1.1.0 主要是一次性能版本。这一节列出它改了什么、预期带来多少变化。数字分三类：**实测**是真机或带测试工具跑出来的；**算出**是纯算术；**预期**是按这项改动在这类芯片上的作用推算的。完整的手持机实测表是下一步计划，做出来后补进这里。
+性能优化的主体在 1.1.0 落地，之后的版本一直沿用。这一节列出它改了什么、预期带来多少变化。数字分三类：**实测**是真机或带测试工具跑出来的；**算出**是纯算术；**预期**是按这项改动在这类芯片上的作用推算的。完整的手持机实测表是下一步计划，做出来后补进这里。
 
-| 环节 | 1.1.0 的改动 | 效果 |
+| 环节 | 改动 | 效果 |
 |---|---|---|
 | PSP · 分辨率 | 默认 1 倍内部分辨率（此前 2 倍） | **算出：**每帧像素少 4 倍——960×544（522,240 像素）→ 480×272（130,560 像素） |
 | PSP · 回读 | 跳过 GPU→CPU 的整帧回读 | **算出：**每帧约 522 KB、60 帧/秒下约 31 MB/s 不再搬运；**预期：**每帧 1–3 ms 的同步等待一并消失 |
@@ -257,6 +276,7 @@ NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现�
 
 ### 日常功能
 
+- **每台机器的启动仪式。** 选好游戏按 A，上屏会有一张游戏卡插进掌机——NDS 是竖开的双屏折叠机，其余机型是横向单屏机——下屏同步报告读取进度：百分比、扇区地址、传输速率，还有一条跳动的活动图。动画在模拟器接手的那一刻正好落到全黑，界面和游戏之间没有闪白。
 - **Wi-Fi。** wpa_supplicant 支持 WPA2/WPA3，全部在设置里用手柄键盘操作，休眠唤醒后自动重连。
 - **OTA 系统更新。** 联网后开机自动检查 GitHub 最新 release，只提示比当前*更新*的版本，经你确认后写入空闲启动槽。新槽若四次都没能正常启动，机器自动回滚到旧槽。更新不碰游戏和存档。
 - **RetroAchievements 成就。** RetroArch 内置成就支持（含 hardcore 模式）。向导或设置里登录；密码绝不落盘——只保留登录令牌。
@@ -264,7 +284,7 @@ NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现�
 - **快捷入口。** 收藏列表和历史游玩列表，都能直接启动，主界面一键即达。
 - **省心的游戏库。** 收藏（和只看收藏）、可选封面图、子文件夹整理，多盘 PS1 游戏只显示一条，不会列出五条。
 - **封面，两种来路。** 自己放图进 `covers/`，或者让向导/设置在线下载（官方 libretro 封面源 + 镜像回退，确认是真 PNG 才保存）。
-- **四套完整主题。** 霓虹夜景、像素复古、清新晨光、水墨山水——每套都是完整素材：主背景与氛围背景、平台图标、logo。换主题是换整套风格，不是调个色。
+- **四套完整主题。** 霓虹夜景、像素复古、清新晨光、水墨山水——每套都是完整素材：主背景与氛围背景、平台图标、logo。换主题是换整套风格，不是调个色；启动动画也从同一套调色板取色，跟着一起变。
 - **六种语言。** 简体中文、繁體中文、日本語、English、Русский、Español。在设置里切换，立刻生效——连模拟器自己的菜单也跟着变。
 - **双卡槽（Plus）。** TF2 第二张卡里的游戏自动扫描、合并进同一个游戏库；卡里若有 NDS BIOS 且系统缺失，会自动补齐。
 - **存档管理。** 在设置里浏览、删除存档，不用拔卡。

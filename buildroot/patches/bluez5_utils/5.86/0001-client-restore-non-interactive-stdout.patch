@@ -1,0 +1,27 @@
+--- a/src/shared/shell.c
++++ b/src/shared/shell.c
+@@ -711,9 +711,11 @@
+ 	char *saved_line;
+ 	int saved_point;
+ 
+-	if (queue_isempty(data.inputs))
+-		return;
+-
++	/* Non-interactive shells (bluetoothctl <cmd>) never attach an input
++	 * queue, so testing the queue before the mode returned before printing
++	 * anything. Check the mode first; interactive shells still wait for the
++	 * readline input queue to exist.
++	 */
+ 	if (data.mode == MODE_NON_INTERACTIVE) {
+ 		va_start(args, fmt);
+ 		vprintf(fmt, args);
+@@ -721,6 +723,9 @@
+ 		return;
+ 	}
+ 
++	if (queue_isempty(data.inputs))
++		return;
++
+ 	save_input = !RL_ISSTATE(RL_STATE_DONE);
+ 
+ 	if (save_input) {

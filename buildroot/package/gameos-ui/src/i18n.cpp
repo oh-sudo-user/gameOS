@@ -122,6 +122,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "扫描失败，请点「扫描」重试", "Wi-Fi 服务启动失败，请重试",
         "确认忘记该连接？", "游戏启动失败",
         "模拟器异常退出。日志：TF 卡 system/retroarch.log\n最后一行：%s",
+        // launch animation
+        "正在读取卡带", "正在校验数据", "正在启动模拟器",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -233,6 +235,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "掃描失敗，請點「掃描」重試", "Wi-Fi 服務啟動失敗，請重試",
         "確認忘記此連線？", "遊戲啟動失敗",
         "模擬器異常退出。日誌：TF 卡 system/retroarch.log\n最後一行：%s",
+        // launch animation
+        "正在讀取卡帶", "正在驗證資料", "正在啟動模擬器",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -355,6 +359,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "スキャン失敗 · スキャンで再試行", "Wi-Fi サービスの起動に失敗しました",
         "この接続を解除しますか？", "ゲームを起動できません",
         "エミュレータが異常終了しました。ログ: TFカード system/retroarch.log\n最後の行: %s",
+        // launch animation
+        "カードを読み込み中", "データを検証中", "エミュレータを起動中",
     },
     // ------------------------------------------------------------------ en
     {
@@ -482,6 +488,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Scan failed — tap Scan to retry", "Wi-Fi service failed to start — try again",
         "Forget this connection?", "Game failed to start",
         "The emulator exited unexpectedly. Log: system/retroarch.log on the TF card.\nLast line: %s",
+        // launch animation
+        "Reading card", "Verifying data", "Starting emulator",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -613,6 +621,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Ошибка поиска — нажмите «Поиск»", "Служба Wi-Fi не запустилась — повторите",
         "Забыть это подключение?", "Не удалось запустить игру",
         "Эмулятор аварийно завершился. Журнал: system/retroarch.log на карте TF.\nПоследняя строка: %s",
+        // launch animation
+        "Чтение картриджа", "Проверка данных", "Запуск эмулятора",
     },
     // ------------------------------------------------------------------ es
     {
@@ -748,6 +758,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Error de búsqueda — toca Escanear", "El servicio Wi-Fi no arrancó — reintenta",
         "¿Olvidar esta conexión?", "No se pudo iniciar el juego",
         "El emulador terminó de forma inesperada. Registro: system/retroarch.log en la tarjeta TF.\nÚltima línea: %s",
+        // launch animation
+        "Leyendo cartucho", "Verificando datos", "Iniciando emulador",
     },
 };
 

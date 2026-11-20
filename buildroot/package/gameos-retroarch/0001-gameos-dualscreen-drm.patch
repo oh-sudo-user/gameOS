@@ -501,7 +501,7 @@
 +   drmModeAtomicAddProperty(req, g_gameos_plane_top, g_gp_top.fb_id, fb_id);
 +   drmModeAtomicAddProperty(req, g_gameos_plane_bot, g_gp_bot.fb_id, fb_id);
 +   int ret = drmModeAtomicCommit(fd, req,
-+         DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK, waiting);
++         DRM_MODE_PAGE_FLIP_EVENT, waiting);
 +   drmModeAtomicFree(req);
 +   if (ret == 0)
 +      *waiting = true;

@@ -109,6 +109,8 @@ enum TKey {
     T_WIFI_SCAN_FAIL, T_WIFI_SUPPLICANT_FAIL,
     T_CONFIRM_FORGET,
     T_EMU_CRASH_TITLE, T_EMU_CRASH_BODY,
+    // launch animation status lines (bottom panel)
+    T_LOAD_CARD, T_LOAD_VERIFY, T_LOAD_START,
     T_COUNT
 };
 

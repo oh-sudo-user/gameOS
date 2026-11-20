@@ -27,7 +27,10 @@ CONF=$WIFI_DIR/wpa_supplicant.conf
 ARG=$RUN/wifi-arg
 SOCK=/run/wpa_supplicant
 IFACE=${WIFI_IFACE:-}
-WPA="wpa_cli -p $SOCK"
+# every wpa_cli call must be bounded: when the supplicant wedges, an untimed
+# wpa_cli blocked do_up forever, kept the flock below held, and every UI scan
+# then waited on that lock with no log line at all ("stuck searching").
+WPA="timeout 5 wpa_cli -p $SOCK"
 ACTION=/etc/gameos/wpa_action.sh
 CA=/etc/ssl/certs/ca-certificates.crt
 LOG=/userdata/system/wifi.log
@@ -47,6 +50,8 @@ log() {
         "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
     return 0
 }
+
+now_s() { cut -d. -f1 /proc/uptime 2>/dev/null; }
 
 rotate() {  # $1 file, $2 max bytes
     have_data || return 0
@@ -87,9 +92,23 @@ diag_snapshot() {
         | while IFS= read -r l; do log "dmesg: $l"; done
 }
 
-# one operation at a time; the UI runs these in the background
+# one operation at a time; the UI runs these in the background. busybox flock
+# has no -w, so poll with -n instead of blocking indefinitely: a wedged helper
+# must never starve the UI's scan.
 case $1 in
-up|down|connect|disconnect|forget|scan|test) exec 9>"$RUN/wifi.lock"; flock 9 ;;
+up|down|connect|disconnect|forget|scan|test)
+    exec 9>"$RUN/wifi.lock"
+    i=0
+    while ! flock -n 9; do
+        i=$((i + 1))
+        if [ $i -ge 15 ]; then
+            log "op=$1: gave up waiting for wifi.lock after 15s"
+            echo "ERROR busy"
+            exit 1
+        fi
+        sleep 1
+    done
+    ;;
 esac
 
 iface() {
@@ -198,13 +217,14 @@ start_supplicant() {
         return 1
     fi
     log "start_supplicant: pid=$p"
-    # give the control socket a moment, then require an actual answer
-    i=0
-    while [ $i -lt 30 ]; do
+    # give the control socket a moment, then require an actual answer. Bounded
+    # by wall clock, not by iterations: each state() call may itself burn its
+    # 5 s timeout when the daemon is wedged.
+    end=$(( $(now_s) + 8 ))
+    while [ "$(now_s)" -lt "$end" ]; do
         st=$(state)
         [ -n "$st" ] && { log "start_supplicant: ready state=$st"; return 0; }
         sleep 0.2
-        i=$((i + 1))
     done
     log "start_supplicant: did not answer on $enc"
     log_tail "$WPA_LOG" "wpa" 30
@@ -297,14 +317,13 @@ do_up() {
     regen_conf
     [ -s "$CONF" ] || { log "up: no saved networks"; return 0; }
     start_supplicant || { log "up: supplicant failed"; echo "ERROR supplicant-failed"; return 1; }
-    # connect now if a saved network is in range; the action script leases
-    i=0
-    while [ $i -lt 15 ]; do
+    start=$(now_s)
+    end=$((start + 12))
+    while [ "$(now_s)" -lt "$end" ]; do
         [ "$(state)" = COMPLETED ] && { lease; break; }
         sleep 1
-        i=$((i + 1))
     done
-    log "up: finished state=$(state) ip=$(link_ip) waited=${i}s"
+    log "up: finished state=$(state) ip=$(link_ip) waited=$(( $(now_s) - start ))s"
     echo OK
 }
 
@@ -359,23 +378,25 @@ do_scan() {
     # true after the first 0.5 s sample and the first-ever scan returned an
     # empty list. Wait for an actual BSS entry (line 2) instead, retrigger the
     # scan every 4 s in case the trigger hit a busy interface, and give up
-    # after 12 s (no networks in range).
-    i=0
-    while [ $i -lt 24 ]; do
+    # after 15 s (no networks in range).
+    start=$(now_s)
+    end=$((start + 15))
+    last_trig=$start
+    while [ "$(now_s)" -lt "$end" ]; do
         sleep 0.5
         [ -n "$(w scan_results | sed -n '2p')" ] && break
-        if [ $((i % 8)) -eq 7 ]; then
+        if [ $(( $(now_s) - last_trig )) -ge 4 ]; then
             r=$(w scan)
             trig=$((trig + 1))
+            last_trig=$(now_s)
             case "$r" in
             ''|FAIL*) log "scan: trigger#$trig failed rc=$r" ;;
             *) scans_ok=1; log "scan: trigger#$trig ok" ;;
             esac
         fi
-        i=$((i + 1))
     done
     bss=$(w scan_results | sed '1d' | grep -c . 2>/dev/null)
-    log "scan: done iface=$enc state=$(state) bss=$bss triggers=$trig scans_ok=$scans_ok waited=$((i / 2))s"
+    log "scan: done iface=$enc state=$(state) bss=$bss triggers=$trig scans_ok=$scans_ok waited=$(( $(now_s) - start ))s"
     if [ -z "$(w scan_results | sed -n '2p')" ] && [ "$scans_ok" = 0 ]; then
         log "scan: never triggered on $enc"
         diag_snapshot
@@ -429,17 +450,17 @@ do_connect() {
         start_supplicant || { log "connect: supplicant failed"; echo "ERROR supplicant-failed"; return 1; }
     fi
 
-    i=0
+    start=$(now_s)
+    end=$((start + 30))
     last_st=""
-    while [ $i -lt 25 ]; do
+    while [ "$(now_s)" -lt "$end" ]; do
         st=$(state)
-        [ "$st" != "$last_st" ] && { log "connect: state=$st t=${i}s"; last_st=$st; }
+        [ "$st" != "$last_st" ] && { log "connect: state=$st t=$(( $(now_s) - start ))s"; last_st="$st"; }
         [ "$st" = COMPLETED ] && break
         sleep 1
-        i=$((i + 1))
     done
     st=$(state)
-    log "connect: association finished state=$st t=${i}s ip=$(link_ip)"
+    log "connect: association finished state=$st t=$(( $(now_s) - start ))s ip=$(link_ip)"
     if [ "$st" != COMPLETED ]; then
         diag_snapshot
         echo "ERROR association-failed ($st)"

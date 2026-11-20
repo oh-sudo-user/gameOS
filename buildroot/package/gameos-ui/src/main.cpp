@@ -30,6 +30,8 @@
 #include <unistd.h>
 #include <vector>
 
+#include <SDL_image.h>
+
 using namespace gameos;
 
 namespace {
@@ -643,6 +645,12 @@ void draw_background(SDL_Renderer* r)
     fill_rect(r, 0, 0, W, H, C_BG);
     grad_rect(r, { 0, 0, W, H }, top, C_BG);
     if (app.bg) {
+        // home_bg.png is RGB without an alpha channel, so SDL creates the
+        // texture with BLENDMODE_NONE. With alphaMod 55 a plain copy then
+        // *writes* 55 into the scene's alpha instead of blending, leaving the
+        // whole background translucent; composited over alternating
+        // backbuffers that reads as a flicker. Force blending.
+        SDL_SetTextureBlendMode(app.bg, SDL_BLENDMODE_BLEND);
         SDL_SetTextureAlphaMod(app.bg, 55);
         SDL_Rect dst = { 0, 0, W, H };
         SDL_RenderCopy(r, app.bg, nullptr, &dst);
@@ -955,7 +963,7 @@ void bt_start(const std::string& op, const std::string& arg = "")
     unlink("/run/gameos/bt-op.rc");
     // The whole helper+rc group must be backgrounded: with "cmd; echo $? > rc &"
     // the shell only backgrounds the echo and system() waits for the helper.
-    std::string cmd = "mkdir -p /run/gameos; ( gameos-bt " + op;
+    std::string cmd = "mkdir -p /run/gameos; ( /usr/bin/gameos-bt " + op;
     if (!arg.empty()) cmd += " " + arg;
     cmd += " > /run/gameos/bt-op.out 2>&1; echo $? > /run/gameos/bt-op.rc ) &";
     if (system(cmd.c_str()) != 0) { /* ignore */ }
@@ -1059,7 +1067,7 @@ void bt_poll()
 
 void bt_enter()
 {
-    app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+    app.bt_on = (system("/usr/bin/gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
     app.bt_sel = 0;
     app.bt_scroll = 0;
     app.bt_status.clear();
@@ -1127,9 +1135,12 @@ void wifi_start(const std::string& op)
     // Background the helper together with its rc write (see bt_start): a bare
     // trailing "&" only backgrounds the final echo, leaving the scan/connect
     // running synchronously inside system().
-    std::string cmd = "mkdir -p /run/gameos; ( gameos-wifi " + op +
+    std::string cmd = "mkdir -p /run/gameos; ( /usr/bin/gameos-wifi " + op +
                       " > /run/gameos/wifi-op.out 2>&1; echo $? > /run/gameos/wifi-op.rc ) &";
     if (system(cmd.c_str()) != 0) { /* ignore */ }
+    char dbg[128];
+    snprintf(dbg, sizeof(dbg), "gameos-ui: wifi op start: %s\n", op.c_str());
+    ui_dbg(dbg);
     app.wifi_op = op;
     app.wifi_busy = true;
     app.wifi_op_at = SDL_GetTicks();
@@ -1160,8 +1171,8 @@ void wifi_probe_start(bool scan_after = false)
     }
     unlink(WIFI_PROBE_RC);
     std::string cmd =
-        "mkdir -p /run/gameos; ( gameos-wifi status 2>/dev/null > /run/gameos/wifi-status.out; "
-        "gameos-wifi known 2>/dev/null > /run/gameos/wifi-known.out; echo 1 > "
+        "mkdir -p /run/gameos; ( /usr/bin/gameos-wifi status 2>/dev/null > /run/gameos/wifi-status.out; "
+        "/usr/bin/gameos-wifi known 2>/dev/null > /run/gameos/wifi-known.out; echo 1 > "
         + std::string(WIFI_PROBE_RC) + " ) >/dev/null 2>&1 &";
     if (system(cmd.c_str()) != 0) { /* ignore */ }
     app.wifi_probe_busy = true;
@@ -1339,8 +1350,12 @@ void wifi_poll()
         wifi_probe_start();
     }
     if (!app.wifi_busy) return;
-    if (now - app.wifi_op_at > 60000) {   // scan/assoc timeout
+    if (now - app.wifi_op_at > 45000) {   // scan/assoc timeout
         app.wifi_busy = false;
+        char dbg[96];
+        snprintf(dbg, sizeof(dbg), "gameos-ui: wifi op %s timeout\n",
+                 app.wifi_op.c_str());
+        ui_dbg(dbg);
         app.wifi_op.clear();
         app.wifi_status = tr(T_OP_FAIL);
         return;
@@ -1356,6 +1371,12 @@ void wifi_poll()
     std::string out = read_file("/run/gameos/wifi-op.out");
     std::string op = app.wifi_op;
     app.wifi_op.clear();
+    {
+        char dbg[256];
+        snprintf(dbg, sizeof(dbg), "gameos-ui: wifi op %s rc=%d out=%.120s\n",
+                 op.c_str(), rc, out.c_str());
+        ui_dbg(dbg);
+    }
     if (op == "scan") {
         if (out.rfind("ERROR", 0) == 0) {
             // Never show a stale list as if the scan had worked, and say why.
@@ -2722,6 +2743,612 @@ static std::string log_tail_line()
     return "-";
 }
 
+// ---------------------------------------------------------------------------
+// Launch animation. The top panel shows the game card dropping into the
+// handheld's slot; the deck reports the read (percent, sectors, activity).
+// ~2.6 s, ending on black so the DRM handoff to the emulator is invisible.
+// Host preview: GAMEOS_LAUNCH_SHOT=<dir> dumps both panels at the times in
+// GAMEOS_LAUNCH_AT (comma separated, seconds).
+// ---------------------------------------------------------------------------
+constexpr float LAUNCH_DUR = 2.6f;
+constexpr float LAUNCH_HIT = 0.82f;          // card reaches the slot
+
+void anim_save_panel(SDL_Renderer* r, const std::string& path)
+{
+    SDL_Surface* s = SDL_CreateRGBSurfaceWithFormat(0, W, H, 32,
+                                                    SDL_PIXELFORMAT_ARGB8888);
+    if (s && SDL_RenderReadPixels(r, nullptr, SDL_PIXELFORMAT_ARGB8888,
+                                  s->pixels, s->pitch) == 0)
+        IMG_SavePNG(s, path.c_str());
+    if (s) SDL_FreeSurface(s);
+}
+
+int console_icon_index(const char* id)
+{
+    const auto& cons = consoles();
+    for (int i = 0; i < (int)cons.size() && i < 5; i++)
+        if (strcmp(cons[i].id, id) == 0) return i;
+    return -1;
+}
+
+std::string launch_cover_path(const Console& c, const Game& g)
+{
+    const char* ov = getenv("GAMEOS_COVER_OVERRIDE");
+    if (ov && *ov) return ov;
+    return cover_path(c.id, g.title);
+}
+
+// Centre-cropped cover blit.
+void cover_fit(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha)
+{
+    if (!t) return;
+    int tw = 0, th = 0;
+    SDL_QueryTexture(t, nullptr, nullptr, &tw, &th);
+    if (tw <= 0 || th <= 0) return;
+    float sa = (float)tw / th, da = (float)dst.w / dst.h;
+    SDL_Rect src;
+    if (sa > da) { int w2 = (int)(th * da); src = { (tw - w2) / 2, 0, w2, th }; }
+    else         { int h2 = (int)(tw / da); src = { 0, (th - h2) / 2, tw, h2 }; }
+    SDL_SetTextureAlphaMod(t, alpha);
+    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    SDL_RenderCopy(r, t, &src, &dst);
+}
+
+// Cover art, or a clean synthesised label (accent gradient + console glyph)
+// for games that have no box art yet.
+void launch_art(SDL_Renderer* r, SDL_Rect rc, int radius, const char* id,
+                const std::string& title, SDL_Texture* cover, SDL_Texture* icon,
+                Uint8 alpha)
+{
+    rrect(r, rc, radius, mix_color(C_ACCENT, C_BG, 0.78f));
+    if (cover) {
+        SDL_Rect inner = { rc.x + 2, rc.y + 2, rc.w - 4, rc.h - 4 };
+        cover_fit(r, cover, inner, alpha);
+    } else {
+        grad_rect(r, { rc.x + 2, rc.y + 2, rc.w - 4, rc.h - 4 },
+                  with_alpha(mix_color(C_ACCENT, C_BG, 0.55f), alpha),
+                  with_alpha(mix_color(C_PANEL, C_BG, 0.35f), alpha));
+        if (icon) {
+            int sz = std::min(rc.w, rc.h) * 2 / 3;
+            draw_tex(r, icon, { rc.x + (rc.w - sz) / 2, rc.y + (rc.h - sz) / 2, sz, sz },
+                     (Uint8)(alpha * 0.9f));
+        } else {
+            text(r, g_ui.logo, id, rc.x + rc.w / 2,
+                 rc.y + rc.h / 2 - 26, with_alpha(C_TEXT, alpha), Align::Center);
+        }
+        text(r, g_ui.small, ellipsize(g_ui.small, title, rc.w - 24),
+             rc.x + rc.w / 2, rc.y + rc.h - 34,
+             with_alpha(C_TEXT, (Uint8)(alpha * 0.85f)), Align::Center);
+    }
+}
+
+// The game card itself, pre-rendered once so it can be blitted rotated.
+SDL_Texture* build_launch_card(SDL_Renderer* r, const Console& c, const Game& g,
+                               SDL_Texture* cover, SDL_Texture* icon)
+{
+    const int cw = 250, ch = 168;
+    SDL_Texture* t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888,
+                                       SDL_TEXTUREACCESS_TARGET, cw, ch);
+    if (!t) return nullptr;
+    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderTarget(r, t);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+    SDL_RenderClear(r);
+
+    SDL_Rect body = { 2, 2, cw - 4, ch - 4 };
+    rrect_grad(r, body, 16, mix_color(C_PANEL, C_BG, 0.30f),
+               mix_color(C_PANEL, C_BG, 0.70f));
+    rrect_stroke(r, body, 16, with_alpha(C_TEXT, 52), 1);
+
+    // grip ridges on the top edge
+    for (int i = 0; i < 3; i++)
+        rrect(r, { 18 + i * 13, 9, 8, 5 }, 2, with_alpha(C_DIM, 80));
+
+    // label window
+    SDL_Rect lab = { 16, 28, cw - 32, 96 };
+    launch_art(r, lab, 8, c.id, g.title, cover, icon, 255);
+    rrect_stroke(r, lab, 8, with_alpha(C_ACCENT, 110), 1);
+
+    // console tag + game title
+    text(r, g_ui.small, c.name_en, 18, 128, with_alpha(C_ACCENT, 220));
+    text(r, g_ui.small, ellipsize(g_ui.small, g.title, cw - 76),
+         cw - 18, 128, with_alpha(C_DIM, 210), Align::Right);
+
+    // edge connector pins
+    for (int i = 0; i < 12; i++)
+        fill_rect(r, 20 + i * 18, ch - 13, 11, 7, rgba(212, 178, 90, 210));
+
+    // clipped top-right corner, like a game card
+    {
+        SDL_BlendMode bm;
+        SDL_GetRenderDrawBlendMode(r, &bm);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+        SDL_Vertex tri[3] = {
+            { { (float)(cw - 32), 2.f }, { 0, 0, 0, 0 }, { 0, 0 } },
+            { { (float)(cw - 1), 2.f }, { 0, 0, 0, 0 }, { 0, 0 } },
+            { { (float)(cw - 1), 33.f }, { 0, 0, 0, 0 }, { 0, 0 } },
+        };
+        SDL_RenderGeometry(r, nullptr, tri, 3, nullptr, 0);
+        SDL_SetRenderDrawBlendMode(r, bm);
+    }
+
+    SDL_SetRenderTarget(r, nullptr);
+    return t;
+}
+
+void draw_launch_top(SDL_Renderer* r, const Console& c, const Game& g, float t,
+                     SDL_Texture* card, SDL_Texture* cover, SDL_Texture* icon)
+{
+    float out = 1.f - std::clamp((t - (LAUNCH_DUR - 0.22f)) / 0.22f, 0.f, 1.f);
+    float breathe = 0.5f + 0.5f * sinf(t * 1.1f);
+
+    grad_rect(r, { 0, 0, W, H }, mix_color(C_BG, rgba(0, 0, 0, 255), 0.45f),
+              rgba(3, 5, 12, 255));
+    for (int x = 0; x <= W; x += 64) fill_rect(r, x, 0, 1, H, with_alpha(C_DIM, 10));
+    for (int y = 0; y <= H; y += 64) fill_rect(r, 0, y, W, 1, with_alpha(C_DIM, 10));
+    glow(r, 512, 400, 330, C_ACCENT, 12, (int)(24 + 10 * breathe));
+    glow(r, 512, 470, 170, C_ACCENT, 10, 20);
+
+    for (int i = 0; i < 16; i++) {
+        float ph = fmodf(t * (0.05f + (i % 5) * 0.011f) + i * 0.37f, 1.f);
+        int x = (i * 173 + 61) % W;
+        int y = (int)(H - ph * (H + 40));
+        Uint8 a = (Uint8)(44 * (0.4f + 0.6f * sinf(t * 1.7f + i)));
+        circle(r, x, y, (i % 4 == 0) ? 2 : 1, with_alpha(C_ACCENT, a));
+    }
+
+    text(r, g_ui.logo, "gameOS", 40, 26, C_TEXT);
+    text(r, g_ui.small, "GAME CARD // SLOT A", W - 40, 52,
+         with_alpha(C_TEXT, 150), Align::Right);
+
+    // NDS is an opened vertical clamshell (two screens stacked); every other
+    // system is a horizontal single-screen handheld.
+    const bool dual = c.dual;
+    const SDL_Color hi = mix_color(C_ACCENT, rgba(255, 255, 255, 255), 0.72f);
+    // The screens stay dark wells in every theme, so text drawn on them needs
+    // a light ink rather than the theme's (possibly dark) C_TEXT.
+    const SDL_Color screen_ink = rgba(233, 242, 246, 255);
+    const SDL_Color screen_acc = mix_color(C_ACCENT, rgba(255, 255, 255, 255), 0.42f);
+    const int slot_y = dual ? 390 : 436;
+
+    // card drop: accelerate into the slot, damped seat bounce, then swallow
+    const float drop_from = -180.f;
+    const float seat_y = dual ? 226.f : 284.f;
+    float p = std::clamp((t - 0.10f) / (LAUNCH_HIT - 0.10f), 0.f, 1.f);
+    float t2 = t - LAUNCH_HIT;
+    float y = drop_from + (seat_y - drop_from) * p * p;
+    float ang = 6.f * (1.f - p);
+    if (p >= 1.f && t < 1.04f)
+        y = seat_y + 6.f * expf(-9.f * t2) * sinf(28.f * t2);
+    float shake = (t2 > 0.f && t2 < 0.3f)
+                    ? 2.6f * expf(-9.f * t2) * sinf(70.f * t2) : 0.f;
+
+    // The lid is drawn first; the card falls in front of it, then the hinge
+    // and lower shell are drawn over the card so it slides into the slot.
+    if (dual) {
+        SDL_Rect lid = { 252 + (int)shake, 76, 520, 300 };
+        rrect_shadow(r, lid, 30, 12, 10, 90);
+        rrect_grad(r, lid, 30, mix_color(C_PANEL, C_BG, 0.10f),
+                   mix_color(C_PANEL, C_BG, 0.55f));
+        rrect_stroke(r, lid, 30, with_alpha(C_TEXT, 46), 2);
+        rrect_stroke(r, { lid.x + 6, lid.y + 6, lid.w - 12, lid.h - 12 }, 25,
+                     rgba(0, 0, 0, 70), 1);
+        circle(r, 512, 88, 3, with_alpha(C_DIM, 110));       // camera
+    }
+
+    // impact wave from the slot (over the shell, under the card)
+    {
+        float ti = t - LAUNCH_HIT;
+        if (ti > 0.f && ti < 0.6f) {
+            float q = ti / 0.6f;
+            float rad = 40 + q * (dual ? 300.f : 320.f);
+            arc(r, 512, slot_y, rad, 3.14159265f, 2.f * 3.14159265f, 3,
+                with_alpha(C_ACCENT, (int)(140 * (1.f - q))));
+            arc(r, 512, slot_y, rad * 0.68f, 3.14159265f, 2.f * 3.14159265f, 2,
+                with_alpha(hi, (int)(80 * (1.f - q))));
+            glow(r, 512, slot_y, 80, hi, 10, (int)(55 * (1.f - q)));
+            for (int i = 0; i < 10; i++) {
+                float a = 3.14159265f * (0.15f + 0.7f * i / 9.f);
+                float d = 30 + q * 170;
+                int px = 512 + (int)(cosf(a) * d * 1.2f);
+                int py = slot_y - (int)(sinf(a) * d);
+                circle(r, px, py, (i % 3 == 0) ? 2 : 1,
+                       with_alpha(C_ACCENT, (int)(160 * (1.f - q))));
+            }
+        }
+    }
+
+    // slot halo (behind the card)
+    if (t > 0.40f) {
+        float heat = std::clamp((t - 0.40f) / 0.45f, 0.f, 1.f)
+                   * (1.f - 0.6f * std::clamp((t - 1.04f) / 0.4f, 0.f, 1.f));
+        glow(r, 512, slot_y + 4, 150, C_ACCENT, 18, (int)(30 * heat));
+        glow(r, 512, slot_y + 6, 70, hi, 12, (int)(12 * heat));
+    }
+
+    float sink = std::clamp((t - 1.04f) / 0.22f, 0.f, 1.f);
+    if (card && sink < 1.f) {
+        float cy = y + (dual ? 110.f : 150.f) * sink * sink;
+        SDL_Rect dst = { 512 - 125, (int)cy, 250, 168 };
+        if (p < 0.999f) {
+            for (int k = 2; k >= 1; k--) {
+                SDL_Rect gd = dst;
+                gd.y -= k * 16;
+                SDL_SetTextureAlphaMod(card, (Uint8)((22 / k + 10) * (1.f - sink)));
+                SDL_RenderCopyEx(r, card, nullptr, &gd, ang + 1.6f * k,
+                                 nullptr, SDL_FLIP_NONE);
+            }
+        }
+        SDL_SetTextureAlphaMod(card, (Uint8)(255.f * (1.f - sink) + 0.5f));
+        SDL_RenderCopyEx(r, card, nullptr, &dst, ang, nullptr, SDL_FLIP_NONE);
+    }
+
+    // handheld body
+    int bx = 0, by = 0;
+    if (dual) {
+        SDL_Rect hinge = { 332 + (int)shake, 376, 360, 26 };
+        rrect_grad(r, hinge, 13, mix_color(C_PANEL, C_BG, 0.45f),
+                   mix_color(C_PANEL, rgba(0, 0, 0, 255), 0.25f));
+        circle(r, hinge.x - 4, 389, 14, mix_color(C_PANEL, C_BG, 0.50f));
+        circle(r, hinge.x + hinge.w + 4, 389, 14, mix_color(C_PANEL, C_BG, 0.50f));
+        rrect_stroke(r, hinge, 13, with_alpha(C_DIM, 40), 1);
+
+        SDL_Rect low = { 252 + (int)shake, 402, 520, 324 };
+        rrect_shadow(r, low, 30, 14, 12, 110);
+        rrect_grad(r, low, 30, mix_color(C_PANEL, C_BG, 0.18f),
+                   mix_color(C_PANEL, C_BG, 0.66f));
+        rrect_stroke(r, low, 30, with_alpha(C_TEXT, 42), 2);
+        rrect_stroke(r, { low.x + 6, low.y + 6, low.w - 12, low.h - 12 }, 25,
+                     rgba(0, 0, 0, 60), 1);
+    } else {
+        SDL_Rect body = { 182 + (int)shake, 436 + (int)(shake * 0.6f), 660, 252 };
+        bx = body.x; by = body.y;
+        rrect_shadow(r, body, 42, 12, 10, 100);
+        rrect_grad(r, body, 42, mix_color(C_PANEL, rgba(0, 0, 0, 255), 0.16f),
+                   mix_color(C_PANEL, C_BG, 0.62f));
+        rrect_stroke(r, body, 42, with_alpha(C_TEXT, 44), 2);
+        rrect_stroke(r, { bx + 4, by + 4, 652, 244 }, 39, rgba(0, 0, 0, 70), 1);
+        for (int i = 0; i < 4; i++) {
+            circle(r, 254 + i * 12, 656, 2, with_alpha(C_DIM, 45));
+            circle(r, 734 + i * 12, 656, 2, with_alpha(C_DIM, 45));
+        }
+    }
+
+    // slot lip
+    SDL_Rect lip = dual ? SDL_Rect{ 432 + (int)shake, 378, 160, 30 }
+                        : SDL_Rect{ 392 + (int)shake, 420, 240, 32 };
+    rrect(r, { lip.x - 6, lip.y - 2, lip.w + 12, lip.h + 6 }, 14, rgba(0, 0, 0, 120));
+    rrect_grad(r, lip, 11, rgba(8, 10, 18, 255), rgba(22, 29, 46, 255));
+    rrect_stroke(r, lip, 11, with_alpha(C_ACCENT, 90), 1);
+    for (int i = 0; i < 2; i++)
+        fill_rect(r, lip.x + 10, lip.y + 9 + i * 6, lip.w - 20, 3,
+                  with_alpha(C_BG, 215));
+    if (t2 > 0.f && t2 < 0.35f) {
+        float f = 1.f - t2 / 0.35f;
+        rrect_stroke(r, { lip.x - 6, lip.y - 2, lip.w + 12, lip.h + 6 }, 14,
+                     with_alpha(hi, (int)(210 * f)), 2);
+        fill_rect(r, lip.x + 10, lip.y + 9, lip.w - 20, 3,
+                  with_alpha(hi, (int)(235 * f)));
+    }
+
+    // screens
+    const float hero_at = dual ? 1.72f : 1.47f;
+    const float mini_at = dual ? 1.74f : 1.50f;
+    auto screen_rect = [&](SDL_Rect rc, float start, bool hero) {
+        // left off until the card is swallowed, so the card can slide across
+        // the closed shell without a dark screen well cutting through it
+        if (t < start) return;
+        float on = std::clamp((t - start) / 0.45f, 0.f, 1.f);
+        rrect(r, { rc.x - 5, rc.y - 5, rc.w + 10, rc.h + 10 }, 11, rgba(4, 6, 12, 255));
+        rrect_stroke(r, { rc.x - 5, rc.y - 5, rc.w + 10, rc.h + 10 }, 11,
+                     with_alpha(C_DIM, 30), 1);
+        rrect(r, rc, 8, rgba(3, 5, 10, 255));
+        if (on <= 0.f) return;
+        grad_rect(r, rc, with_alpha(C_ACCENT, (int)(24 * on)),
+                  with_alpha(mix_color(C_ACCENT, C_BG, 0.65f), (int)(10 * on)));
+        if (on < 1.f) {
+            int fy = rc.y + (int)(on * rc.h);
+            if (fy > rc.y + 2)
+                fill_rect(r, rc.x + 2, rc.y + 2, rc.w - 4, fy - rc.y - 2,
+                          with_alpha(hi, 16));
+            fill_rect(r, rc.x + 2, fy, rc.w - 4, 2,
+                      with_alpha(hi, (int)(200 * (1.f - on * 0.5f))));
+            if (fy - 6 > rc.y)
+                fill_rect(r, rc.x + 2, fy - 6, rc.w - 4, 1,
+                          with_alpha(hi, 90));
+            if (fy - 12 > rc.y)
+                fill_rect(r, rc.x + 2, fy - 12, rc.w - 4, 1,
+                          with_alpha(hi, 45));
+        }
+        float ca = std::clamp((t - (hero ? hero_at : mini_at)) / 0.30f, 0.f, 1.f);
+        if (hero) {
+            if (ca > 0.f) {
+                int th = rc.h * 5 / 9, tw = th * 3 / 4;
+                SDL_Rect thumb = { rc.x + (rc.w - tw) / 2,
+                                   rc.y + 25 - (int)((1.f - ca) * 14.f), tw, th };
+                if (cover) {
+                    cover_fit(r, cover, thumb, (Uint8)(255 * ca));
+                    rrect_stroke(r, thumb, 5, with_alpha(screen_acc, (int)(150 * ca)), 1);
+                } else if (icon) {
+                    int isz = th - 10;
+                    draw_tex(r, icon,
+                             { thumb.x + (tw - isz) / 2, thumb.y + 5, isz, isz },
+                             (Uint8)(225 * ca));
+                }
+                text(r, g_ui.small,
+                     ellipsize(g_ui.small, g.title, rc.w - 24),
+                     rc.x + rc.w / 2, thumb.y + th + 12,
+                     with_alpha(screen_ink, (Uint8)(255 * ca)), Align::Center);
+                text(r, g_ui.small, c.name_en,
+                     rc.x + rc.w / 2, thumb.y + th + 40,
+                     with_alpha(screen_acc, (Uint8)(230 * ca)), Align::Center);
+            }
+            int sy = rc.y + 2 + (int)(fmodf(t * 90.f, rc.h - 4.f));
+            fill_rect(r, rc.x + 2, sy, rc.w - 4, 1, with_alpha(hi, 70));
+        } else if (ca > 0.f) {
+            float pp2 = std::clamp((t - 0.90f) / 1.35f, 0.f, 1.f);
+            int pct2 = (int)(ease_out(pp2) * 100.f + 0.5f);
+            char lb[32];
+            snprintf(lb, sizeof lb, "CARD READ  %d%%", pct2);
+            text(r, g_ui.small, lb, rc.x + rc.w / 2, rc.y + 30,
+                 with_alpha(screen_ink, (Uint8)(235 * ca)), Align::Center);
+            SDL_Rect mb = { rc.x + 40, rc.y + 76, rc.w - 80, 4 };
+            rrect(r, mb, 2, with_alpha(C_TRACK, (Uint8)(220 * ca)));
+            int mw = (mb.w * pct2) / 100;
+            if (mw > 1)
+                rrect(r, { mb.x, mb.y, mw, mb.h }, 2,
+                      with_alpha(screen_acc, (Uint8)(255 * ca)));
+        }
+        rrect_stroke(r, rc, 8, with_alpha(C_ACCENT, (int)(70 * on)), 1);
+    };
+    if (dual) {
+        SDL_Rect s1 = { 352 + (int)shake, 106, 320, 240 };
+        SDL_Rect s2 = { 352 + (int)shake, 424, 320, 240 };
+        screen_rect(s1, 1.26f, true);
+        screen_rect(s2, 1.38f, false);
+    } else {
+        SDL_Rect s = { 362, by + 26, 300, 200 };
+        screen_rect(s, 1.02f, true);
+    }
+
+    // d-pad + ABXY
+    auto dpad = [&](int dcx, int dcy) {
+        rrect(r, { dcx - 23, dcy - 9, 46, 18 }, 6, with_alpha(C_TRACK, 240));
+        rrect(r, { dcx - 9, dcy - 23, 18, 46 }, 6, with_alpha(C_TRACK, 240));
+        rrect_stroke(r, { dcx - 23, dcy - 9, 46, 18 }, 6, with_alpha(C_DIM, 55), 1);
+        rrect_stroke(r, { dcx - 9, dcy - 23, 18, 46 }, 6, with_alpha(C_DIM, 55), 1);
+    };
+    if (dual) {
+        dpad(302 + (int)shake, 544);
+        rrect(r, { 486, 690, 18, 7 }, 4, with_alpha(C_TRACK, 230));
+        rrect(r, { 510, 690, 18, 7 }, 4, with_alpha(C_TRACK, 230));
+        const int ab[4][2] = { { 722, 520 }, { 746, 544 },
+                               { 722, 568 }, { 698, 544 } };
+        for (auto& q : ab) {
+            circle(r, q[0] + (int)shake, q[1], 11, with_alpha(C_TRACK, 240));
+            ring(r, q[0] + (int)shake, q[1], 11, 1, with_alpha(C_DIM, 60));
+        }
+    } else {
+        dpad(280 + (int)shake, by + 126);
+        const int ab[4][2] = { { 744, by + 102 }, { 768, by + 126 },
+                               { 744, by + 150 }, { 720, by + 126 } };
+        for (auto& q : ab) {
+            circle(r, q[0] + (int)shake, q[1], 11, with_alpha(C_TRACK, 240));
+            ring(r, q[0] + (int)shake, q[1], 11, 1, with_alpha(C_DIM, 60));
+        }
+    }
+
+    // power LED
+    {
+        float on = std::clamp((t - 1.02f) / 0.2f, 0.f, 1.f);
+        SDL_Color led = mix_color(C_RED, C_GREEN, on);
+        int lx = dual ? 756 : bx + 638;
+        int ly = dual ? 420 : by + 20;
+        glow(r, lx, ly, 26, led, 8, (int)(70 * on + 8));
+        circle(r, lx, ly, 5, with_alpha(led, (int)(120 + 135 * on)));
+    }
+
+    float fa = std::clamp((t - 1.35f) / 0.35f, 0.f, 1.f);
+    if (fa > 0.f)
+        text(r, g_ui.small,
+             ellipsize(g_ui.small, std::string(console_name(c.id)) + "  //  " + g.title, 640),
+             512, dual ? 736 : 714, with_alpha(C_DIM, (Uint8)(210 * fa)), Align::Center);
+
+    if (out < 1.f) fill_rect(r, 0, 0, W, H, rgba(0, 0, 0, (Uint8)((1.f - out) * 255)));
+}
+
+void draw_launch_bot(SDL_Renderer* r, const Console& c, const Game& g, float t,
+                     SDL_Texture* cover, SDL_Texture* icon)
+{
+    float out = 1.f - std::clamp((t - (LAUNCH_DUR - 0.22f)) / 0.22f, 0.f, 1.f);
+    float breathe = 0.5f + 0.5f * sinf(t * 1.4f);
+
+    grad_rect(r, { 0, 0, W, H }, mix_color(C_BG, rgba(0, 0, 0, 255), 0.30f),
+              rgba(4, 7, 15, 255));
+    for (int x = 0; x <= W; x += 64) fill_rect(r, x, 0, 1, H, with_alpha(C_DIM, 12));
+    for (int y = 0; y <= H; y += 64) fill_rect(r, 0, y, W, 1, with_alpha(C_DIM, 12));
+    glow(r, 180, 340, 260, C_ACCENT, 12, 22);
+    glow(r, 760, 250, 240, C_ACCENT, 12, 16);
+
+    fill_rect(r, 44, 44, 4, 30, C_ACCENT);
+    text(r, g_ui.logo, "GAME LOAD", 60, 34, C_TEXT);
+    text(r, g_ui.small, "GAMEOS LAUNCHER", 62, 92, with_alpha(C_DIM, 170));
+
+    float pp = std::clamp((t - 0.90f) / 1.35f, 0.f, 1.f);
+    int pct = (int)(ease_out(pp) * 100.f + 0.5f);
+    if (pct > 100) pct = 100;
+    bool done = pct >= 100;
+
+    char pb[16];
+    snprintf(pb, sizeof pb, "%d%%", pct);
+    text(r, g_ui.clock, pb, W - 44, 16, C_TEXT, Align::Right);
+
+    SDL_Rect bar = { 560, 150, 420, 8 };
+    rrect(r, bar, 4, with_alpha(C_TRACK, 235));
+    int fw = bar.w * pct / 100;
+    if (fw > 2) {
+        rrect(r, { bar.x, bar.y, fw, bar.h }, 4, C_ACCENT);
+        glow(r, bar.x + fw, bar.y + 4, 26, C_ACCENT, 8, 60);
+    }
+    for (int i = 1; i < 10; i++)
+        fill_rect(r, bar.x + bar.w * i / 10, bar.y + 12, 1, 4, with_alpha(C_DIM, 55));
+
+    // cover plate
+    SDL_Rect cov = { 64, 180, 232, 316 };
+    rrect(r, { cov.x - 7, cov.y - 7, cov.w + 14, cov.h + 14 }, 23,
+          with_alpha(C_PANEL, 170));
+    rrect_stroke(r, { cov.x - 7, cov.y - 7, cov.w + 14, cov.h + 14 }, 23,
+                 with_alpha(C_DIM, 40), 1);
+    launch_art(r, cov, 16, c.id, g.title, cover, icon, 255);
+    {
+        auto bracket = [&](int x, int y, int dx, int dy) {
+            thick_line(r, (float)x, (float)y, (float)(x + dx * 20), (float)y, 2, C_ACCENT);
+            thick_line(r, (float)x, (float)y, (float)x, (float)(y + dy * 20), 2, C_ACCENT);
+        };
+        bracket(cov.x - 10, cov.y - 10, 1, 1);
+        bracket(cov.x + cov.w + 10, cov.y - 10, -1, 1);
+        bracket(cov.x - 10, cov.y + cov.h + 10, 1, -1);
+        bracket(cov.x + cov.w + 10, cov.y + cov.h + 10, -1, -1);
+        int sy = cov.y + 4 + (int)(fmodf(t * 0.55f, 1.f) * (cov.h - 8.f));
+        fill_rect(r, cov.x + 4, sy, cov.w - 8, 2,
+                  with_alpha(rgba(214, 255, 247, 255), 70));
+    }
+
+    SDL_Rect chip = { 64, 520, 92, 34 };
+    rrect(r, chip, 17, with_alpha(C_ACCENT, 26));
+    rrect_stroke(r, chip, 17, with_alpha(C_ACCENT, 120), 1);
+    text(r, g_ui.small, c.name_en, chip.x + 46, chip.y + 6, C_ACCENT, Align::Center);
+    text(r, g_ui.small, ellipsize(g_ui.small, console_name(c.id), 232),
+         64, 566, C_TEXT);
+    std::string file = g.path;
+    size_t sl = file.find_last_of('/');
+    if (sl != std::string::npos) file = file.substr(sl + 1);
+    text(r, g_ui.small, ellipsize(g_ui.small, file, 232), 64, 596,
+         with_alpha(C_DIM, 200));
+
+    // title
+    auto lines = wrap(g_ui.hero, g.title, 600);
+    int ty = 166;
+    for (size_t i = 0; i < lines.size() && i < 2; i++) {
+        std::string ln = lines[i];
+        if (i == 1 && lines.size() > 2)
+            ln = ellipsize(g_ui.hero, ln + "…", 600);
+        text(r, g_ui.hero, ln, 336, ty, C_TEXT);
+        ty += 62;
+    }
+    text(r, g_ui.small,
+         ellipsize(g_ui.small, std::string(console_name(c.id)) + "  //  " + file, 600),
+         336, ty + 8, with_alpha(C_DIM, 200));
+
+    // status line
+    std::string st = done ? tr(T_LOAD_START)
+                    : t < 1.55f ? tr(T_LOAD_CARD)
+                    : t < 2.10f ? tr(T_LOAD_VERIFY)
+                                : tr(T_LOAD_START);
+    if (done || t >= 2.10f) {
+        icon_check(r, 336, 396, 26, C_ACCENT);
+    } else {
+        float dp = 0.5f + 0.5f * sinf(t * 6.f);
+        circle(r, 348, 408, 5, with_alpha(C_ACCENT, (int)(120 + 135 * dp)));
+    }
+    text(r, g_ui.body, st, 374, 392, done ? C_TEXT : C_ACCENT);
+
+    // data path: cartridge -> emulator core
+    {
+        const int py = 472;
+        fill_rect(r, 336, py, 624, 1, with_alpha(C_DIM, 55));
+        for (int i = 0; i < 6; i++) {
+            float u = std::fmod(t * 0.14f + i * 0.17f, 1.f);
+            int x = 336 + (int)(u * 608.f);
+            fill_rect(r, x, py - 2, 14, 4, with_alpha(C_ACCENT, 110));
+        }
+        circle(r, 336, py, 3, with_alpha(C_ACCENT, 200));
+        circle(r, 960, py, 3, with_alpha(C_ACCENT, 200));
+        text(r, g_ui.small, "CART", 336, py + 8, with_alpha(C_DIM, 160));
+        text(r, g_ui.small, "EMU CORE", 960, py + 8, with_alpha(C_DIM, 160),
+             Align::Right);
+    }
+
+    // read activity + scan head
+    {
+        const int n = 52, step = 12, base = 656, x0 = 336;
+        float head = x0 + fmodf(t * 0.75f, 1.f) * 600.f;
+        for (int i = 0; i < n; i++) {
+            float v = sinf(t * 5.2f + i * 0.55f) * sinf(t * 2.3f + i * 0.21f);
+            int x = x0 + i * step;
+            int hgt = 3 + (int)(fabsf(v) * 54.f * (0.25f + 0.75f * pp));
+            float near = std::max(0.f, 1.f - fabsf(x - head) / 90.f);
+            Uint8 a = (Uint8)(70 + 150 * near);
+            fill_rect(r, x, base - hgt, 6, hgt, with_alpha(C_ACCENT, a));
+            fill_rect(r, x, base, 6, hgt / 4, with_alpha(C_ACCENT, 26));
+        }
+        fill_rect(r, (int)head, 570, 2, 96, with_alpha(rgba(214, 255, 247, 255), 90));
+        fill_rect(r, 336, base, 624, 1, with_alpha(C_DIM, 70));
+    }
+    char sec[48];
+    snprintf(sec, sizeof sec, "SECTOR 0x%04X / 0x2000", (int)(pp * 0x2000));
+    text(r, g_ui.small, sec, 336, 682, with_alpha(C_DIM, 190));
+    char rate[32];
+    snprintf(rate, sizeof rate, "READ %4.1f MB/s", 18.f + 7.f * breathe + 3.f * pp);
+    text(r, g_ui.small, rate, 960, 682,
+         with_alpha(done ? C_DIM : C_ACCENT, 200), Align::Right);
+
+    if (out < 1.f) fill_rect(r, 0, 0, W, H, rgba(0, 0, 0, (Uint8)((1.f - out) * 255)));
+}
+
+void launch_anim(const Console& c, const Game& g)
+{
+    if (!app.ren_top) return;
+
+    const std::string cpath = launch_cover_path(c, g);
+    SDL_Texture* cover_t = cpath.empty() ? nullptr : cover_tex(app.ren_top, cpath);
+    SDL_Texture* cover_b = (cpath.empty() || !app.ren_bot)
+                             ? nullptr : cover_tex(app.ren_bot, cpath);
+    int idx = console_icon_index(c.id);
+    SDL_Texture* icon_t = (idx >= 0) ? app.icons[idx] : nullptr;
+    SDL_Texture* icon_b = (idx >= 0 && app.ren_bot) ? app.icons_bot[idx] : nullptr;
+    SDL_Texture* card = build_launch_card(app.ren_top, c, g, cover_t, icon_t);
+
+    const char* shotdir = getenv("GAMEOS_LAUNCH_SHOT");
+    std::vector<float> shots;
+    if (shotdir && *shotdir) {
+        const char* e = getenv("GAMEOS_LAUNCH_AT");
+        std::string ss = (e && *e) ? e : "0.35,0.7,0.9,1.25,1.9,2.3";
+        size_t pos = 0;
+        while (pos < ss.size()) {
+            size_t nx = ss.find(',', pos);
+            if (nx == std::string::npos) nx = ss.size();
+            shots.push_back((float)atof(ss.substr(pos, nx - pos).c_str()));
+            pos = nx + 1;
+        }
+    }
+    size_t shot_i = 0;
+
+    SDL_ShowCursor(SDL_DISABLE);
+    Uint32 t0 = SDL_GetTicks();
+    for (;;) {
+        float t = (SDL_GetTicks() - t0) / 1000.f;
+        draw_launch_top(app.ren_top, c, g, t, card, cover_t, icon_t);
+        if (app.ren_bot)
+            draw_launch_bot(app.ren_bot, c, g, t, cover_b, icon_b);
+        while (shot_i < shots.size() && t >= shots[shot_i]) {
+            char name[64];
+            snprintf(name, sizeof name, "/top_%04d.png", (int)(shots[shot_i] * 1000));
+            anim_save_panel(app.ren_top, std::string(shotdir) + name);
+            if (app.ren_bot) {
+                snprintf(name, sizeof name, "/bot_%04d.png", (int)(shots[shot_i] * 1000));
+                anim_save_panel(app.ren_bot, std::string(shotdir) + name);
+            }
+            shot_i++;
+        }
+        SDL_RenderPresent(app.ren_top);
+        if (app.ren_bot) SDL_RenderPresent(app.ren_bot);
+        if (t >= LAUNCH_DUR) break;
+        SDL_Delay(13);
+    }
+    if (card) SDL_DestroyTexture(card);
+}
+
 // Launch one game from any screen (console list, favorites, history, a
 // recommendation). Records the session; the caller refreshes its own list.
 static void launch_one(const Console& c, const Game& g)
@@ -2733,7 +3360,7 @@ static void launch_one(const Console& c, const Game& g)
                  c.id, g.title.c_str(), g.path.c_str());
         ui_dbg(dbg);
     }
-    SDL_Delay(230);                    // let the launch chime ring out
+    launch_anim(c, g);                 // card-insert read animation
     shutdown_gfx();                    // release DRM master
     // CLOCK_MONOTONIC, not the wall clock: gameos-sleepd suspends to RAM on lid
     // close and CLOCK_REALTIME jumps forward by the sleep time on resume.
@@ -2981,7 +3608,7 @@ void start_btn()
     }
     else if (app.screen == Screen::Home) {
         sound_play(SND_CONFIRM);
-        app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+        app.bt_on = (system("/usr/bin/gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
         wifi_probe_start();      // fills in the WiFi row when the probe lands
         update_refresh();        // and the update row
         app.screen = Screen::Settings;
@@ -4533,7 +5160,7 @@ void deck_activate(int id, int a, int b)
     case HIT_HUB:
         if (a == 0) { rebuild_activity(); app.screen = Screen::Activity; }
         else if (a == 1) { rebuild_quick(); app.screen = Screen::Quick; }
-        else { app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+        else { app.bt_on = (system("/usr/bin/gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
                wifi_probe_start(); update_refresh(); app.screen = Screen::Settings;
                app.set_sel = 0; app.set_adjust = -1; }
         break;
@@ -4841,7 +5468,7 @@ void handle_button(SDL_ControllerButtonEvent& b)
             }
         } else if (app.screen == Screen::Settings) {
             sound_play(SND_SWITCH);
-            app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+            app.bt_on = (system("/usr/bin/gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
             wifi_probe_start();
             update_refresh();
         } else if (app.screen == Screen::Saves) {
@@ -4924,7 +5551,7 @@ void handle_key(SDL_KeyboardEvent& k)
             }
         } else if (app.screen == Screen::Settings) {
             sound_play(SND_SWITCH);
-            app.bt_on = (system("gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
+            app.bt_on = (system("/usr/bin/gameos-bt status 2>/dev/null | grep -q '^on$'") == 0);
             wifi_probe_start();
             update_refresh();
         } else if (app.screen == Screen::Saves) {

@@ -21,3 +21,9 @@ buildroot/board/gameos/rgds-plus/panel-generic-dsi.c
 *.swp
 .DS_Store
 Thumbs.db
+
+# Local preview scratch and generated drafts
+.shots/
+vibe_images/
+.qoder-placeholder
+build*.log

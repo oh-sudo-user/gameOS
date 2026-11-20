@@ -24,7 +24,8 @@ case "$1" in
         mountpoint -q /userdata || exit 0
         [ -s /userdata/system/wifi/wpa_supplicant.conf ] || { log "no saved networks; staying down"; exit 0; }
         log "saved networks present; starting gameos-wifi up"
-        gameos-wifi up >/dev/null 2>&1 &
+        # never leave an unbounded helper holding the WiFi lock at boot
+        timeout 30 gameos-wifi up >/dev/null 2>&1 &
         ;;
     stop)
         gameos-wifi down >/dev/null 2>&1
