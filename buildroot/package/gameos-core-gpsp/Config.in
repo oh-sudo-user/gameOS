@@ -1,0 +1,11 @@
+config BR2_PACKAGE_GAMEOS_CORE_GPSP
+	bool "gameos-core-gpsp (GBA)"
+	depends on BR2_aarch64
+	help
+	  gpSP libretro core for Game Boy Advance emulation.
+	  Built for aarch64 with the ARM64 dynamic recompiler enabled,
+	  which is several times faster than interpreter-based GBA cores
+	  on the same hardware. Used as the default GBA core by the
+	  gameOS launcher.
+
+	  https://github.com/libretro/gpsp

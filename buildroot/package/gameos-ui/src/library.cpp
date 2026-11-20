@@ -25,7 +25,7 @@ const std::vector<Console>& consoles()
           "melonds_libretro.so", "nds.cfg", true,
           { ".nds", ".dsi", ".ids", ".srl" } },
         { "gba", "GBA 掌机", "GBA",
-          "mgba_libretro.so", "gba.cfg", false,
+          "gpsp_libretro.so", "gba.cfg", false,
           { ".gba", ".agb", ".mb" } },
         { "gbc", "GB / GBC", "GBC",
           "mgba_libretro.so", "gbc.cfg", false,

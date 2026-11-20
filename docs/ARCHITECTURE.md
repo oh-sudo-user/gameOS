@@ -93,7 +93,7 @@ busybox init
 - 图形栈：mesa3d Panfrost (Mali-G52) + EGL/GLES2，SDL2 KMSDRM，无 X11/Wayland。
 - 前端：C++17，上屏轮播/游戏列表/设置，下屏氛围时钟；七语言界面
   （简中/繁中/日/英/俄/西/韩），Noto Sans SC/KR 字体，模拟器菜单语言同步。
-- 模拟器：melonDS（JIT）、mGBA、PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x）。
+- 模拟器：melonDS（JIT）、gpSP（arm64 dynarec，默认 GBA 核心）、mGBA（GB/GBC）、PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x）。
 - 数据分区：exFAT（GAMEOS 盘符），Windows/macOS 可直接拷游戏。
 
 ## 构建

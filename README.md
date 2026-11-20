@@ -24,7 +24,7 @@ One thing worth knowing up front: these handhelds have no internal storage, and 
 | System | Emulator | Notes |
 |---|---|---|
 | Nintendo DS | melonDS (ARM64 JIT) | Both screens, touch on the bottom one |
-| Game Boy Advance | mGBA | |
+| Game Boy Advance | gpSP (ARM64 dynarec) | |
 | Game Boy / Game Boy Color | mGBA | |
 | PlayStation 1 | PCSX-ReARMed (ARM64 dynarec) | Handles .cue / .m3u / .chd properly |
 | PSP | PPSSPP (Mali-G52 via Panfrost) | 1x render resolution by default (see Performance below) |
@@ -42,8 +42,7 @@ A word on expectations: NDS, GBA, GBC and PS1 run comfortably on this chip. PSP 
 | PSP · emulation headroom | the same 1x setting | **measured** (host, not device): real gameplay — DOOM shareware — rendered at ~80 fps on a software rasteriser, so the core itself clears 60 fps with room to spare |
 | NDS · rendering | threaded renderer beside the ARM64 JIT; inert OpenGL options removed | **expected:** up to ~2x on render-bound scenes, typically 1.2–1.6x across the four Cortex-A55 cores |
 | NDS · boot | `game nds` DS-mode fix for DSi-enhanced carts | **measured:** boots and plays under an ARM64 emulator; the black screen that quit back to the menu is gone |
-| GBA · CPU | known idle loops removed (`mgba_idle_optimization=Remove Known`) | **expected:** 1.1–1.5x on titles that idle a lot, unchanged on ones that don't |
-| GBA · pacing | frame skipping off | no skipped frames; costs some CPU, which is what the idle-loop removal pays for |
+| GBA · core | gpSP with its ARM64 dynamic recompiler replaces mGBA as the default GBA core (mGBA stays for GB/GBC) | **measured** (host harness, same ROM, same image): ~1511–1612 fps vs ~357–362 fps on mGBA — about 4x |
 | Front-end | eased transitions and a cheaper per-frame animation path | **expected:** ~0.2–0.5 ms of animation work per frame — a small fraction of the 16.7 ms budget |
 | Wi-Fi / Bluetooth | busy-waits and long timeouts removed | **measured:** a Wi-Fi scan no longer sits idle for ~13 s; Bluetooth actions no longer stall for 5 s when the radio is off |
 
@@ -189,7 +188,7 @@ All upstream components are pinned to exact versions or commits, so the same com
 ### License
 
 - gameOS' own code — front-end, input/sleep daemons, build glue, device patches — is **GPL-3.0-or-later**.
-- Integrated components keep their own licenses: Linux (GPL-2.0), U-Boot (GPL-2.0+), melonDS (GPL-3.0; its bundled Drastic FreeBIOS carries a BSD-style notice, reproduced in docs/TROUBLESHOOTING.md), RetroArch (GPL-3.0), PPSSPP (GPL-2.0+), mGBA (MPL-2.0), Noto and Orbitron fonts (OFL).
+- Integrated components keep their own licenses: Linux (GPL-2.0), U-Boot (GPL-2.0+), melonDS (GPL-3.0; its bundled Drastic FreeBIOS carries a BSD-style notice, reproduced in docs/TROUBLESHOOTING.md), RetroArch (GPL-3.0), PPSSPP (GPL-2.0+), mGBA (MPL-2.0), gpSP (GPL-2.0+), Noto and Orbitron fonts (OFL).
 - The Rockchip DDR/BL31 firmware blobs are proprietary binaries, redistributed under the rkbin repository's license.
 
 ---
@@ -211,7 +210,7 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机。开机直接�
 | 平台 | 模拟器 | 说明 |
 |---|---|---|
 | 任天堂 DS | melonDS（ARM64 JIT） | 双屏直出，下屏触摸 |
-| GBA | mGBA | |
+| GBA | gpSP（ARM64 动态编译） | |
 | GB / GBC | mGBA | |
 | PS1 | PCSX-ReARMed（ARM64 动态编译） | 完整支持 .cue / .m3u / .chd |
 | PSP | PPSSPP（Panfrost 驱动 Mali-G52） | 默认 1 倍渲染分辨率（见下方"性能"） |
@@ -229,8 +228,7 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机。开机直接�
 | PSP · 模拟余量 | 就是上面这个 1 倍设置 | **实测**（电脑上，非掌机）：真实游戏画面——DOOM 共享版——用软件渲染跑到约 80 帧/秒，模拟核心本身远超 60 帧 |
 | NDS · 渲染 | ARM64 JIT 旁边加线程化渲染器；删掉不起作用的 OpenGL 选项 | **预期：**渲染吃紧的场景最高约 2 倍，四颗 Cortex-A55 上典型 1.2–1.6 倍 |
 | NDS · 启动 | `game nds` 对 DSi 增强卡带的 DS 模式修复 | **实测：**在 ARM64 模拟器里能启动、能玩；之前黑屏后退回菜单的路径没有了 |
-| GBA · CPU | 去掉已知的空转循环（`mgba_idle_optimization=Remove Known`） | **预期：**空转多的游戏 1.1–1.5 倍，空转少的游戏基本不变 |
-| GBA · 节奏 | 关闭跳帧 | 不再丢帧；代价是一点 CPU，正好用空转优化补回来 |
+| GBA · 核心 | 默认 GBA 核心由 mGBA 换成带 ARM64 动态编译的 gpSP（mGBA 留给 GB/GBC） | **实测**（电脑上的测试台，同 ROM、同镜像）：约 1511–1612 帧/秒，mGBA 约 357–362 帧/秒——约 4 倍 |
 | 前端 | 过渡动画放缓、每帧动画开销更省 | **预期：**每帧约 0.2–0.5 ms 的动画开销——只占 16.7 ms 预算的一小部分 |
 | Wi-Fi / 蓝牙 | 去掉忙等和过长的超时 | **实测：**Wi-Fi 扫描不再空等约 13 秒；蓝牙关闭时操作不再卡 5 秒 |
 
@@ -376,5 +374,5 @@ make -j$(nproc)
 ### 许可证
 
 - gameOS 自研代码——前端、输入/休眠守护进程、构建脚本、设备补丁——采用 **GPL-3.0-or-later**。
-- 集成的上游组件各自遵循其许可证：Linux（GPL-2.0）、U-Boot（GPL-2.0+）、melonDS（GPL-3.0；其内置的 Drastic FreeBIOS 为 BSD 风格许可，声明全文见 docs/TROUBLESHOOTING.md）、RetroArch（GPL-3.0）、PPSSPP（GPL-2.0+）、mGBA（MPL-2.0）、Noto 与 Orbitron 字体（OFL）。
+- 集成的上游组件各自遵循其许可证：Linux（GPL-2.0）、U-Boot（GPL-2.0+）、melonDS（GPL-3.0；其内置的 Drastic FreeBIOS 为 BSD 风格许可，声明全文见 docs/TROUBLESHOOTING.md）、RetroArch（GPL-3.0）、PPSSPP（GPL-2.0+）、mGBA（MPL-2.0）、gpSP（GPL-2.0+）、Noto 与 Orbitron 字体（OFL）。
 - Rockchip DDR/BL31 固件是专有二进制，按 rkbin 仓库的许可分发。
