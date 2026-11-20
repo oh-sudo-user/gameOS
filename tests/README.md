@@ -15,6 +15,7 @@ device-presence predicates into a temp sandbox.
 | `test-gameos-update.sh` | strict manifest validation matrix; version compare (no downgrade / no same-release rebuild); `do_apply` fault injection at **every** stage — the invariant is `/boot/state` is switched **LAST** and **never** on any failure; malicious boot tars (traversal / symlink / missing / extra / empty member) | §4.5 |
 | `test-firstboot-data.sh` | an **existing** p4 is **NEVER** auto-formatted (exFAT preserved, corrupt/foreign preserved); format only after create+verify succeed; sgdisk/parted/node-timeout/mkfs/verify failures all keep the first-boot marker | §3.3 / §0 |
 | `test-boot-state.sh` | `confirm()` records slot=fallback=current, n=0; `reconcile_bootscr()` atomically deploys the model-matched script; the start gate runs confirm **only** after `ui-ok` exists | §2.3 |
+| `test-ui-perf.sh` | compiles `tests/host/test-ui-perf.cpp` against the real `src/perf.cpp`; nearest-rank percentiles, window cap/dropped/reset, and the disabled-path no-op | §10 |
 
 Run locally (WSL example):
 

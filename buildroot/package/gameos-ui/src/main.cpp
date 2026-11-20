@@ -12,6 +12,7 @@
 #include "displays.hpp"
 #include "gameos.hpp"
 #include "i18n.hpp"
+#include "perf.hpp"
 #include "sound.hpp"
 #include "touch.hpp"
 #include "ui.hpp"
@@ -53,6 +54,28 @@ constexpr int CAR_SETTINGS = 7;
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
                     Covers, Activity, Quick, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt };
+
+// Short stable tag for the frame profiler's log lines; keeps the perf log
+// readable without depending on translated screen titles.
+const char* screen_key(Screen s)
+{
+    switch (s) {
+    case Screen::Home:      return "home";
+    case Screen::List:      return "list";
+    case Screen::Settings:  return "settings";
+    case Screen::Wifi:      return "wifi";
+    case Screen::Bluetooth: return "bt";
+    case Screen::Saves:     return "saves";
+    case Screen::Update:    return "update";
+    case Screen::Setup:     return "setup";
+    case Screen::Covers:    return "covers";
+    case Screen::Activity:  return "activity";
+    case Screen::Quick:     return "quick";
+    case Screen::Msg:       return "msg";
+    case Screen::Confirm:   return "confirm";
+    }
+    return "?";
+}
 
 // Every tappable region on the bottom deck. `a` (and `b`) carry the row /
 // column / index the handler needs, so one id can serve a whole list.
@@ -657,6 +680,7 @@ void draw_background(SDL_Renderer* r)
         SDL_SetTextureBlendMode(app.bg, SDL_BLENDMODE_BLEND);
         SDL_SetTextureAlphaMod(app.bg, 55);
         SDL_Rect dst = { 0, 0, W, H };
+        perf::note_draw();
         SDL_RenderCopy(r, app.bg, nullptr, &dst);
     }
     glow(r, W - 120, 60, 420, g_accent, 12, 34);
@@ -3030,6 +3054,7 @@ void cover_fit(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha)
     else         { int h2 = (int)(tw / da); src = { 0, (th - h2) / 2, tw, h2 }; }
     SDL_SetTextureAlphaMod(t, alpha);
     SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    perf::note_draw();
     SDL_RenderCopy(r, t, &src, &dst);
 }
 
@@ -3107,6 +3132,7 @@ SDL_Texture* build_launch_card(SDL_Renderer* r, const Console& c, const Game& g,
             { { (float)(cw - 1), 2.f }, { 0, 0, 0, 0 }, { 0, 0 } },
             { { (float)(cw - 1), 33.f }, { 0, 0, 0, 0 }, { 0, 0 } },
         };
+        perf::note_draw();
         SDL_RenderGeometry(r, nullptr, tri, 3, nullptr, 0);
         SDL_SetRenderDrawBlendMode(r, bm);
     }
@@ -3214,11 +3240,13 @@ void draw_launch_top(SDL_Renderer* r, const Console& c, const Game& g, float t,
                 SDL_Rect gd = dst;
                 gd.y -= k * 16;
                 SDL_SetTextureAlphaMod(card, (Uint8)((22 / k + 10) * (1.f - sink)));
+                perf::note_draw();
                 SDL_RenderCopyEx(r, card, nullptr, &gd, ang + 1.6f * k,
                                  nullptr, SDL_FLIP_NONE);
             }
         }
         SDL_SetTextureAlphaMod(card, (Uint8)(255.f * (1.f - sink) + 0.5f));
+        perf::note_draw();
         SDL_RenderCopyEx(r, card, nullptr, &dst, ang, nullptr, SDL_FLIP_NONE);
     }
 
@@ -5458,12 +5486,15 @@ void draw_deck()
     if (te < 200 && g_deck_tex[g_deck_cur ^ 1]) {
         float p = ease_out(te / 200.0f);
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur ^ 1], 255);
+        perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur ^ 1], nullptr, &full);
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur], (Uint8)(255 * p));
         SDL_Rect dst = { 0, (int)((1 - p) * 18), W, H };
+        perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur], nullptr, &dst);
     } else {
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur], 255);
+        perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur], nullptr, &full);
     }
     SDL_RenderPresent(r);
@@ -6061,6 +6092,7 @@ int main(int, char**)
     if (userdata_mounted() && access(SETUP_MARKER, F_OK) != 0) setup_enter();
 
     while (app.running) {
+        perf::frame_begin();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             switch (e.type) {
@@ -6180,6 +6212,7 @@ int main(int, char**)
         if (had_scene && trans_elapsed < dur) {
             float p = ease_out(trans_elapsed / (float)dur);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur ^ 1], 255);
+            perf::note_draw();
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur ^ 1], nullptr, &full);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur], (Uint8)(255 * p));
             SDL_Rect dst;
@@ -6190,13 +6223,16 @@ int main(int, char**)
             } else {
                 dst = { 0, (int)((1 - p) * 26), W, H };
             }
+            perf::note_draw();
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur], nullptr, &dst);
         } else {
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur], 255);
+            perf::note_draw();
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur], nullptr, &full);
         }
         SDL_RenderPresent(r);
         draw_deck();
+        perf::frame_end(screen_key(app.screen));
         // cap at ~60 fps: uncapped rendering burned CPU and battery for no
         // visible gain on a 60 Hz panel
         Uint32 frame_ms = SDL_GetTicks() - now;
@@ -6208,5 +6244,6 @@ int main(int, char**)
     if (app.carousel < 5) app.settings.last_console = app.carousel;
     save_settings(app.settings);
     shutdown_gfx();
+    perf::shutdown();
     return app.exit_code;
 }
