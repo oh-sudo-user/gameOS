@@ -5,18 +5,29 @@
 #   gameos-volume set <0-100>   absolute level
 #   gameos-volume get           print the last level
 #
-# Card indices swap between boots (rk817 jack / aw88166 speakers), so the mixer
-# controls are probed once and cached in /run/gameos/volume.map; after that a
-# change is 2-4 amixer calls instead of walking every card and control. The
-# hardware keys fork a helper per press, so the lock makes the level file and
-# the mixer changes strictly ordered: without it several slow applies wrote
-# volume.level out of order and the UI slider bounced while a key was held.
+# The aw88166 speaker amps ("Left PCM"/"Right PCM") are attenuators: raw 0 is
+# the loudest setting, so the UI percentage is inverted for those two controls
+# and normal everywhere else. The amp module loads a few seconds into boot, so
+# a mixer map built before it exists must never be reused; the map header
+# records the sound-card ids present at build time and every apply rebuilds the
+# map when they differ (also covers card index swaps between boots).
 STATE=/run/gameos/volume.level
 MAP=/run/gameos/volume.map
+CLOG=/userdata/system/volume.log
 mkdir -p /run/gameos 2>/dev/null
 
 exec 9>/run/gameos/volume.lock
-flock 9
+flock 9 2>/dev/null
+
+log()
+{
+    [ -d /userdata/system ] || return 0
+    if [ -f "$CLOG" ]; then
+        sz=$(wc -c < "$CLOG" 2>/dev/null)
+        [ -n "$sz" ] && [ "$sz" -gt 131072 ] && mv -f "$CLOG" "$CLOG.1" 2>/dev/null
+    fi
+    printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$CLOG" 2>/dev/null
+}
 
 current()
 {
@@ -28,39 +39,66 @@ current()
     echo "$v"
 }
 
-build_map()
+# " 0:rk817hp 1:aw88166" — identity of the cards that exist right now.
+card_sig()
 {
-    : > "$MAP.tmp"
+    sig=
     for carddir in /proc/asound/card[0-9]*; do
         [ -d "$carddir" ] || continue
         card=${carddir##*card}
-        for ctl in 'Master' 'Master Playback Volume' 'PCM' 'Left PCM' 'Right PCM' \
-                   'Playback Volume' 'DAC Playback Volume' 'Headphone Playback Volume' \
-                   'Speaker Playback Volume' 'Digital Volume'; do
-            caps=$(amixer -c "$card" sget "$ctl" 2>/dev/null) || continue
-            case "$caps" in *Playback*) ;; *) continue ;; esac
-            inv=0
-            case "$ctl" in
-                'Left PCM'|'Right PCM') inv=1 ;;
-            esac
-            printf '%s\t%s\t%s\n' "$card" "$ctl" "$inv" >> "$MAP.tmp"
-        done
+        id=$(cat "$carddir/id" 2>/dev/null)
+        sig="$sig $card:$id"
     done
+    echo "$sig"
+}
+
+# Probe once into a cache: per change only the few real controls are written.
+# Only pvolume-capable controls are touched; the amps also expose calibration
+# and fade/ramp "volume" controls that must not be used for loudness.
+build_map()
+{
+    sig=$1
+    {
+        printf '#cards:%s\n' "$sig"
+        for carddir in /proc/asound/card[0-9]*; do
+            [ -d "$carddir" ] || continue
+            card=${carddir##*card}
+            for ctl in 'Master' 'Master Playback Volume' 'PCM' 'Left PCM' 'Right PCM' \
+                       'Playback Volume' 'DAC Playback Volume' 'Headphone Playback Volume' \
+                       'Speaker Playback Volume' 'Digital Volume'; do
+                caps=$(amixer -c "$card" sget "$ctl" 2>/dev/null) || continue
+                case "$caps" in *pvolume*) ;; *) continue ;; esac
+                inv=0
+                case "$ctl" in
+                    'Left PCM'|'Right PCM') inv=1 ;;
+                esac
+                unmute=0
+                case "$caps" in *pswitch*) unmute=1 ;; esac
+                printf '%s\t%s\t%s\t%s\n' "$card" "$ctl" "$inv" "$unmute"
+            done
+        done
+    } > "$MAP.tmp"
     mv -f "$MAP.tmp" "$MAP"
+    log "map built:$sig entries=$(grep -vc '^#' "$MAP" 2>/dev/null)"
 }
 
 apply_map()
 {
     ok=0
+    detail=
     tab=$(printf '\t')
-    while IFS="$tab" read -r card ctl inv; do
-        [ -n "$card" ] || continue
+    while IFS="$tab" read -r card ctl inv unmute; do
+        case "$card" in ''|'#'*) continue ;; esac
         raw=$pct
         [ "$inv" = 1 ] && raw=$((100 - pct))
         amixer -c "$card" sset "$ctl" "${raw}%" >/dev/null 2>&1 || continue
         ok=$((ok + 1))
-        [ "$pct" -gt 0 ] && amixer -c "$card" sset "$ctl" unmute >/dev/null 2>&1
+        detail="$detail c$card/$ctl=$raw"
+        if [ "$unmute" = 1 ] && [ "$pct" -gt 0 ]; then
+            amixer -c "$card" sset "$ctl" unmute >/dev/null 2>&1
+        fi
     done < "$MAP"
+    log "apply pct=$pct raw_ok=$ok:$detail"
     echo "$ok"
 }
 
@@ -71,12 +109,14 @@ apply()
     # 250 ms, and the lock guarantees the newest press wins.
     printf '%s\n' "$pct" > "$STATE"
 
-    [ -s "$MAP" ] || build_map
+    sig=$(card_sig)
+    if [ "$(sed -n '1p' "$MAP" 2>/dev/null)" != "#cards:$sig" ]; then
+        build_map "$sig"
+    fi
     ok=$(apply_map)
     if [ "$ok" -eq 0 ]; then
-        # card order changed (module reload): re-probe once
-        rm -f "$MAP"
-        build_map
+        # The map can also go stale when a driver reloads under the same id.
+        build_map "$sig"
         [ -s "$MAP" ] && ok=$(apply_map)
     fi
 
@@ -85,6 +125,9 @@ apply()
         gameos-bt volume "$pct" >/dev/null 2>&1
     fi
     echo "$pct"
+    # A non-zero exit lets the UI fall back to its direct amixer path.
+    [ "$ok" -eq 0 ] && return 1
+    return 0
 }
 
 case "$1" in

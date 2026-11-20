@@ -1,6 +1,6 @@
 --- a/gfx/drivers_context/drm_ctx.c
 +++ b/gfx/drivers_context/drm_ctx.c
-@@ -115,6 +115,410 @@
+@@ -115,6 +115,518 @@
  static drmModeModeInfo gfx_ctx_crt_switch_mode;
  static bool switch_mode                   = false;
  
@@ -17,6 +17,9 @@
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + * =========================================================================== */
 +#include <errno.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <time.h>
 +
 +static bool g_gameos_dual               = false;
 +static drmModeModeInfo g_gameos_span_mode;
@@ -44,6 +47,38 @@
 +static uint32_t g_gc_mode_top, g_gc_active_top;
 +static uint32_t g_gc_mode_bot, g_gc_active_bot;
 +static uint32_t g_gc_conn_top, g_gc_conn_bot;
++static int g_gameos_flip_errors = 0;
++
++/* Field diagnostics: RetroArch's own log died with the power cut on the
++ * handheld, so dual-screen decisions are also fsynced to the data partition. */
++static void gameos_dlog(const char *fmt, ...)
++{
++   char msg[512];
++   char line[600];
++   va_list ap;
++   time_t now;
++   struct tm tmv;
++   FILE *f;
++
++   va_start(ap, fmt);
++   vsnprintf(msg, sizeof(msg), fmt, ap);
++   va_end(ap);
++
++   now = time(NULL);
++   localtime_r(&now, &tmv);
++   snprintf(line, sizeof(line), "[%02d:%02d:%02d] %s\n",
++         tmv.tm_hour, tmv.tm_min, tmv.tm_sec, msg);
++
++   f = fopen("/userdata/system/dual.log", "a");
++   if (!f)
++      f = fopen("/tmp/dual.log", "a");
++   if (!f)
++      return;
++   fputs(line, f);
++   fflush(f);
++   fsync(fileno(f));
++   fclose(f);
++}
 +
 +static uint32_t gameos_prop_id(int fd, uint32_t obj_id,
 +      uint32_t obj_type, const char *name)
@@ -117,7 +152,8 @@
 +   return true;
 +}
 +
-+static uint32_t gameos_primary_plane(int fd, uint32_t crtc_id)
++static uint32_t gameos_primary_plane(int fd, uint32_t crtc_id,
++      uint32_t exclude)
 +{
 +   uint32_t found = 0;
 +   drmModeRes *res = drmModeGetResources(fd);
@@ -147,7 +183,8 @@
 +      drmModePlane *pl = drmModeGetPlane(fd, pres->planes[i]);
 +      if (!pl)
 +         continue;
-+      if (pl->possible_crtcs & (1u << crtc_idx))
++      if (pl->plane_id != exclude &&
++          (pl->possible_crtcs & (1u << crtc_idx)))
 +      {
 +         uint32_t type_prop = gameos_prop_id(fd, pl->plane_id,
 +               DRM_MODE_OBJECT_PLANE, "type");
@@ -174,9 +211,30 @@
 +
 +static bool gameos_dual_init(int fd)
 +{
-+   drmModeRes *res = drmModeGetResources(fd);
-+   if (!res)
++   drmModeRes *res = NULL;
++
++   gameos_dlog("init: begin primary connector=%u crtc=%u",
++         g_connector_id, g_crtc_id);
++
++   /* The atomic plane/CRTC API is gated per DRM file: without these caps the
++    * kernel rejects every drmModeAtomicCommit with EINVAL and the dual-screen
++    * modeset can never engage. */
++   if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) < 0)
++      gameos_dlog("init: universal-planes cap failed: %s",
++            strerror(errno));
++   if (drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1) < 0)
++   {
++      gameos_dlog("init: atomic cap failed: %s", strerror(errno));
 +      return false;
++   }
++   gameos_dlog("init: atomic client cap enabled");
++
++   res = drmModeGetResources(fd);
++   if (!res)
++   {
++      gameos_dlog("init: no DRM resources");
++      return false;
++   }
 +
 +   drmModeConnector *bot = NULL;
 +   for (int i = 0; i < res->count_connectors; i++)
@@ -184,6 +242,9 @@
 +      drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
 +      if (!c)
 +         continue;
++      gameos_dlog("conn %u type=%u.%u conn=%d modes=%d enc=%u",
++            c->connector_id, c->connector_type, c->connector_type_id,
++            c->connection, c->count_modes, c->encoder_id);
 +      if (c->connector_id != g_connector_id &&
 +          c->connection == DRM_MODE_CONNECTED && c->count_modes > 0)
 +      {
@@ -194,6 +255,7 @@
 +   }
 +   if (!bot)
 +   {
++      gameos_dlog("init: no second connected connector");
 +      drmModeFreeResources(res);
 +      return false;
 +   }
@@ -224,7 +286,10 @@
 +   if (enc)
 +      drmModeFreeEncoder(enc);
 +   if (!crtc_bot)
++   {
++      gameos_dlog("init: no CRTC for the bottom connector");
 +      goto fail;
++   }
 +
 +   /* DSI-2 is the physical top (lid) panel on both RG DS models; the DRM
 +    * primary may still be DSI-1, so swap the roles when it is. */
@@ -240,6 +305,12 @@
 +   g_gameos_mode_bot = botc->modes[0];
 +   g_gameos_top_h    = g_gameos_mode_top.vdisplay;
 +   g_gameos_span_w   = g_gameos_mode_top.hdisplay;
++   gameos_dlog("init: top conn=%u crtc=%u %ux%u, bottom conn=%u crtc=%u "
++         "%ux%u, span=%ux%u", g_gameos_conn_top, g_gameos_crtc_top,
++         g_gameos_mode_top.hdisplay, g_gameos_mode_top.vdisplay,
++         g_gameos_conn_bot, g_gameos_crtc_bot,
++         g_gameos_mode_bot.hdisplay, g_gameos_mode_bot.vdisplay,
++         g_gameos_span_w, g_gameos_span_mode.vdisplay);
 +
 +   g_gameos_span_mode          = g_gameos_mode_top;
 +   g_gameos_span_mode.vdisplay = g_gameos_mode_top.vdisplay +
@@ -248,14 +319,24 @@
 +                                 g_gameos_mode_bot.vtotal;
 +   snprintf(g_gameos_span_mode.name, DRM_DISPLAY_MODE_LEN, "gameos-span");
 +
-+   g_gameos_plane_top = gameos_primary_plane(fd, g_gameos_crtc_top);
-+   g_gameos_plane_bot = gameos_primary_plane(fd, g_gameos_crtc_bot);
-+   if (!g_gameos_plane_top || !g_gameos_plane_bot)
++   g_gameos_plane_top = gameos_primary_plane(fd, g_gameos_crtc_top, 0);
++   g_gameos_plane_bot = gameos_primary_plane(fd, g_gameos_crtc_bot,
++         g_gameos_plane_top);
++   gameos_dlog("init: planes top=%u bottom=%u",
++         g_gameos_plane_top, g_gameos_plane_bot);
++   if (!g_gameos_plane_top || !g_gameos_plane_bot ||
++       g_gameos_plane_top == g_gameos_plane_bot)
++   {
++      gameos_dlog("init: no distinct primary planes");
 +      goto fail;
++   }
 +
 +   if (!gameos_cache_plane_props(fd, g_gameos_plane_top, &g_gp_top) ||
 +       !gameos_cache_plane_props(fd, g_gameos_plane_bot, &g_gp_bot))
++   {
++      gameos_dlog("init: plane atomic properties missing");
 +      goto fail;
++   }
 +   g_gc_mode_top   = gameos_prop_id(fd, g_gameos_crtc_top,
 +         DRM_MODE_OBJECT_CRTC, "MODE_ID");
 +   g_gc_active_top = gameos_prop_id(fd, g_gameos_crtc_top,
@@ -266,7 +347,10 @@
 +         DRM_MODE_OBJECT_CRTC, "ACTIVE");
 +   if (!g_gc_mode_top || !g_gc_active_top ||
 +       !g_gc_mode_bot || !g_gc_active_bot)
++   {
++      gameos_dlog("init: CRTC MODE_ID/ACTIVE properties missing");
 +      goto fail;
++   }
 +
 +   /* Connector CRTC_ID binding: without this the atomic modeset activates
 +    * the CRTCs and planes but leaves both connectors routed to nothing, so
@@ -278,18 +362,29 @@
 +   if (!g_gc_conn_top || !g_gc_conn_bot)
 +   {
 +      RARCH_ERR("[KMS] gameOS: connector CRTC_ID property unavailable.\n");
++      gameos_dlog("init: connector CRTC_ID property missing");
 +      goto fail;
 +   }
 +
 +   if (drmModeCreatePropertyBlob(fd, &g_gameos_mode_top,
 +         sizeof(g_gameos_mode_top), &g_gameos_blob_top) < 0)
++   {
++      gameos_dlog("init: top mode blob failed: %s", strerror(errno));
 +      goto fail;
++   }
 +   if (drmModeCreatePropertyBlob(fd, &g_gameos_mode_bot,
 +         sizeof(g_gameos_mode_bot), &g_gameos_blob_bot) < 0)
++   {
++      gameos_dlog("init: bottom mode blob failed: %s", strerror(errno));
 +      goto fail;
++   }
 +
 +   RARCH_LOG("[KMS] gameOS dual-screen: %ux%u spanning two panels "
 +         "(crtc %u/%u, plane %u/%u).\n",
++         g_gameos_span_w, g_gameos_span_mode.vdisplay,
++         g_gameos_crtc_top, g_gameos_crtc_bot,
++         g_gameos_plane_top, g_gameos_plane_bot);
++   gameos_dlog("init: ready %ux%u crtc %u/%u plane %u/%u",
 +         g_gameos_span_w, g_gameos_span_mode.vdisplay,
 +         g_gameos_crtc_top, g_gameos_crtc_bot,
 +         g_gameos_plane_top, g_gameos_plane_bot);
@@ -376,16 +471,25 @@
 +   {
 +      RARCH_ERR("[KMS] gameOS dual modeset TEST_ONLY rejected: %s\n",
 +            strerror(errno));
++      gameos_dlog("modeset: TEST_ONLY rejected: %s (%d)",
++            strerror(errno), errno);
 +      drmModeAtomicFree(req);
 +      return false;
 +   }
 +
++   gameos_dlog("modeset: TEST_ONLY accepted, committing");
 +   ret = drmModeAtomicCommit(fd, req,
 +         DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
 +   drmModeAtomicFree(req);
 +   if (ret < 0)
++   {
 +      RARCH_ERR("[KMS] gameOS dual modeset failed: %s\n",
 +            strerror(errno));
++      gameos_dlog("modeset: commit failed: %s (%d)",
++            strerror(errno), errno);
++   }
++   else
++      gameos_dlog("modeset: commit ok");
 +   return ret == 0;
 +}
 +
@@ -401,8 +505,12 @@
 +   drmModeAtomicFree(req);
 +   if (ret == 0)
 +      *waiting = true;
-+   else
++   else if (g_gameos_flip_errors < 3)
++   {
++      g_gameos_flip_errors++;
 +      RARCH_ERR("[KMS] gameOS dual flip failed: %s\n", strerror(errno));
++      gameos_dlog("flip: failed: %s", strerror(errno));
++   }
 +   return ret == 0;
 +}
 +/* === end gameOS dual-screen support === */
@@ -411,7 +519,7 @@
  static float mode_vrefresh(drmModeModeInfo *mode)
  {
     return  mode->clock * 1000.00f / (mode->htotal * mode->vtotal);
-@@ -530,6 +934,10 @@
+@@ -530,6 +1042,10 @@
     if (!fb)
        fb             = (struct drm_fb*)drm_fb_get_from_bo(drm->next_bo);
  
@@ -422,7 +530,7 @@
     if (switch_mode)
     {
        RARCH_DBG("[KMS] modeswitch detected, creating the new CRTC.\n");
-@@ -731,6 +1139,72 @@
+@@ -731,6 +1247,72 @@
  
     drm_setup(fd);
  
@@ -495,7 +603,7 @@
     /* Choose the optimal video mode for get_video_size():
       - video mode issued by switchres through the CRT module
       - custom timings from configuration
-@@ -757,6 +1231,12 @@
+@@ -757,6 +1339,12 @@
        drm->fb_height = g_drm_connector->modes[0].vdisplay;
     }
  
@@ -508,7 +616,7 @@
     drmSetMaster(g_drm_fd);
  
     drm->gbm_dev      = gbm_create_device(fd);
-@@ -816,7 +1296,8 @@
+@@ -816,7 +1404,8 @@
     /* Find desired video mode, and use that.
      * If not fullscreen, we get desired windowed size,
      * which is not appropriate. */
@@ -518,7 +626,7 @@
     {
        RARCH_DBG("[KMS] New mode detected: %dx%d.\n", gfx_ctx_crt_switch_mode.hdisplay, gfx_ctx_crt_switch_mode.vdisplay);
        g_drm_mode     = &gfx_ctx_crt_switch_mode;
-@@ -826,7 +1307,11 @@
+@@ -826,7 +1415,11 @@
        /* Let's exit, since modeswitching will happen while swapping buffers */
        return true;
     }
@@ -531,7 +639,7 @@
     {
        RARCH_WARN("[KMS] Falling back to mode 0 (default).\n");
        g_drm_mode     = &g_drm_connector->modes[0];
-@@ -907,7 +1392,26 @@
+@@ -907,7 +1500,27 @@
     if (!(fb = (struct drm_fb*)gbm_bo_get_user_data(drm->bo)))
        fb     = drm_fb_get_from_bo(drm->bo);
  
@@ -543,11 +651,12 @@
 +         /* Dual-panel atomic modeset failed (rejected by the kernel or a
 +          * missing property). Do NOT tear down video: degrade to the top
 +          * panel only so the device still boots and is playable. The span
-+          * FB's top region is exactly the top panel's content, so scanning
-+          * it out with the real single-panel mode shows a correct picture
-+          * on the top screen; the bottom panel stays dark. */
++          * The legacy path scales the whole span FB onto the top panel, so
++          * the game stays visible (both DS screens, smaller) while the
++          * bottom panel goes dark. */
 +         RARCH_WARN("[KMS] gameOS dual modeset failed; falling back to "
 +               "single-panel (top) mode.\n");
++         gameos_dlog("modeset failed; falling back to single panel");
 +         g_gameos_dual = false;
 +         g_drm_mode    = &g_drm_connector->modes[0];
 +         if ((ret = drmModeSetCrtc(g_drm_fd, g_crtc_id, fb->fb_id,

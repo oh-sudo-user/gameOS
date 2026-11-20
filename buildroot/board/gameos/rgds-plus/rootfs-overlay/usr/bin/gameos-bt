@@ -27,6 +27,7 @@ STORE=/userdata/system/bluetooth.tar
 LAST=/userdata/system/bt-last
 CTL="timeout 45 bluetoothctl"
 LOG=/userdata/system/bt.log
+BTLOG=/userdata/system/bluetoothd.log
 
 have_data() { mountpoint -q /userdata 2>/dev/null; }
 
@@ -44,6 +45,21 @@ rotate_log() {
     [ -f "$LOG" ] || return 0
     [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 2097152 ] && mv -f "$LOG" "$LOG.1"
     return 0
+}
+
+# The adapter can register (hci0 exists) yet never reach Powered: firmware
+# download failures only show in dmesg/bluetoothd, so snapshot both to the card.
+dump_diag() {
+    log "diag: hci=$(ls /sys/class/bluetooth 2>/dev/null | tr '\n' ' ')"
+    for d in /sys/class/bluetooth/hci*; do
+        [ -d "$d" ] || continue
+        log "diag: $(basename "$d") addr=$(cat "$d/address" 2>/dev/null) type=$(cat "$d/type" 2>/dev/null) bus=$(cat "$d/bus" 2>/dev/null)"
+    done
+    log "diag: rfkill=$(rfkill list 2>/dev/null | tr '\n' ';')"
+    log "diag: show=$(timeout 5 bluetoothctl show 2>&1 | tr -d '\r' | tr '\n' ';')"
+    log "diag: fw=$(ls /lib/firmware/rtl_bt/rtl8821cs* 2>/dev/null | tr '\n' ' ')"
+    log "diag: dmesg=$(dmesg 2>/dev/null | grep -iE 'bluetooth|btrtl|hci_uart|rtl8821|firmware' | tail -20 | tr '\n' ';')"
+    log "diag: btlog=$(tail -12 "$BTLOG" 2>/dev/null | tr '\n' ';')"
 }
 
 # one at a time (the UI runs these in the background); daemons get the lock fd
@@ -108,10 +124,12 @@ up() {
     while [ $i -lt 20 ]; do [ -d /sys/class/bluetooth/hci0 ] && break; sleep 0.25; i=$((i + 1)); done
     if [ ! -d /sys/class/bluetooth/hci0 ]; then
         log "up: no hci0 after ${i} waits"
+        dump_diag
         echo "no Bluetooth controller (hci0)" >&2
         modprobe -r hci_uart 2>/dev/null
         return 1
     fi
+    log "up: hci0 present after ${i} waits"
     if [ ! -d "$RUN/bluetooth" ]; then
         mkdir -p "$RUN/bluetooth" "$RUN/bluealsa"
         [ -f "$STORE" ] && tar -C "$RUN" -xf "$STORE" 2>/dev/null
@@ -126,20 +144,29 @@ up() {
         dbus-uuidgen --ensure 2>/dev/null
         dbus-daemon --system 9>&- || return 1
     fi
-    /usr/libexec/bluetooth/bluetoothd -n 9>&- </dev/null >/dev/null 2>&1 &
+    if have_data; then
+        [ -f "$BTLOG" ] && [ "$(wc -c < "$BTLOG" 2>/dev/null || echo 0)" -gt 262144 ] && mv -f "$BTLOG" "$BTLOG.1"
+        /usr/libexec/bluetooth/bluetoothd -n -d 9>&- </dev/null >>"$BTLOG" 2>&1 &
+    else
+        /usr/libexec/bluetooth/bluetoothd -n 9>&- </dev/null >/dev/null 2>&1 &
+    fi
     echo $! > "$RUN/bluetoothd.pid"
     # AutoEnable powers the adapter; the firmware download takes a second or two.
     # Verify it really reached Powered: a running bluetoothd with an off adapter
     # looked healthy in Settings but every scan came back empty.
     i=0
-    while [ $i -lt 12 ]; do
+    while [ $i -lt 16 ]; do
         timeout 2 bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && break
-        [ $i -eq 3 ] && timeout 8 bluetoothctl power on >/dev/null 2>&1
+        if [ $i -eq 2 ] || [ $i -eq 8 ]; then
+            log "up: power on attempt at wait $i"
+            timeout 8 bluetoothctl power on >/dev/null 2>&1
+        fi
         sleep 0.5
         i=$((i + 1))
     done
     if ! timeout 3 bluetoothctl show 2>/dev/null | grep -q 'Powered: yes'; then
         log "up: adapter did not power on"
+        dump_diag
         echo "Bluetooth adapter did not power on" >&2
         down >/dev/null 2>&1
         return 1

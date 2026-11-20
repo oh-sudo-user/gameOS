@@ -367,7 +367,7 @@ static void apply_volume_now(int pct)
     // records the level so the hardware keys and the UI stay in sync. On a
     // host build without the script, fall back to the direct mixer calls.
     char cmd[96];
-    snprintf(cmd, sizeof(cmd), "gameos-volume set %d >/dev/null 2>&1", pct);
+    snprintf(cmd, sizeof(cmd), "/usr/bin/gameos-volume set %d >/dev/null 2>&1", pct);
     if (system(cmd) == 0) return;
 
     int raw = 100 - pct;   // Left/Right PCM are attenuation controls
