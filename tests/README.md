@@ -20,6 +20,7 @@ device-presence predicates into a temp sandbox.
 | `test-ui-drawcall.sh` | compiles `tests/host/test-drawcall.cpp` against the real `src/drawcall.cpp`; rectangle intersection/merge/area limits and geometry hash stability (skips when SDL2 dev files are absent) | §10 |
 | `test-theme-tokens.sh` | compiles `tests/host/test-theme-tokens.cpp` against the real `src/i18n.cpp`; the palette schema accepts valid/CRLF files and rejects missing, duplicate, malformed or out-of-range fields as a whole; shipped palettes must match the built-in themes; also runs `scripts/lint-themes.sh` | §10 |
 | `test-motion.sh` | compiles `tests/host/test-motion.cpp` against the real `src/motion.cpp`; sampled easing curves match the spec table, the animator interpolates/retargets/stops, and the L0–L3 frame-budget ladder escalates, ignores isolated spikes and recovers after calm windows | §10 |
+| `test-widget.sh` | compiles `tests/host/test-widget.cpp` against the header-only widget helpers; list-row geometry/hit-testing, switch and slider mapping, dialog panel/button layout, and toast replace/expiry/fade timing | §10 |
 
 The OTA tests need `openssl` with Ed25519 support (OpenSSL 3.x); they print
 `SKIP` only when the host has no openssl at all.
