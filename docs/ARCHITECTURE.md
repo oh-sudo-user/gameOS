@@ -105,6 +105,11 @@ busybox init
 - 模块拆分：`netparse` 把 `gameos-bt` / `gameos-wifi` 的文本输出解析
   （MAC 校验、设备行、扫描去重排序、saved/keyed 标记）从 `main.cpp`
   独立出来，纯标准库实现，由宿主单测覆盖；`main.cpp` 只保留交互与状态。
+- 每游戏设置：`overrides` 读写 `/userdata/system/game_overrides.json`
+  （schema 1，json-c 校验；整份损坏改名为 `.bak`，单条非法只跳过该条），
+  游戏键为「机种:绝对路径|文件大小」。设置页把整数缩放/平滑缩放/GBA 帧跳
+  映射为 RetroArch appendconfig，性能档位走与全局相同的 perf 档；列表控制栏
+  的齿轮（或 START）打开，改动即时原子写入，启动前还会按 mtime 热加载。
 - 触摸：下屏每帧重建命中区；移动超过 12 DP 视为拖动，不再触发点击；页面
   转场期间丢弃触摸，避免点按落在新页面刚建立的命中区上；抬起时重新命中
   同一控件才执行动作。

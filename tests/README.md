@@ -23,6 +23,10 @@ device-presence predicates into a temp sandbox.
 | `test-widget.sh` | compiles `tests/host/test-widget.cpp` against the header-only widget helpers; list-row geometry/hit-testing, switch and slider mapping, dialog panel/button layout, and toast replace/expiry/fade timing | §10 |
 | `test-touch.sh` | compiles `tests/host/test-touch.cpp` against the header-only touch helpers; 12 DP drag threshold and the page-transition touch lock window | §10 |
 | `test-netparse.sh` | compiles `tests/host/test-netparse.cpp` with the real `src/netparse.cpp`; MAC validation, Bluetooth device lines (CRLF, extra tabs, bad rows), WiFi known/status/nets formats, duplicate SSID merge and saved/keyed flags | §10 |
+| `test-overrides.sh` | compiles `tests/host/test-overrides.cpp` with the real `src/overrides.cpp`; schema validation (missing / invalid / oversized / trailing documents get moved to `.bak`), per-entry skipping, atomic save + roundtrip + removal, hot reload by mtime/size, key format and the RetroArch config mapping | §10 |
+
+The override tests need the host `json-c` development files and print `SKIP`
+when they are absent.
 
 The OTA tests need `openssl` with Ed25519 support (OpenSSL 3.x); they print
 `SKIP` only when the host has no openssl at all.

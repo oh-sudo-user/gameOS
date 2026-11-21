@@ -112,6 +112,11 @@ enum TKey {
     T_EMU_CRASH_TITLE, T_EMU_CRASH_BODY,
     // launch animation status lines (bottom panel)
     T_LOAD_CARD, T_LOAD_VERIFY, T_LOAD_START,
+    // per-game settings deck
+    T_CFG_TITLE, T_CFG_NAME, T_CFG_PERF, T_CFG_SCALE, T_CFG_SMOOTH,
+    T_CFG_FRAMESKIP, T_CFG_DEFAULT, T_CFG_LIGHT, T_CFG_HEAVY,
+    T_CFG_SAVED, T_CFG_SAVE_FAIL, T_CFG_RESET, T_CFG_RESET_DONE,
+    T_CFG_HINT,
     T_COUNT
 };
 

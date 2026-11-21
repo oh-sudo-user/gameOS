@@ -15,6 +15,7 @@
 #include "i18n.hpp"
 #include "motion.hpp"
 #include "netparse.hpp"
+#include "overrides.hpp"
 #include "perf.hpp"
 #include "sound.hpp"
 #include "touch.hpp"
@@ -56,7 +57,7 @@ constexpr int CAR_SETTINGS = 7;
 // The definitions live in ui.cpp; this file reads them through ui.hpp.
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
-                    Covers, Activity, Quick, Msg, Confirm };
+                    Covers, Activity, Quick, GameCfg, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt };
 
 // Short stable tag for the frame profiler's log lines; keeps the perf log
@@ -75,6 +76,7 @@ const char* screen_key(Screen s)
     case Screen::Covers:    return "covers";
     case Screen::Activity:  return "activity";
     case Screen::Quick:     return "quick";
+    case Screen::GameCfg:   return "gcfg";
     case Screen::Msg:       return "msg";
     case Screen::Confirm:   return "confirm";
     }
@@ -86,6 +88,7 @@ const char* screen_key(Screen s)
 enum HitId {
     HIT_NONE = 0,
     HIT_BACK, HIT_HOME, HIT_FAV_FILTER, HIT_PLAY, HIT_FAV, HIT_REFRESH,
+    HIT_CFG_GEAR, HIT_CFG_ROW, HIT_CFG_RESET,  // row: a = 0..4
     HIT_SYS,              // a = console index
     HIT_HUB,              // a = 0 activity, 1 quick, 2 settings
     HIT_RECENT,
@@ -255,6 +258,12 @@ struct App {
     int quick_sel = 0, quick_scroll = 0;
     std::vector<QuickEntry> quick;
 
+    // per-game settings deck (game_overrides.json)
+    int cfg_sel = 0;
+    std::string cfg_name;              // keyboard buffer for the custom title
+    std::string cfg_status;            // transient save feedback
+    Uint32 cfg_status_at = 0;
+
     bool running = true;
     int exit_code = 0;
 
@@ -296,6 +305,9 @@ struct App {
 };
 
 App app;
+
+// Custom display title from game_overrides.json, or the file-derived name.
+std::string game_label(const std::string& sys, const Game& g);
 
 // seconds since the previous frame, clamped so a stall (SD scan, resume from
 // sleep) never teleports an animation
@@ -940,7 +952,7 @@ void draw_list(SDL_Renderer* r)
         const Game& g = app.games[idx];
         bool sel = idx == app.sel;
         widget::ListRow row;
-        row.title = g.title;
+        row.title = game_label(c.id, g);
         row.star = fav_contains(c.id, g.title);
         row.badge = on_tf2(g.path) ? "TF2" : "";
         row.dim = !sel;
@@ -1395,6 +1407,135 @@ void wifi_enter()
 }
 
 // ---------------------------------------------------------------------------
+// per-game settings (game_overrides.json, schema 1)
+//
+// The gear in the list's control row opens this deck for the selected game.
+// Every change is written immediately through OverrideStore::put(), so a
+// crash or power-off never loses an edit, and the launch path reads the same
+// store, so nothing else needs to be told about the change.
+// ---------------------------------------------------------------------------
+bool cfg_is_gba()
+{
+    return std::strcmp(consoles()[app.carousel].id, "gba") == 0;
+}
+
+int cfg_row_count()
+{
+    return 4 + (cfg_is_gba() ? 1 : 0);
+}
+
+// Label cache keyed by "<sys>:<path>": game_label() runs for every visible row
+// on both panels each frame, and OverrideStore::find() stats the ROM to build
+// the size-of-file key, which is too much SD I/O at 60 fps.
+static std::map<std::string, std::string> g_label_cache;
+
+std::string game_label(const std::string& sys, const Game& g)
+{
+    const std::string k = sys + ":" + g.path;
+    auto it = g_label_cache.find(k);
+    if (it != g_label_cache.end()) return it->second;
+    const GameOverride* ov = overrides().find(sys, g.path);
+    std::string r = (ov && !ov->title.empty()) ? ov->title : g.title;
+    g_label_cache[k] = r;
+    return r;
+}
+
+GameOverride cfg_current()
+{
+    if (app.games.empty()) return GameOverride{};
+    const Console& c = consoles()[app.carousel];
+    const GameOverride* ov = overrides().find(c.id, app.games[app.sel].path);
+    return ov ? *ov : GameOverride{};
+}
+
+void cfg_store(const GameOverride& ov)
+{
+    if (app.games.empty()) return;
+    const Console& c = consoles()[app.carousel];
+    const std::string key = override_key(c.id, app.games[app.sel].path);
+    bool ok = overrides().put(key, ov);
+    app.cfg_status = tr(ok ? T_CFG_SAVED : T_CFG_SAVE_FAIL);
+    app.cfg_status_at = SDL_GetTicks();
+    char dbg[256];
+    snprintf(dbg, sizeof dbg, "gameos-ui: override %s %s (title=%d perf=%d "
+             "scale=%d smooth=%d skip=%d)\n", ok ? "saved" : "save FAILED",
+             key.c_str(), (int)ov.title.size(), ov.perf, ov.scale_integer,
+             ov.video_smooth, ov.frameskip);
+    ui_dbg(dbg);
+    g_label_cache.clear();
+}
+
+void cfg_cycle(int row)
+{
+    if (app.games.empty()) return;
+    GameOverride ov = cfg_current();
+    switch (row) {
+    case 1: ov.perf = ov.perf < 0 ? 0 : (ov.perf == 0 ? 1 : -1); break;
+    case 2: ov.scale_integer = ov.scale_integer < 0 ? 1
+                            : (ov.scale_integer ? 0 : -1); break;
+    case 3: ov.video_smooth = ov.video_smooth < 0 ? 1
+                            : (ov.video_smooth ? 0 : -1); break;
+    case 4: ov.frameskip = ov.frameskip < 0 ? 0
+                          : (ov.frameskip < 5 ? ov.frameskip + 1 : -1); break;
+    default: return;
+    }
+    sound_play(SND_ADJUST);
+    cfg_store(ov);
+}
+
+void cfg_apply_name();   // defined with the keyboard callback below
+
+void cfg_activate(int row)
+{
+    if (app.games.empty()) return;
+    if (row == 0) {
+        app.cfg_name = cfg_current().title;
+        kb_open(app.cfg_name, tr(T_CFG_NAME), 48, true, false);
+        sound_play(SND_CONFIRM);
+        return;
+    }
+    cfg_cycle(row);
+}
+
+void cfg_reset()
+{
+    if (app.games.empty()) return;
+    sound_play(SND_BACK);
+    cfg_store(GameOverride{});
+    app.cfg_status = tr(T_CFG_RESET_DONE);
+}
+
+void cfg_enter()
+{
+    if (app.games.empty()) return;
+    std::vector<std::string> warn;
+    overrides().reload_if_changed(&warn);
+    for (const auto& w : warn) {
+        char dbg[256];
+        snprintf(dbg, sizeof dbg, "gameos-ui: override warning: %s\n", w.c_str());
+        ui_dbg(dbg);
+    }
+    g_label_cache.clear();
+    app.cfg_sel = 0;
+    app.cfg_status.clear();
+    app.cfg_name.clear();
+    app.screen = Screen::GameCfg;
+}
+
+void cfg_apply_name()
+{
+    if (app.games.empty()) return;
+    std::string t = app.cfg_name;
+    size_t b = t.find_first_not_of(" \t\r\n");
+    size_t e = t.find_last_not_of(" \t\r\n");
+    t = (b == std::string::npos) ? "" : t.substr(b, e - b + 1);
+    if (t.size() > 128) t.resize(128);
+    GameOverride ov = cfg_current();
+    ov.title = t;
+    cfg_store(ov);
+}
+
+// ---------------------------------------------------------------------------
 // first-boot wizard
 //
 // Six questions then a done page. A (right button) acts on the highlighted row,
@@ -1788,6 +1929,10 @@ void setup_activate()
 // fields need no action here; the machine name is applied straight away.
 void setup_kb_done(std::string* target)
 {
+    if (target == &app.cfg_name) {
+        cfg_apply_name();          // per-game custom title: empty clears it
+        return;
+    }
     if (target != &app.setup_name) return;
     if (!valid_name_ui(app.setup_name)) {
         app.setup_status = tr(T_NAME_INVALID);
@@ -2815,6 +2960,9 @@ void enter_selection()
 static void refresh_games()
 {
     sound_play(SND_ADJUST);
+    // pick up custom titles / options before the list rebuilds
+    overrides().reload_if_changed();
+    g_label_cache.clear();
     // the two libraries span every console, so one invalidation is not enough
     if (app.screen == Screen::Activity || app.screen == Screen::Quick) {
         for (int i = 0; i < 5; i++) invalidate_games(i);
@@ -3581,6 +3729,10 @@ void go_back()
     case Screen::Msg:
         app.screen = Screen::Home;
         break;
+    case Screen::GameCfg:
+        if (app.wifi_kb) { kb_cancel(); break; }
+        app.screen = Screen::List;
+        break;
     case Screen::Settings:
         // B first leaves adjust mode, a second press returns home
         if (app.set_adjust >= 0) { app.set_adjust = -1; break; }
@@ -3630,6 +3782,10 @@ void confirm_btn()
         break;
     case Screen::List:
         do_launch();
+        break;
+    case Screen::GameCfg:
+        if (app.wifi_kb) kb_press();
+        else cfg_activate(app.cfg_sel);
         break;
     case Screen::Activity: {
         std::string sys, title;
@@ -3780,6 +3936,14 @@ void start_btn()
         sound_play(SND_BACK);
         setup_finish();          // START skips the whole wizard
     }
+    else if (app.screen == Screen::List && !app.games.empty()) {
+        sound_play(SND_CONFIRM);
+        cfg_enter();             // START on a game list = per-game settings
+    }
+    else if (app.screen == Screen::GameCfg) {
+        sound_play(SND_BACK);
+        app.screen = Screen::List;
+    }
     else if (app.screen != Screen::Confirm) {
         sound_play(SND_BACK);
         app.screen = Screen::Home;
@@ -3796,6 +3960,8 @@ void navigate(int dx, int dy)
         if (app.screen == Screen::Home && dx) sound_play(SND_SWITCH);
         else if (app.screen == Screen::Settings && app.set_adjust >= 0 && dx)
             sound_play(SND_ADJUST);
+        else if (app.screen == Screen::GameCfg && dx && !app.wifi_kb)
+            ;                       // cfg_cycle() rings as it applies the value
         else sound_play(SND_MOVE);
     }
     switch (app.screen) {
@@ -3805,6 +3971,21 @@ void navigate(int dx, int dy)
     case Screen::List:
         if (dy && !app.games.empty())
             app.sel = std::clamp(app.sel + dy, 0, (int)app.games.size() - 1);
+        break;
+    case Screen::GameCfg:
+        if (app.wifi_kb) {
+            const auto& rows = kb_rows();
+            if (dy) {
+                app.kb_r = std::clamp(app.kb_r + dy, 0, (int)rows.size() - 1);
+                app.kb_c = std::min(app.kb_c, (int)rows[app.kb_r].size() - 1);
+            }
+            if (dx) app.kb_c = std::clamp(app.kb_c + dx, 0,
+                                          (int)rows[app.kb_r].size() - 1);
+        } else if (dy) {
+            app.cfg_sel = std::clamp(app.cfg_sel + dy, 0, cfg_row_count() - 1);
+        } else if (dx && !app.games.empty()) {
+            cfg_cycle(app.cfg_sel);
+        }
         break;
     case Screen::Activity:
         if (dx) {
@@ -4222,7 +4403,7 @@ void deck_list(SDL_Renderer* r)
         }
         const Game& g = app.games[idx];
         widget::ListRow row;
-        row.title = g.title;
+        row.title = game_label(c.id, g);
         row.star = fav_contains(c.id, g.title);
         row.badge = on_tf2(g.path) ? "TF2" : "";
         row.dim = !sel;
@@ -4246,6 +4427,10 @@ void deck_list(SDL_Renderer* r)
     deck_round(r, { 200, 644, 64, 64 });
     icon_refresh(r, 214, 658, 36, C_TEXT);
     hit_add({ 200, 644, 64, 64 }, HIT_REFRESH);
+
+    deck_round(r, { 500, 644, 64, 64 });
+    icon_gear(r, 514, 658, 36, C_TEXT);
+    hit_add({ 500, 644, 64, 64 }, HIT_CFG_GEAR);
 
     SDL_Rect filt = { 300, 644, 176, 64 };
     rrect(r, filt, 32, app.fav_only ? with_alpha(C_ACCENT, 40)
@@ -4685,6 +4870,110 @@ void deck_saves(SDL_Renderer* r)
         hit_add(del, HIT_SAVE_DEL);
         deck_hint(r, tr(T_TOUCH_LIST));
     }
+}
+
+// ---------------------------------------------------------------------------
+// per-game settings deck: one entry per override field, written immediately
+// ---------------------------------------------------------------------------
+void draw_cfg(SDL_Renderer* r)
+{
+    draw_background(r);
+    draw_topbar(r);
+    if (app.games.empty()) return;
+    const Console& c = consoles()[app.carousel];
+    const Game& g = app.games[app.sel];
+    const std::string title = game_label(c.id, g);
+    const GameOverride ov = cfg_current();
+
+    top_plate(r, W / 2, 290, 142);
+    std::string cv = cover_path(c.id, g.title);
+    SDL_Texture* ct = cv.empty() ? nullptr : cover_tex(r, cv);
+    if (ct) {
+        cover_fit(r, ct, { W / 2 - 72, 176, 144, 184 }, 235);
+    } else {
+        int idx = console_icon_index(c.id);
+        if (idx >= 0 && app.icons[idx])
+            draw_tex(r, app.icons[idx], { W / 2 - 58, 232, 116, 116 }, 220);
+        else
+            icon_gamepad(r, W / 2 - 56, 234, 112, C_ACCENT);
+    }
+
+    // the original file name stays visible while a custom title is active,
+    // otherwise the deck and the list would disagree about what is on disk
+    std::string detail = (title != g.title) ? g.title : "";
+    top_hero(r, tr(T_CFG_TITLE), title, console_name(c.id),
+             ov.any() ? C_ACCENT : C_DIM, detail);
+}
+
+void deck_cfg(SDL_Renderer* r)
+{
+    if (app.games.empty()) { app.screen = Screen::List; return; }
+    const Console& c = consoles()[app.carousel];
+    const Game& g = app.games[app.sel];
+    const GameOverride ov = cfg_current();
+    const int rows = cfg_row_count();
+
+    deck_header(r, tr(T_CFG_TITLE), game_label(c.id, g).c_str());
+
+    const char* labels[5] = { tr(T_CFG_NAME), tr(T_CFG_PERF), tr(T_CFG_SCALE),
+                              tr(T_CFG_SMOOTH), tr(T_CFG_FRAMESKIP) };
+    const int top = 88, rowh = 82;
+    char skip[8];
+    for (int i = 0; i < rows; i++) {
+        std::string val;
+        switch (i) {
+        case 0:
+            val = ov.title.empty() ? std::string(tr(T_CFG_DEFAULT))
+                                   : ellipsize(app.f_small, ov.title, 520);
+            break;
+        case 1:
+            val = ov.perf < 0 ? tr(T_CFG_DEFAULT)
+                : tr(ov.perf ? T_CFG_HEAVY : T_CFG_LIGHT);
+            break;
+        case 2:
+            val = ov.scale_integer < 0 ? tr(T_CFG_DEFAULT)
+                : tr(ov.scale_integer ? T_ON : T_OFF);
+            break;
+        case 3:
+            val = ov.video_smooth < 0 ? tr(T_CFG_DEFAULT)
+                : tr(ov.video_smooth ? T_ON : T_OFF);
+            break;
+        default:
+            if (ov.frameskip < 0) {
+                val = tr(T_CFG_DEFAULT);
+            } else {
+                snprintf(skip, sizeof skip, "%d", ov.frameskip);
+                val = skip;
+            }
+            break;
+        }
+        bool sel = i == app.cfg_sel;
+        SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+        deck_row(r, rc, sel, labels[i], "", val,
+                 sel ? C_ACCENT : with_alpha(C_TEXT, 220));
+        hit_add(rc, HIT_CFG_ROW, i);
+    }
+
+    if (!app.cfg_status.empty() &&
+        SDL_GetTicks() - app.cfg_status_at < 2400) {
+        bool good = app.cfg_status == tr(T_CFG_SAVED) ||
+                    app.cfg_status == tr(T_CFG_RESET_DONE);
+        text(r, app.f_small, app.cfg_status, 48, top + rows * rowh + 8,
+             good ? C_GREEN : C_AMBER);
+    }
+
+    deck_round(r, { 48, 644, 64, 64 });
+    icon_chevron(r, 60, 656, 40, C_TEXT, true);
+    hit_add({ 48, 644, 64, 64 }, HIT_BACK);
+
+    SDL_Rect rst = { W - 48 - 260, 644, 260, 64 };
+    rrect(r, rst, 18, with_alpha(C_RED, 32));
+    rrect_stroke(r, rst, 18, with_alpha(C_RED, 150), 1);
+    text(r, app.f_body, tr(T_CFG_RESET), rst.x + rst.w / 2, rst.y + 12, C_RED,
+         Align::Center);
+    hit_add(rst, HIT_CFG_RESET);
+
+    deck_hint(r, tr(T_CFG_HINT));
 }
 
 // ---------------------------------------------------------------------------
@@ -5313,6 +5602,7 @@ void draw_deck_content(SDL_Renderer* r)
     case Screen::Covers:    deck_covers(r); break;
     case Screen::Activity:  deck_activity(r); break;
     case Screen::Quick:     deck_quick(r); break;
+    case Screen::GameCfg:   deck_cfg(r); break;
     case Screen::Msg:       deck_msg(r); break;
     case Screen::Confirm:   deck_confirm(r); break;
     }
@@ -5428,6 +5718,19 @@ void deck_activate(int id, int a, int b)
         break;
     case HIT_PLAY:
         confirm_btn();      // launches the focused row on list/quick/activity
+        break;
+    case HIT_CFG_GEAR:
+        sound_play(SND_CONFIRM);
+        cfg_enter();
+        break;
+    case HIT_CFG_ROW:
+        if (a >= 0 && a < cfg_row_count()) {
+            app.cfg_sel = a;
+            cfg_activate(a);
+        }
+        break;
+    case HIT_CFG_RESET:
+        cfg_reset();
         break;
     case HIT_SET_TILE:
         app.set_sel = std::clamp(a, 0, 12);
@@ -5724,6 +6027,8 @@ void handle_button(SDL_ControllerButtonEvent& b)
             int keep = app.save_sel;
             app.saves = scan_saves();
             app.save_sel = std::clamp(keep, 0, std::max(0, (int)app.saves.size() - 1));
+        } else if (app.screen == Screen::GameCfg) {
+            // per-game edits are already written straight to the store
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -5754,9 +6059,13 @@ void handle_button(SDL_ControllerButtonEvent& b)
             rebuild_quick();
             app.quick_tab = 0;
             app.screen = Screen::Quick;
+        } else if (app.screen == Screen::GameCfg) {
+            // no favourites toggle from the per-game deck
         } else toggle_fav();
         break;
-    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: toggle_fav_only(); break; // physical R
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: // physical R
+        if (app.screen != Screen::GameCfg) toggle_fav_only();
+        break;
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: go_back(); break;          // physical L
     case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
     case SDL_CONTROLLER_BUTTON_GUIDE:  // physical MENU (BTN_MODE)
@@ -5807,6 +6116,8 @@ void handle_key(SDL_KeyboardEvent& k)
             int keep = app.save_sel;
             app.saves = scan_saves();
             app.save_sel = std::clamp(keep, 0, std::max(0, (int)app.saves.size() - 1));
+        } else if (app.screen == Screen::GameCfg) {
+            // per-game edits are already written straight to the store
         } else refresh_games();
         break;
     case SDLK_f:
@@ -5837,9 +6148,13 @@ void handle_key(SDL_KeyboardEvent& k)
             rebuild_quick();
             app.quick_tab = 0;
             app.screen = Screen::Quick;
+        } else if (app.screen == Screen::GameCfg) {
+            // no favourites toggle from the per-game deck
         } else toggle_fav();
         break;
-    case SDLK_TAB: toggle_fav_only(); break;
+    case SDLK_TAB:
+        if (app.screen != Screen::GameCfg) toggle_fav_only();
+        break;
     case SDLK_MINUS:
         volume_set(app.settings.volume - 5, true);
         break;
@@ -5919,6 +6234,7 @@ void draw_current(SDL_Renderer* r)
     case Screen::Saves:     draw_saves(r); break;
     case Screen::Activity:  draw_activity(r); break;
     case Screen::Quick:     draw_quick(r); break;
+    case Screen::GameCfg:   draw_cfg(r); break;
     case Screen::Update:    draw_update(r); break;
     case Screen::Setup:     draw_setup(r); break;
     case Screen::Covers:    draw_covers(r); break;
@@ -5951,6 +6267,14 @@ int main(int, char**)
 
     app.settings = load_settings();
     g_lang = (Lang)std::clamp(app.settings.language, 0, (int)LANG_COUNT - 1);
+    {
+        std::vector<std::string> ov_warn;
+        overrides().load(&ov_warn);
+        for (const auto& w : ov_warn) {
+            std::string dbg = "gameos-ui: override: " + w + "\n";
+            ui_dbg(dbg.c_str());
+        }
+    }
     app.carousel = app.settings.last_console;
     apply_theme(app.settings.theme);
     app.saves = scan_saves();

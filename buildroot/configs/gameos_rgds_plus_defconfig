@@ -164,6 +164,8 @@ BR2_PACKAGE_LIBOPENSSL_BIN=y
 BR2_PACKAGE_LIBCURL=y
 BR2_PACKAGE_LIBCURL_CURL=y
 BR2_PACKAGE_CA_CERTIFICATES=y
+# Per-game overrides (game_overrides.json) are validated with json-c.
+BR2_PACKAGE_JSON_C=y
 
 # --- gameOS components ---
 BR2_PACKAGE_GAMEOS_INPUTD=y

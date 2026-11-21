@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gameos.hpp"
 #include "i18n.hpp"
+#include "overrides.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -464,8 +465,8 @@ static void apply_perf(const char* profile)
 }
 
 static int run_emu(const Console& c, const Game& g,
-                   const std::string& override_cfg, long& seconds,
-                   Diag& d, int attempt, const std::string& sid)
+                   const std::string& override_cfg, const std::string& perf,
+                   long& seconds, Diag& d, int attempt, const std::string& sid)
 {
     d.line("----- attempt %d begin -----", attempt);
     if (attempt > 1) {
@@ -580,7 +581,7 @@ static int run_emu(const Console& c, const Game& g,
     // The parent owns the performance profile switch (never the child): apply
     // the console's tier now and restore the UI tier on EVERY exit path,
     // including exec failure (child _exit(127)) and waitpid errors.
-    apply_perf(perf_profile(c));
+    apply_perf(perf.c_str());
     // Publish game.pid only once the child is visibly its own group leader; a
     // pause request that raced the fork would otherwise SIGSTOP the UI. A
     // short retry covers the instant between fork and the child's setpgid.
@@ -745,12 +746,26 @@ int launch_game(const Console& c, const Game& g)
     // A safe cfg persisted by an older build must not apply any more: it may
     // have JIT/threads disabled, which reads as "game runs in slow motion".
     unlink(NDS_SAFE_CFG);
-    std::string cfg;
+
+    std::vector<std::string> ov_warn;
+    overrides().reload_if_changed(&ov_warn);
+    for (const auto& w : ov_warn) d.line("override: %s", w.c_str());
+    const GameOverride* ov = overrides().find(c.id, g.path);
+    const std::string base_cfg = ov ? override_cfg(*ov, c.id) : "";
+    const std::string perf = (ov && ov->perf >= 0)
+                             ? (ov->perf ? "heavy" : "light")
+                             : perf_profile(c);
+    d.line("override key=%s perf=%s title=%s",
+           override_key(c.id, g.path).c_str(), perf.c_str(),
+           ov && !ov->title.empty() ? ov->title.c_str() : "(file name)");
+    if (!base_cfg.empty()) d.text("per-game cfg", base_cfg);
+
+    std::string cfg = base_cfg;
     dump_session_header(d, c, g, cfg);
     if (!c.core) d.stat_info("ppsspp-run", "/usr/bin/ppsspp-run");
 
     long secs = 0;
-    int rc = run_emu(c, g, cfg, secs, d, 1, sid);
+    int rc = run_emu(c, g, cfg, perf, secs, d, 1, sid);
     if (!c.dual || rc == 0 || rc == 127 || secs >= 30) {
         d.line("launch finished rc=%d runtime=%lds (no retry)", rc, secs);
         return rc;
@@ -758,8 +773,8 @@ int launch_game(const Console& c, const Game& g)
 
     d.line("early NDS failure rc=%d runtime=%lds -> retry without threaded renderer",
            rc, secs);
-    cfg = NDS_SAFE1;
-    rc = run_emu(c, g, cfg, secs, d, 2, sid);
+    cfg = std::string(NDS_SAFE1) + base_cfg;
+    rc = run_emu(c, g, cfg, perf, secs, d, 2, sid);
     if (rc == 0) {
         d.line("retry with threaded renderer off worked (not persisted)");
         return 0;
@@ -771,8 +786,8 @@ int launch_game(const Console& c, const Game& g)
 
     d.line("second failure rc=%d runtime=%lds -> retry with JIT disabled too",
            rc, secs);
-    cfg = NDS_SAFE2;
-    rc = run_emu(c, g, cfg, secs, d, 3, sid);
+    cfg = std::string(NDS_SAFE2) + base_cfg;
+    rc = run_emu(c, g, cfg, perf, secs, d, 3, sid);
     if (rc == 0)
         d.line("retry with threaded renderer + JIT off worked (not persisted)");
     return rc;
