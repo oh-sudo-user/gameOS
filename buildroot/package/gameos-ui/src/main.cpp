@@ -13,6 +13,7 @@
 #include "drawcall.hpp"
 #include "gameos.hpp"
 #include "i18n.hpp"
+#include "motion.hpp"
 #include "perf.hpp"
 #include "sound.hpp"
 #include "touch.hpp"
@@ -324,6 +325,7 @@ float damp(float cur, float target, float rate = 14.0f)
 SDL_Texture* g_scene_tex[2] = { nullptr, nullptr };
 int g_scene_cur = 0;
 Screen g_last_screen = Screen::Home;
+motion::Degrade g_degrade;
 int g_last_setup_step = -1;
 Uint32 g_trans_start = 0;
 extern SDL_Texture* g_deck_tex[2];   // defined with the bottom deck
@@ -6102,6 +6104,7 @@ int main(int, char**)
 
     while (app.running) {
         perf::frame_begin();
+        uint64_t ui_cpu_t0 = motion::cpu_now_ns();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             switch (e.type) {
@@ -6222,22 +6225,27 @@ int main(int, char**)
         SDL_SetRenderTarget(r, nullptr);
 
         const bool dialog = app.screen == Screen::Msg || app.screen == Screen::Confirm;
-        const Uint32 dur = dialog ? 160 : 200;
+        const int mlevel = g_degrade.level();
+        const Uint32 dur = dialog ? (Uint32)motion::kEnterMs
+                                  : (Uint32)motion::kNormalMs;
         Uint32 trans_elapsed = now - g_trans_start;
         SDL_Rect full = { 0, 0, W, H };
-        if (had_scene && trans_elapsed < dur) {
-            float p = ease_out(trans_elapsed / (float)dur);
+        if (had_scene && trans_elapsed < dur && mlevel < motion::Degrade::kL3) {
+            float p = motion::ease(motion::Ease::Enter,
+                                   trans_elapsed / (float)dur);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur ^ 1], 255);
             perf::note_draw();
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur ^ 1], nullptr, &full);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur], (Uint8)(255 * p));
             SDL_Rect dst;
-            if (dialog) {
+            if (dialog && mlevel < motion::Degrade::kL1) {
                 int dw = (int)(W * (0.92f + 0.08f * p));
                 int dh = (int)(H * (0.92f + 0.08f * p));
                 dst = { (W - dw) / 2, (H - dh) / 2, dw, dh };
-            } else {
+            } else if (!dialog && mlevel < motion::Degrade::kL2) {
                 dst = { 0, (int)((1 - p) * 26), W, H };
+            } else {
+                dst = full;
             }
             perf::note_draw();
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur], nullptr, &dst);
@@ -6248,6 +6256,16 @@ int main(int, char**)
         }
         SDL_RenderPresent(r);
         draw_deck();
+        double ui_cpu_ms = (double)(motion::cpu_now_ns() - ui_cpu_t0) / 1e6;
+        g_degrade.sample(ui_cpu_ms);
+        static int logged_motion = -1;
+        if (g_degrade.level() != logged_motion) {
+            logged_motion = g_degrade.level();
+            char msg[64];
+            snprintf(msg, sizeof msg, "gameos-ui: motion L%d (%.2f ms)\n",
+                     logged_motion, ui_cpu_ms);
+            ui_dbg(msg);
+        }
         perf::frame_end(screen_key(app.screen));
         // cap at ~60 fps: uncapped rendering burned CPU and battery for no
         // visible gain on a 60 Hz panel
