@@ -135,6 +135,11 @@ bool battery_charging();
 // ---------------------------------------------------------------------------
 int launch_game(const Console& c, const Game& g);
 
+// Ask the kernel to read the emulator, core, shared libraries, game and
+// state into the page cache. Non-blocking: called before the launch
+// animation so that read-ahead overlaps it.
+void warm_launch_files(const Console& c, const Game& g);
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------

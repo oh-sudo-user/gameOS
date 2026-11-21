@@ -66,8 +66,25 @@ if [ -n "$TARGET" ]; then
         echo "== target payload"
         for f in usr/bin/gameos-ui usr/bin/gameos-splash usr/bin/gameos-update \
                  usr/bin/gameos-bt usr/bin/gameos-wifi usr/bin/retroarch \
+                 usr/bin/PPSSPPSDL \
+                 usr/lib/libcpu_features.so usr/lib/libimgui.so \
+                 usr/lib/libglslang.so.12 usr/lib/libSPIRV.so.12 \
                  etc/gameos/ota-pub.pem \
                  usr/share/gameos/fonts/NotoSansSC-Regular.otf; do
+            if [ -s "$TARGET/$f" ]; then
+                echo "ok   $f"
+            else
+                note_fail "target missing $f"
+            fi
+        done
+        echo "== libretro cores"
+        for f in usr/lib/libretro/melonds_libretro.so \
+                 usr/lib/libretro/gpsp_libretro.so \
+                 usr/lib/libretro/mgba_libretro.so \
+                 usr/lib/libretro/pcsx_rearmed_libretro.so \
+                 usr/lib/libretro/fceumm_libretro.so \
+                 usr/lib/libretro/snes9x_libretro.so \
+                 usr/lib/libretro/genesis_plus_gx_libretro.so; do
             if [ -s "$TARGET/$f" ]; then
                 echo "ok   $f"
             else

@@ -178,6 +178,12 @@ busybox init
   时间，30 帧窗口 P95 超过 4 ms 时按 L0→L3 逐级降级（页面转场在 L1
   去缩放、L2 只淡入淡出、L3 硬切），连续 120 帧低于预算一半才回退一级，
   回退后 300 帧内不再变化；级别变化写入 `system/logs/ui.log`。
+- 启动路径：点游戏后先对模拟器、核心、GL 库、ROM 前段和存档发
+  `posix_fadvise(WILLNEED)` 预读，让磁盘读取与 0.9 s 插卡动画并行；
+  只预热 ROM 的前 8–16 MB，其余仍按需读盘。RetroArch 关闭 8 MB 中文字体
+  的三份加载（`video_font_enable=false`，rgui 自带位图字体）和载入动画；
+  NDS ROM 用 mmap 懒加载，512 MB 卡带不再整份读进内存；NDS 的
+  `--verbose` 改为仅在 `system/ra-verbose` 存在时开启。
 - 主题调色板：`assets/themes/<key>/palette.conf`（schema v1：七个
   `#rrggbb` 颜色 + 面板透明度/染色三个字节）。开机 splash 与 UI 共用
   同一文件；缺字段、重复键或非法值会让整个文件被忽略并回退到内置色板。

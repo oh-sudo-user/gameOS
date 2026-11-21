@@ -90,6 +90,13 @@ GAMEOS_PPSSPP_CONF_OPTS = \
 # assets/ alone places lang where I18n expects it (assets/lang/<id>.ini).
 define GAMEOS_PPSSPP_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/PPSSPPSDL $(TARGET_DIR)/usr/bin/PPSSPPSDL
+	# PPSSPP links its own bundled helpers (glslang/SPIRV/imgui/cpu_features)
+	# as shared objects and leaves them in lib/ next to the build. Without
+	# them the loader exits before main() ("error while loading shared
+	# libraries"), so a PSP game can never start.
+	for lib in libcpu_features.so libimgui.so libglslang.so.12 libSPIRV.so.12; do \
+		$(INSTALL) -D -m 0755 "$(@D)/lib/$$lib" "$(TARGET_DIR)/usr/lib/$$lib"; \
+	done
 	mkdir -p $(TARGET_DIR)/usr/share/ppsspp
 	cp -dpfr $(@D)/assets $(TARGET_DIR)/usr/share/ppsspp/
 endef

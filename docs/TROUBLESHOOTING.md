@@ -110,7 +110,13 @@ gameOS 不会写入机器内部存储，随便折腾。
 4. 把 `ui-perf.log` 附到 Issue。排查完删掉 `ui-perf.on` 即关闭记录，
    日志文件留着不影响运行。
 
-## 11. OTA 更新失败：manifest signature invalid
+## 11. 启动诊断：RetroArch 日志太安静
+
+为了缩短启动时间，NDS 默认不再带 `--verbose`。需要详细日志时，在卡的
+`system` 文件夹里新建一个空文件 `ra-verbose`，下次启动 NDS 游戏就会把
+详细日志写进 `system/logs/retroarch.log`；查完删掉即可恢复安静。
+
+## 12. OTA 更新失败：manifest signature invalid
 
 1.0.0 之后的固件只安装带有效 Ed25519 签名的 release。更新状态文件
 `/run/gameos/update-state` 里出现 `manifest signature invalid` 时：

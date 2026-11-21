@@ -74,6 +74,260 @@ static int panel_height()
 }
 
 // ---------------------------------------------------------------------------
+// Launch read-ahead
+//
+// The first launch after power-on otherwise pays for every byte the dynamic
+// loader and the emulator touch: RetroArch itself, its GL/Mesa stack and the
+// core. MELONDS maps a ROM lazily, but its boot code still has to come off
+// the card. Ask the kernel for these files while the card-insert animation is
+// on screen; the animation becomes the I/O window instead of dead time.
+//
+// posix_fadvise(WILLNEED) is a hint: it returns immediately and the kernel
+// reads in the background. Files that do not exist (no state yet, no box art)
+// are silently skipped. ROMs are capped: a 512 MiB NDS cartridge is mapped on
+// demand by the core, and reading all of it would evict useful cache.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr long long kMB = 1024 * 1024;
+
+void warm_path(const std::string& path, long long max_bytes)
+{
+    if (path.empty()) return;
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    struct stat st = {};
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+        off_t len = st.st_size;
+        if (max_bytes > 0 && len > max_bytes) len = (off_t)max_bytes;
+#ifdef POSIX_FADV_WILLNEED
+        (void)posix_fadvise(fd, 0, len, POSIX_FADV_WILLNEED);
+#endif
+    }
+    close(fd);
+}
+
+void warm_dir(const std::string& dir, long long max_file_bytes)
+{
+    DIR* dp = opendir(dir.c_str());
+    if (!dp) return;
+    struct dirent* e;
+    while ((e = readdir(dp))) {
+        if (e->d_name[0] == '.') continue;
+        warm_path(dir + "/" + e->d_name, max_file_bytes);
+    }
+    closedir(dp);
+}
+
+std::string lower_str(std::string s)
+{
+    for (char& ch : s)
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    return s;
+}
+
+std::string ext_of(const std::string& path)
+{
+    size_t slash = path.find_last_of('/');
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+        return "";
+    return lower_str(path.substr(dot));
+}
+
+std::string dir_of(const std::string& path)
+{
+    size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? "." : path.substr(0, slash);
+}
+
+std::string join_path(const std::string& dir, const std::string& name)
+{
+    if (name.empty() || name[0] == '/') return name;
+    if (dir.empty() || dir == ".") return name;
+    return dir + "/" + name;
+}
+
+std::string trim(const std::string& s)
+{
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return a == std::string::npos ? "" : s.substr(a, b - a + 1);
+}
+
+// First FILE entry of a .cue sheet (quoted or bare), e.g.
+//   FILE "Game (Track 1).bin" BINARY
+std::string cue_first_file(const std::string& cue)
+{
+    std::string body = read_file(cue);
+    size_t pos = 0;
+    while (pos < body.size()) {
+        size_t nl = body.find('\n', pos);
+        if (nl == std::string::npos) nl = body.size();
+        std::string line = trim(body.substr(pos, nl - pos));
+        pos = nl + 1;
+        if (line.size() < 5 || lower_str(line.substr(0, 4)) != "file")
+            continue;
+        size_t p = 4;
+        if (p >= line.size() || (line[p] != ' ' && line[p] != '\t')) continue;
+        while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) p++;
+        if (p >= line.size()) break;
+        if (line[p] == '"') {
+            size_t q = line.find('"', p + 1);
+            if (q != std::string::npos) return line.substr(p + 1, q - p - 1);
+        } else {
+            size_t q = line.find_first_of(" \t", p);
+            return line.substr(p, q == std::string::npos ? std::string::npos : q - p);
+        }
+        break;
+    }
+    return "";
+}
+
+// First non-comment line of an .m3u playlist.
+std::string m3u_first_entry(const std::string& m3u)
+{
+    std::string body = read_file(m3u);
+    size_t pos = 0;
+    while (pos < body.size()) {
+        size_t nl = body.find('\n', pos);
+        if (nl == std::string::npos) nl = body.size();
+        std::string line = trim(body.substr(pos, nl - pos));
+        pos = nl + 1;
+        if (!line.empty() && line[0] != '#') return line;
+    }
+    return "";
+}
+
+void warm_rom(const Console& c, const Game& g)
+{
+    const std::string& path = g.path;
+    const std::string ext = ext_of(path);
+    long long cap = 0;                       // 0 = whole file
+    if (strcmp(c.id, "nds") == 0)      cap = 8 * kMB;
+    else if (strcmp(c.id, "ps1") == 0) cap = 16 * kMB;
+    else if (strcmp(c.id, "psp") == 0) cap = 16 * kMB;
+
+    if (ext == ".cue") {
+        warm_path(path, 0);                  // the tiny sheet itself
+        std::string bin = cue_first_file(path);
+        if (!bin.empty())
+            warm_path(join_path(dir_of(path), bin), 16 * kMB);
+        return;
+    }
+    if (ext == ".m3u") {
+        warm_path(path, 0);
+        std::string first = m3u_first_entry(path);
+        std::string target = join_path(dir_of(path), first);
+        if (ext_of(target) == ".cue") {
+            warm_path(target, 0);
+            std::string bin = cue_first_file(target);
+            if (!bin.empty())
+                warm_path(join_path(dir_of(target), bin), 16 * kMB);
+        } else {
+            warm_path(target, 8 * kMB);
+        }
+        return;
+    }
+    warm_path(path, cap);
+}
+
+void warm_retroarch(const Console& c)
+{
+    warm_path("/usr/bin/retroarch", 0);
+    if (c.core)
+        warm_path(std::string("/usr/lib/libretro/") + c.core, 0);
+    warm_path("/etc/retroarch.cfg", 0);
+    if (c.appendcfg && *c.appendcfg)
+        warm_path(std::string("/usr/share/gameos/retroarch/") + c.appendcfg, 0);
+    warm_path("/tmp/gameos-ra-lang.cfg", 0);
+    warm_path("/userdata/system/retroarch/cheevos.cfg", 0);
+
+    // The KMS/GL stack RetroArch loads before it can show a frame. libgallium
+    // carries Panfrost; libLLVM is a NEEDED dependency of it but only its
+    // relocation/rodata head is touched at load (the code pages are for
+    // llvmpipe and are left cold on purpose).
+    static const char* libs[] = {
+        "/usr/lib/libEGL.so.1", "/usr/lib/libGLESv2.so.2",
+        "/usr/lib/libgbm.so.1", "/usr/lib/libdrm.so.2",
+        "/usr/lib/libexpat.so.1", "/usr/lib/libz.so.1",
+        "/usr/lib/libasound.so.2", "/usr/lib/libfreetype.so.6",
+        "/usr/lib/libudev.so.1", "/usr/lib/libstdc++.so.6",
+        "/lib/libgcc_s.so.1", "/lib/libm.so.6", "/lib/libc.so.6",
+        "/lib/ld-linux-aarch64.so.1",
+    };
+    for (const char* p : libs) warm_path(p, 0);
+
+    glob_t gl = {};
+    if (glob("/usr/lib/libgallium-*.so", GLOB_NOSORT, nullptr, &gl) == 0) {
+        for (size_t i = 0; i < gl.gl_pathc; i++) warm_path(gl.gl_pathv[i], 0);
+        globfree(&gl);
+    }
+    glob_t llvm = {};
+    if (glob("/usr/lib/libLLVM.so.*", GLOB_NOSORT, nullptr, &llvm) == 0) {
+        for (size_t i = 0; i < llvm.gl_pathc; i++)
+            warm_path(llvm.gl_pathv[i], 8 * kMB);
+        globfree(&llvm);
+    }
+
+    // BIOS files are small and read during core load.
+    warm_dir("/userdata/bios", 4 * kMB);
+}
+
+// Auto-resume state (RetroArch names it after the ROM without extension).
+// Ordered after the ROM: the core needs its boot code first, the state only
+// once the game has been initialised.
+void warm_save_state(const Game& g)
+{
+    std::string base = g.path.substr(g.path.find_last_of('/') + 1);
+    size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos) base.resize(dot);
+    warm_path("/userdata/saves/" + base + ".state.auto", 0);
+    warm_path("/userdata/saves/" + base + ".state", 0);
+    warm_path("/userdata/saves/" + base + ".srm", 0);
+}
+
+void warm_ppsspp()
+{
+    warm_path("/usr/bin/PPSSPPSDL", 0);
+    static const char* libs[] = {
+        "/usr/lib/libSDL2-2.0.so.0", "/usr/lib/libSDL2_ttf-2.0.so.0",
+        "/usr/lib/libcpu_features.so", "/usr/lib/libimgui.so",
+        "/usr/lib/libglslang.so.12", "/usr/lib/libSPIRV.so.12",
+    };
+    for (const char* p : libs) warm_path(p, 0);
+    warm_path("/userdata/system/ppsspp/.config/ppsspp/PSP/SYSTEM/ppsspp.ini", 0);
+
+    // Assets PPSSPP touches before the first frame: the UI atlas, controller
+    // database, per-language strings and the VFPU lookup tables (loaded on
+    // first use, so a 3D game hits them during boot). Flash0 fonts are left
+    // cold: games load them later, on demand.
+    static const char* assets[] = {
+        "/usr/share/ppsspp/assets/font_atlas.zim",
+        "/usr/share/ppsspp/assets/ppge_atlas.zim",
+        "/usr/share/ppsspp/assets/gamecontrollerdb.txt",
+        "/usr/share/ppsspp/assets/langregion.ini",
+    };
+    for (const char* p : assets) warm_path(p, 0);
+    warm_path(std::string("/usr/share/ppsspp/assets/lang/") +
+              ppsspp_locale() + ".ini", 0);
+    warm_dir("/usr/share/ppsspp/assets/vfpu", 1 * kMB);
+}
+
+} // namespace
+
+void warm_launch_files(const Console& c, const Game& g)
+{
+    if (c.core)
+        warm_retroarch(c);
+    else
+        warm_ppsspp();
+    warm_rom(c, g);
+    if (c.core)
+        warm_save_state(g);
+}
+
+// ---------------------------------------------------------------------------
 // Persistent launch diagnostics
 //
 // The UI comes back to life after a black-screen emulator exit, so the card
@@ -518,7 +772,12 @@ static int run_emu(const Console& c, const Game& g,
             args.push_back("--appendconfig");
             args.push_back("/tmp/gameos-ra-override.cfg");
         }
-        if (c.dual) args.push_back("--verbose");
+        // NDS used to run with --verbose unconditionally. That writes a few
+        // hundred extra lines to the exFAT log during the very seconds we are
+        // trying to save. Keep it available for diagnosis: create an empty
+        // /userdata/system/ra-verbose and the next launch logs verbosely.
+        if (c.dual && access("/userdata/system/ra-verbose", F_OK) == 0)
+            args.push_back("--verbose");
         args.push_back(g.path);
     } else {
         args = { "ppsspp-run", g.path };

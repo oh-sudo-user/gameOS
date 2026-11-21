@@ -4057,14 +4057,16 @@ static std::string log_tail_line()
 // ---------------------------------------------------------------------------
 // Launch animation. The top panel shows the game card dropping into the
 // handheld's slot; the deck reports the read (percent, sectors, activity).
-// The timeline is 2.6 animation seconds but runs at 1.7x, so the wall-clock
-// cost is ~1.5 s: the UI is torn down first and the emulator starts only
-// afterwards (a shared DRM master is what made the old gate fail).
+// The timeline is 2.6 animation seconds but runs at 2.9x, so the wall-clock
+// cost is ~0.9 s: the UI is torn down first and the emulator starts only
+// afterwards (a shared DRM master is what made the old gate fail). The same
+// window is used to pull the emulator, core and libraries into the page
+// cache, so RetroArch does not start by faulting them off the SD card.
 // Host preview: GAMEOS_LAUNCH_SHOT=<dir> dumps both panels at the times in
 // GAMEOS_LAUNCH_AT (animation seconds).
 // ---------------------------------------------------------------------------
 constexpr float LAUNCH_DUR = 2.6f;           // animation seconds, not wall
-constexpr float LAUNCH_SPEED = 1.7f;         // animation seconds per real second
+constexpr float LAUNCH_SPEED = 2.9f;         // animation seconds per real second
 constexpr float LAUNCH_HIT = 0.82f;          // card reaches the slot
 
 void anim_save_panel(SDL_Renderer* r, const std::string& path)
@@ -4680,6 +4682,10 @@ static void launch_one(const Console& c, const Game& g)
                  c.id, g.title.c_str(), g.path.c_str());
         ui_dbg(dbg);
     }
+    // Start pulling the emulator, its core and libraries into the page cache
+    // now. The animation below gives the kernel ~0.9 s to read them, so the
+    // emulator's own startup is not serialised behind SD-card reads.
+    warm_launch_files(c, g);
     // Every console, NDS included: play the animation and drop DRM master
     // BEFORE the emulator starts. The old dual-screen overlap ran RetroArch
     // while the UI still held master; its first modeset was denied, it
