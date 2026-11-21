@@ -5750,7 +5750,8 @@ void deck_touch(const TouchEvent& e)
     }
     if (e.phase == TouchPhase::Move) {
         if (app.t_id == HIT_NONE) return;
-        if (std::abs(e.x - app.t_x0) > 10 || std::abs(e.y - app.t_y0) > 10)
+        if (std::abs(e.x - app.t_x0) > kTouchSlop ||
+            std::abs(e.y - app.t_y0) > kTouchSlop)
             app.t_moved = true;
         if (app.slider_drag) {
             int pct = std::clamp((int)((e.x - g_slider_rect.x) * 100 /
@@ -6145,7 +6146,19 @@ int main(int, char**)
         covers_poll();
 
         TouchEvent te;
-        while (touch_poll(te)) deck_touch(te);
+        const Uint32 tnow = SDL_GetTicks();
+        const bool tblocked = touch_blocked(tnow, g_trans_start,
+                                            (Uint32)motion::kNormalMs);
+        static bool t_lock_seen = false;
+        if (tblocked && !t_lock_seen) {
+            app.t_id = HIT_NONE;
+            app.slider_drag = false;
+        }
+        t_lock_seen = tblocked;
+        while (touch_poll(te)) {
+            if (tblocked) continue;
+            deck_touch(te);
+        }
         volume_poll();
         settings_flush(false);
 

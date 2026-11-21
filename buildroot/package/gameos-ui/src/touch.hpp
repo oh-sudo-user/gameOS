@@ -4,6 +4,15 @@
 
 namespace gameos {
 
+// Design-space movement that turns a tap into a drag (UI spec: 12 DP).
+constexpr float kTouchSlop = 12.0f;
+
+// Screen transitions lock touch so a tap cannot land on the incoming layout.
+inline bool touch_blocked(unsigned now, unsigned trans_start, unsigned dur)
+{
+    return now >= trans_start && now - trans_start < dur;
+}
+
 enum class TouchPhase { Down, Move, Up };
 
 struct TouchEvent {
