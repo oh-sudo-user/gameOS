@@ -1,1 +1,1 @@
-gameOS 1.0.0 release 2026-11-20 (NDS JIT block linking/PGO, ROM mmap, flip perf, wifi/bt discovery)
+gameOS 1.1.0 release 2026-11-21 (profile-guided builds for every libretro core, hash-verified)

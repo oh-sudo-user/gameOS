@@ -9,12 +9,22 @@ GAMEOS_CORE_FCEUMM_SITE = $(call github,libretro,libretro-fceumm,$(GAMEOS_CORE_F
 GAMEOS_CORE_FCEUMM_LICENSE = GPL-2.0+
 GAMEOS_CORE_FCEUMM_LICENSE_FILES = Copying
 
+# PGO: pgo/ holds counters from an instrumented build at this same
+# output/build path, profiled with 240pee.nes (1800 frames). Host bench:
+# parity (975 -> 968 fps, within run noise), identical video/audio hashes;
+# kept because it is harmless and the core gets smaller.
+GAMEOS_CORE_FCEUMM_PGO_DIR := \
+	$(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))/pgo
+
+GAMEOS_CORE_FCEUMM_PGO_FLAGS = \
+	-fprofile-use=$(GAMEOS_CORE_FCEUMM_PGO_DIR) -fprofile-correction
+
 # Same libretro Makefile caveat as the other gameOS cores: the core appends
 # its own includes/defines to CFLAGS, so flags go through the environment.
 define GAMEOS_CORE_FCEUMM_BUILD_CMDS
 	$(TARGET_MAKE_ENV) \
-	CFLAGS="$(TARGET_CFLAGS)" \
-	CXXFLAGS="$(TARGET_CXXFLAGS)" \
+	CFLAGS="$(TARGET_CFLAGS) $(GAMEOS_CORE_FCEUMM_PGO_FLAGS)" \
+	CXXFLAGS="$(TARGET_CXXFLAGS) $(GAMEOS_CORE_FCEUMM_PGO_FLAGS)" \
 	LDFLAGS="$(TARGET_LDFLAGS)" \
 	$(MAKE) -C $(@D) \
 		CC="$(TARGET_CC)" CXX="$(TARGET_CXX)" \

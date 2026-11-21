@@ -79,22 +79,25 @@ RetroArch 的 KMS/DRM context 补丁（`GAMEOS_DUALSCREEN=1` 时启用）：
 
 | id | 平台 | 运行方式 | 核心/程序 | 来源与许可证 |
 |---|---|---|---|---|
-| nds | Nintendo DS | RetroArch | `melonds_libretro.so` | melonDS 上游 + gameOS 的 JIT/内存映射补丁，GPL-3.0+ |
-| gba | GBA | RetroArch | `gpsp_libretro.so` | libretro/gpSP 上游，GPL-2.0+ |
-| gbc | GB / GBC | RetroArch | `mgba_libretro.so` | mGBA 0.10.5 上游，MPL-2.0 |
-| ps1 | PlayStation | RetroArch | `pcsx_rearmed_libretro.so` | libretro/pcsx_rearmed 上游，GPL-2.0+ |
+| nds | Nintendo DS | RetroArch | `melonds_libretro.so` | melonDS 上游 + gameOS 的 JIT/内存映射补丁 + PGO，GPL-3.0+ |
+| gba | GBA | RetroArch | `gpsp_libretro.so` | libretro/gpSP 上游 + gameOS PGO 构建，GPL-2.0+ |
+| gbc | GB / GBC | RetroArch | `mgba_libretro.so` | mGBA 0.10.5 上游 + gameOS PGO 构建，MPL-2.0 |
+| ps1 | PlayStation | RetroArch | `pcsx_rearmed_libretro.so` | libretro/pcsx_rearmed 上游（ari64 dynarec + neon GPU；PGO 无收益，保持默认），GPL-2.0+ |
 | psp | PSP | 独立进程 | `ppsspp-run` → PPSSPP v1.20.4 | PPSSPP 上游，GPL-2.0+ |
-| nes | NES / Famicom | RetroArch | `fceumm_libretro.so` | libretro-fceumm `77468e5`，GPL-2.0+ |
-| snes | SNES | RetroArch | `snes9x_libretro.so` | libretro/snes9x `204ea1c`，Snes9x 非商业许可证 |
-| md | Mega Drive / Genesis | RetroArch | `genesis_plus_gx_libretro.so` | Genesis-Plus-GX `4fd32ef`，非商业许可证；`HAVE_CDROM=0` |
+| nes | NES / Famicom | RetroArch | `fceumm_libretro.so` | libretro-fceumm `77468e5` + gameOS PGO 构建，GPL-2.0+ |
+| snes | SNES | RetroArch | `snes9x_libretro.so` | libretro/snes9x `204ea1c` + gameOS PGO 构建，Snes9x 非商业许可证 |
+| md | Mega Drive / Genesis | RetroArch | `genesis_plus_gx_libretro.so` | Genesis-Plus-GX `4fd32ef` + gameOS PGO 构建，非商业许可证；`HAVE_CDROM=0` |
 
-NES/SNES/MD 三套为**成熟上游核心按固定提交引入**，并非自研；这是路线图
-§26 的短期选择。每核心的版本、依赖、产物大小、已支持格式与未验证项见
-[PLATFORMS.md](PLATFORMS.md)。`md` 不包含 Sega CD / 32X 支持，因此扫描
-器不把 `.32x` 当作 MD ROM。
+所有核心都沿用上游引擎，**不是把模拟器重写一遍**；gameOS 的做法与
+`game nds` 相同：上游源码 + gameOS 补丁/构建调优 + 按真实运行剖面优化
+（PGO），并用同一款 ROM 的前后哈希确认画面与声音逐字节一致。每个核心的
+做法、实测收益与副作用见 [CORES.md](CORES.md)。每核心的版本、依赖、产物
+大小、已支持格式与未验证项见 [PLATFORMS.md](PLATFORMS.md)。`md` 不包含
+Sega CD / 32X 支持，因此扫描器不把 `.32x` 当作 MD ROM。
 
 三个新核心由 Buildroot 外部树中的 `gameos-core-fceumm`、
-`gameos-core-snes9x`、`gameos-core-genesis-plus-gx` 构建，产物安装到
+`gameos-core-snes9x`、`gameos-core-genesis-plus-gx` 构建，各包内 `pgo/`
+存放剖面计数，配方以 `-fprofile-use` 引用；产物安装到
 `/usr/lib/libretro/`；RetroArch 通过 `nes.cfg` / `snes.cfg` / `md.cfg`
 选择整数缩放、关闭平滑。RetroArch 核心清单与前端注册表必须同时增加
 平台，`tests/host/test-platforms.cpp` 会校验 id、扩展名唯一性以及
@@ -181,7 +184,9 @@ busybox init
   `scripts/lint-themes.sh` 在测试中校验四个主题，并确认文件与内置值一致。
 - 模拟器：melonDS（JIT）、gpSP（arm64 dynarec，默认 GBA 核心）、mGBA（GB/GBC）、
   PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x），以及 NES/SNES/MD 的 FCEUmm /
-  Snes9x / Genesis Plus GX；后三者是固定提交的上游核心，不是自研。
+  Snes9x / Genesis Plus GX。除 PPSSPP 外都沿用上游引擎，gameOS 在此基础上
+  做补丁、构建调优和 PGO；PCSX-ReARMed 的热代码由运行时 dynarec 生成，
+  PGO 无收益，保持上游默认。详见 [CORES.md](CORES.md)。
 - 数据分区：exFAT（GAMEOS 盘符），Windows/macOS 可直接拷游戏。
 
 ## 构建

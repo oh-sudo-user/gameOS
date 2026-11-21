@@ -10,6 +10,12 @@ GAMEOS_CORE_PCSX_LICENSE = GPL-2.0+
 GAMEOS_CORE_PCSX_LICENSE_FILES = COPYING
 GAMEOS_CORE_PCSX_DEPENDENCIES = zlib libpng
 
+# No PGO here, unlike the other gameOS cores. The hot path is the ari64
+# dynarec's runtime-generated code, which compile-time profiles cannot
+# reach: an instrumented profile-use build measured +1% (noise, 3x1800
+# frames of nortis), and -O3 measured the same as -O2 on nortis and the
+# 240p suite. Upstream defaults (neon GPU, ari64, async GPU) are kept.
+#
 # Same libretro Makefile caveat as gameos-core-melonds: flags must go
 # through the environment, not the make command line, or the core's
 # own 'CFLAGS +=' include paths/defines are overridden. CC/CXX on the

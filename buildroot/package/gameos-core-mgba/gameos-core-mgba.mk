@@ -32,6 +32,23 @@ GAMEOS_CORE_MGBA_CONF_OPTS = \
 	-DM_CORE_GBA=ON \
 	-DM_CORE_GB=ON
 
+# PGO: pgo/ holds counters from an instrumented in-source build at this
+# same output/build path, profiled with 3600 frames of gb240p.gb plus
+# 1800 frames of gbatris.gba (GB-weighted: mGBA is the default GB/GBC
+# core here, while GBA defaults to game gba/gpSP and mGBA GBA is the
+# fallback). Host bench: GB +1%, GBA +6% fps, both with identical
+# video/audio hashes. LIBMGBA_ONLY disables mGBA's own BUILD_PGO path,
+# so the flags go straight into CMAKE_{C,CXX}_FLAGS.
+GAMEOS_CORE_MGBA_PGO_DIR := \
+	$(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))/pgo
+
+GAMEOS_CORE_MGBA_PGO_FLAGS = \
+	-fprofile-use=$(GAMEOS_CORE_MGBA_PGO_DIR) -fprofile-correction
+
+GAMEOS_CORE_MGBA_CONF_OPTS += \
+	-DCMAKE_C_FLAGS="$(TARGET_CFLAGS) $(GAMEOS_CORE_MGBA_PGO_FLAGS)" \
+	-DCMAKE_CXX_FLAGS="$(TARGET_CXXFLAGS) $(GAMEOS_CORE_MGBA_PGO_FLAGS)"
+
 # cmake-package defaults to IN-SOURCE build (pkg-cmake.mk:
 # SUPPORTS_IN_SOURCE_BUILD ?= YES -> BUILDDIR = $(@D)); buildroot-build
 # is only used when that is set to NO (like llvm). Run 12 confirmed
