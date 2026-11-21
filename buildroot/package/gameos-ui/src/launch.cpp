@@ -436,14 +436,15 @@ void dump_session_header(Diag& d, const Console& c, const Game& g,
 } // namespace
 
 // Performance profile by console identity (never guessed from the ROM
-// extension): NDS/PS1/PSP are heavy, GBA/GBC are balanced. gameos-perf maps
-// these strategy names to governor preferences in /etc/gameos/perf.conf.
+// extension): NDS/PS1/PSP are heavy; GBA/GBC/NES/SNES/MD are two-chip
+// systems that fit in the balanced tier. gameos-perf maps these strategy
+// names to governor preferences in /etc/gameos/perf.conf.
 static const char* perf_profile(const Console& c)
 {
     if (c.dual) return "performance";           // NDS spans both panels
     if (strcmp(c.id, "ps1") == 0) return "performance";
     if (strcmp(c.id, "psp") == 0) return "performance";
-    return "balanced";                          // GBA / GBC
+    return "balanced";
 }
 
 // Per-game override: 0 powersave, 1 balanced, 2 performance.
@@ -461,7 +462,12 @@ static const char* subsystem_name(const Console& c)
 {
     if (c.dual) return "game nds";
     if (strcmp(c.id, "gba") == 0) return "game gba";
+    if (strcmp(c.id, "gbc") == 0) return "game gbc";
+    if (strcmp(c.id, "ps1") == 0) return "game ps1";
     if (strcmp(c.id, "psp") == 0) return "game psp";
+    if (strcmp(c.id, "nes") == 0) return "game nes";
+    if (strcmp(c.id, "snes") == 0) return "game snes";
+    if (strcmp(c.id, "md") == 0) return "game md";
     return "gameos";
 }
 

@@ -831,16 +831,23 @@ const char* tr(TKey k)
 const char* console_name(const char* id)
 {
     // index by Console::id; order matches consoles() in library.cpp
-    static const char* names[LANG_COUNT][5] = {
-        { "任天堂 DS", "GBA 掌机", "GB / GBC", "索尼 PS1", "索尼 PSP" },
-        { "任天堂 DS", "GBA 掌機", "GB / GBC", "索尼 PS1", "索尼 PSP" },
-        { "ニンテンドーDS", "ゲームボーイアドバンス", "ゲームボーイ", "Sony PS1", "Sony PSP" },
-        { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP" },
-        { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP" },
-        { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP" },
+    static const char* names[LANG_COUNT][8] = {
+        { "任天堂 DS", "GBA 掌机", "GB / GBC", "索尼 PS1", "索尼 PSP",
+          "任天堂 NES", "超级任天堂", "世嘉 MD" },
+        { "任天堂 DS", "GBA 掌機", "GB / GBC", "索尼 PS1", "索尼 PSP",
+          "任天堂 NES", "超級任天堂", "世嘉 MD" },
+        { "ニンテンドーDS", "ゲームボーイアドバンス", "ゲームボーイ", "Sony PS1", "Sony PSP",
+          "ファミリーコンピュータ", "スーパーファミコン", "メガドライブ" },
+        { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP",
+          "Nintendo NES", "Super Nintendo", "Sega Mega Drive" },
+        { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP",
+          "Nintendo NES", "Super Nintendo", "Sega Mega Drive" },
+        { "Nintendo DS", "Game Boy Advance", "Game Boy / GBC", "Sony PS1", "Sony PSP",
+          "Nintendo NES", "Super Nintendo", "Sega Mega Drive" },
     };
-    static const char* ids[5] = { "nds", "gba", "gbc", "ps1", "psp" };
-    for (int i = 0; i < 5; i++)
+    static const char* ids[8] = { "nds", "gba", "gbc", "ps1", "psp",
+                                  "nes", "snes", "md" };
+    for (int i = 0; i < 8; i++)
         if (strcmp(id, ids[i]) == 0) return names[g_lang][i];
     return id;
 }

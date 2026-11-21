@@ -68,8 +68,37 @@ RetroArch 的 KMS/DRM context 补丁（`GAMEOS_DUALSCREEN=1` 时启用）：
 - melonDS 核心竖排布局 256×384 → **4 倍整数缩放**，一屏一个 NDS 画面；
 - 触摸补丁把下屏触摸坐标映射到 y∈[768,1536)，即 NDS 下屏。
 
-其它平台（GBA/GBC/PS1/PSP）单屏运行于上屏，下屏保持熄灭——
-与真机插 GBA 卡时的行为一致。
+其它平台单屏运行于上屏，下屏保持熄灭——与真机插 GBA 卡时的行为一致。
+（DS 模式下 NDS 双屏直出；NES/SNES/MD 也走上屏。）
+
+## 平台与核心来源
+
+前端 `src/library.cpp` 的注册表是唯一平台清单；启动时按 `id` 找到对应
+核心与配置。子系统名统一为 `game <id>`（如 `game nes`），只是日志/脚本层
+的命名，**不代表该核心为自研**。
+
+| id | 平台 | 运行方式 | 核心/程序 | 来源与许可证 |
+|---|---|---|---|---|
+| nds | Nintendo DS | RetroArch | `melonds_libretro.so` | melonDS 上游 + gameOS 的 JIT/内存映射补丁，GPL-3.0+ |
+| gba | GBA | RetroArch | `gpsp_libretro.so` | libretro/gpSP 上游，GPL-2.0+ |
+| gbc | GB / GBC | RetroArch | `mgba_libretro.so` | mGBA 0.10.5 上游，MPL-2.0 |
+| ps1 | PlayStation | RetroArch | `pcsx_rearmed_libretro.so` | libretro/pcsx_rearmed 上游，GPL-2.0+ |
+| psp | PSP | 独立进程 | `ppsspp-run` → PPSSPP v1.20.4 | PPSSPP 上游，GPL-2.0+ |
+| nes | NES / Famicom | RetroArch | `fceumm_libretro.so` | libretro-fceumm `77468e5`，GPL-2.0+ |
+| snes | SNES | RetroArch | `snes9x_libretro.so` | libretro/snes9x `204ea1c`，Snes9x 非商业许可证 |
+| md | Mega Drive / Genesis | RetroArch | `genesis_plus_gx_libretro.so` | Genesis-Plus-GX `4fd32ef`，非商业许可证；`HAVE_CDROM=0` |
+
+NES/SNES/MD 三套为**成熟上游核心按固定提交引入**，并非自研；这是路线图
+§26 的短期选择。每核心的版本、依赖、产物大小、已支持格式与未验证项见
+[PLATFORMS.md](PLATFORMS.md)。`md` 不包含 Sega CD / 32X 支持，因此扫描
+器不把 `.32x` 当作 MD ROM。
+
+三个新核心由 Buildroot 外部树中的 `gameos-core-fceumm`、
+`gameos-core-snes9x`、`gameos-core-genesis-plus-gx` 构建，产物安装到
+`/usr/lib/libretro/`；RetroArch 通过 `nes.cfg` / `snes.cfg` / `md.cfg`
+选择整数缩放、关闭平滑。RetroArch 核心清单与前端注册表必须同时增加
+平台，`tests/host/test-platforms.cpp` 会校验 id、扩展名唯一性以及
+同目录 `.md`/`.bin` 去重。
 
 ## 用户空间
 

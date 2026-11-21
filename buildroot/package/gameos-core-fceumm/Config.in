@@ -1,0 +1,9 @@
+config BR2_PACKAGE_GAMEOS_CORE_FCEUMM
+	bool "gameos-core-fceumm (NES)"
+	depends on BR2_aarch64
+	help
+	  FCEUmm libretro core for NES / Famicom emulation.
+	  Upstream: https://github.com/libretro/libretro-fceumm
+	  License: GPL-2.0-or-later (see Copying in the source tree).
+	  Mapper coverage and accuracy are the same as the widely used
+	  RetroArch core; gameOS does not patch the emulator.

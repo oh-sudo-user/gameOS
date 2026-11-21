@@ -1,0 +1,9 @@
+config BR2_PACKAGE_GAMEOS_CORE_SNES9X
+	bool "gameos-core-snes9x (SNES)"
+	depends on BR2_aarch64
+	help
+	  Snes9x libretro core for Super Nintendo emulation.
+	  Upstream: https://github.com/libretro/snes9x
+	  License: Snes9x non-commercial license (see LICENSE); redistribution
+	  is permitted for non-commercial projects. gameOS ships it as a
+	  separate dynamically loaded core.

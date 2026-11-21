@@ -49,11 +49,11 @@ namespace {
 constexpr int W = 1024;
 constexpr int H = 768;
 
-// Home carousel: five consoles, then the two libraries, then settings.
-constexpr int CAR_N        = 8;
-constexpr int CAR_ACTIVITY = 5;
-constexpr int CAR_QUICK    = 6;
-constexpr int CAR_SETTINGS = 7;
+// Home carousel: every console, then the two libraries, then settings.
+int car_activity() { return (int)consoles().size(); }
+int car_quick()    { return car_activity() + 1; }
+int car_settings() { return car_activity() + 2; }
+int car_total()    { return car_activity() + 3; }
 
 // Mutable palette: apply_theme() swaps the whole set (light themes need
 // dark text and light panels), so every draw call stays theme-correct.
@@ -143,12 +143,12 @@ struct App {
     SDL_Texture* ambient = nullptr;
     SDL_Texture* logo = nullptr;
     SDL_Texture* logo_bot = nullptr;
-    SDL_Texture* icons[5] = {};
+    std::vector<SDL_Texture*> icons;
     SDL_Texture* icon_settings = nullptr;
     SDL_Texture* icon_activity = nullptr;
     SDL_Texture* icon_quick = nullptr;
     // the deck has its own renderer; textures cannot cross renderers
-    SDL_Texture* icons_bot[5] = {};
+    std::vector<SDL_Texture*> icons_bot;
     SDL_Texture* icon_settings_bot = nullptr;
     SDL_Texture* icon_activity_bot = nullptr;
     SDL_Texture* icon_quick_bot = nullptr;
@@ -157,7 +157,7 @@ struct App {
 
     Settings settings;
     Screen screen = Screen::Home;
-    int carousel = 0;              // 0..4 consoles, 5 = settings
+    int carousel = 0;              // consoles first, then activity/quick/settings
     std::vector<Game> games;
     int sel = 0;
     int scroll = 0;
@@ -371,13 +371,18 @@ extern SDL_Texture* g_deck_tex[2];   // defined with the bottom deck
 // would hammer the SD card and burn CPU, so scan once per console and reuse
 // the result until invalidated (entering a console, returning from an
 // emulator, or an explicit refresh).
-static std::vector<Game> g_games_cache[5];
-static bool g_games_valid[5] = { false, false, false, false, false };
+static std::vector<std::vector<Game>> g_games_cache;
+static std::vector<bool> g_games_valid;
 
 static const std::vector<Game>& games_for(int idx)
 {
     static const std::vector<Game> empty;
-    if (idx < 0 || idx >= 5) return empty;
+    const int n = (int)consoles().size();
+    if (idx < 0 || idx >= n) return empty;
+    if ((int)g_games_cache.size() < n) {
+        g_games_cache.resize(n);
+        g_games_valid.resize(n, false);
+    }
     if (!g_games_valid[idx]) {
         g_games_cache[idx] = scan_games(consoles()[idx]);
         g_games_valid[idx] = true;
@@ -387,7 +392,8 @@ static const std::vector<Game>& games_for(int idx)
 
 static void invalidate_games(int idx)
 {
-    if (idx >= 0 && idx < 5) g_games_valid[idx] = false;
+    if (idx >= 0 && idx < (int)g_games_valid.size())
+        g_games_valid[idx] = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,9 +402,10 @@ static void invalidate_games(int idx)
 
 int console_index(const std::string& id)
 {
-    for (int i = 0; i < 5; i++)
-        if (id == consoles()[i].id) return i;
-    return 5;   // unknown system: sorts last, never launches
+    const auto& cons = consoles();
+    for (int i = 0; i < (int)cons.size(); i++)
+        if (id == cons[i].id) return i;
+    return (int)cons.size();   // unknown system: sorts last, never launches
 }
 
 // Short badge for a stored system id. A log entry can outlive the console list
@@ -406,7 +413,7 @@ int console_index(const std::string& id)
 std::string console_badge(const std::string& id)
 {
     int i = console_index(id);
-    return (i < 5) ? consoles()[i].name_en : "?";
+    return (i < (int)consoles().size()) ? consoles()[i].name_en : "?";
 }
 
 // ---------------------------------------------------------------------------
@@ -532,15 +539,19 @@ void load_theme_assets()
     app.ambient = app.ren_bot ? load_tex(app.ren_bot, dir + "/ambient_bg.png") : nullptr;
     app.logo    = load_tex(app.ren_top, dir + "/logo.png");
     app.logo_bot = app.ren_bot ? load_tex(app.ren_bot, dir + "/logo.png") : nullptr;
-    const char* ids[] = { "nds", "gba", "gbc", "ps1", "psp" };
-    for (int i = 0; i < 5; i++)
-        app.icons[i] = load_tex(app.ren_top, dir + "/console_" + ids[i] + ".png");
+    const auto& cons = consoles();
+    app.icons.assign(cons.size(), nullptr);
+    for (size_t i = 0; i < cons.size(); i++)
+        app.icons[i] = load_tex(app.ren_top,
+                                dir + "/console_" + cons[i].id + ".png");
     app.icon_settings = load_tex(app.ren_top, dir + "/icon_settings.png");
     app.icon_activity = load_tex(app.ren_top, dir + "/icon_activity.png");
     app.icon_quick    = load_tex(app.ren_top, dir + "/icon_quick.png");
     if (app.ren_bot) {
-        for (int i = 0; i < 5; i++)
-            app.icons_bot[i] = load_tex(app.ren_bot, dir + "/console_" + ids[i] + ".png");
+        app.icons_bot.assign(cons.size(), nullptr);
+        for (size_t i = 0; i < cons.size(); i++)
+            app.icons_bot[i] = load_tex(app.ren_bot,
+                                        dir + "/console_" + cons[i].id + ".png");
         app.icon_settings_bot = load_tex(app.ren_bot, dir + "/icon_settings.png");
         app.icon_activity_bot = load_tex(app.ren_bot, dir + "/icon_activity.png");
         app.icon_quick_bot    = load_tex(app.ren_bot, dir + "/icon_quick.png");
@@ -809,7 +820,8 @@ void draw_home(SDL_Renderer* r)
     draw_topbar(r);
 
     const auto& cons = consoles();
-    const int total = CAR_N;
+    const int ncons = (int)cons.size();
+    const int total = car_total();
 
     app.car_f = damp(app.car_f, (float)app.carousel, 11.0f);
 
@@ -834,13 +846,14 @@ void draw_home(SDL_Renderer* r)
             rrect_stroke(r, plate, 56, rgba(255, 255, 255, 18), 1);
         }
 
-        SDL_Texture* icon = (i < 5) ? app.icons[i]
-                          : (i == CAR_ACTIVITY) ? app.icon_activity
-                          : (i == CAR_QUICK)    ? app.icon_quick
-                                                : app.icon_settings;
-        const char* badge = (i < 5) ? cons[i].name_en
-                          : (i == CAR_ACTIVITY) ? "ACT"
-                          : (i == CAR_QUICK)    ? "FAV" : "SET";
+        SDL_Texture* icon = (i < ncons && i < (int)app.icons.size())
+                                ? app.icons[i]
+                          : (i == car_activity()) ? app.icon_activity
+                          : (i == car_quick())    ? app.icon_quick
+                                                  : app.icon_settings;
+        const char* badge = (i < ncons) ? cons[i].name_en
+                          : (i == car_activity()) ? "ACT"
+                          : (i == car_quick())    ? "FAV" : "SET";
         if (icon) {
             SDL_Rect dst = { cx - size / 2, cy - size / 2, size, size };
             draw_tex(r, icon, dst, alpha);
@@ -855,17 +868,17 @@ void draw_home(SDL_Renderer* r)
     rrect(r, { W / 2 - 36, 466, 72, 5 }, 3, C_ACCENT);
 
     std::string name, sub;
-    if (app.carousel < 5) {
+    if (app.carousel < ncons) {
         const Console& c = cons[app.carousel];
         name = console_name(c.id);
         const auto& games = games_for(app.carousel);
         char b[128];
         snprintf(b, sizeof(b), tr(T_GAMES_FMT), c.name_en, games.size());
         sub = b;
-    } else if (app.carousel == CAR_ACTIVITY) {
+    } else if (app.carousel == car_activity()) {
         name = tr(T_ACTIVITY);
         sub = tr(T_ACTIVITY_SUB);
-    } else if (app.carousel == CAR_QUICK) {
+    } else if (app.carousel == car_quick()) {
         name = tr(T_QUICK);
         sub = tr(T_QUICK_SUB);
     } else {
@@ -926,9 +939,12 @@ void draw_list(SDL_Renderer* r)
                                         : tr(T_NO_GAMES);
         SDL_Rect cardrc = { 212, 212, 600, 340 };
         card(r, cardrc, 32, false, 236);
-        if (app.icons[app.carousel]) {
+        SDL_Texture* empty_icon =
+            (app.carousel >= 0 && app.carousel < (int)app.icons.size())
+                ? app.icons[app.carousel] : nullptr;
+        if (empty_icon) {
             SDL_Rect dst = { W / 2 - 42, 252, 84, 84 };
-            draw_tex(r, app.icons[app.carousel], dst, 150);
+            draw_tex(r, empty_icon, dst, 150);
         } else {
             icon_image(r, W / 2 - 32, 262, 64, C_DIM);
         }
@@ -1824,7 +1840,7 @@ void fs_finish_tf2_write()
 
 void fs_library_changed()
 {
-    for (int i = 0; i < 5; i++) invalidate_games(i);
+    for (int i = 0; i < (int)consoles().size(); i++) invalidate_games(i);
     app.recent_ok = false;
     app.recent_at = 0;
     g_label_cache.clear();
@@ -3450,7 +3466,7 @@ static QuickEntry resolve_entry(const std::string& sys, const std::string& title
     e.sys = sys;
     e.game.title = title;
     int ci = console_index(sys);
-    if (ci < 5) {
+    if (ci < (int)consoles().size()) {
         e.con = ci;
         for (const auto& g : games_for(ci)) {
             if (g.title == title) {
@@ -3516,7 +3532,7 @@ static void rebuild_activity()
     app.act_total = activity_total();
 
     std::vector<LibEntry> lib;
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < (int)consoles().size(); i++)
         for (const auto& g : games_for(i))
             lib.push_back(LibEntry{ consoles()[i].id, g.title });
     app.act_picks = activity_recommend(lib, 12);
@@ -3596,17 +3612,17 @@ static void cycle_lang(int dir = 1)
 
 void enter_selection()
 {
-    if (app.carousel == CAR_SETTINGS) {
+    if (app.carousel == car_settings()) {
         app.screen = Screen::Settings;
         app.set_sel = 0;
         return;
     }
-    if (app.carousel == CAR_ACTIVITY) {
+    if (app.carousel == car_activity()) {
         rebuild_activity();
         app.screen = Screen::Activity;
         return;
     }
-    if (app.carousel == CAR_QUICK) {
+    if (app.carousel == car_quick()) {
         rebuild_quick();
         app.screen = Screen::Quick;
         return;
@@ -3627,7 +3643,7 @@ static void refresh_games()
     g_label_cache.clear();
     // the two libraries span every console, so one invalidation is not enough
     if (app.screen == Screen::Activity || app.screen == Screen::Quick) {
-        for (int i = 0; i < 5; i++) invalidate_games(i);
+        for (int i = 0; i < (int)consoles().size(); i++) invalidate_games(i);
         if (app.screen == Screen::Activity) {
             int keep = app.act_sel;
             rebuild_activity();
@@ -3656,7 +3672,7 @@ static void tf2_poll()
     app.tf2_mounted = s.find("state=mounted") != std::string::npos;
     if (s == seen) return;
     seen = std::move(s);
-    for (int i = 0; i < 5; i++) invalidate_games(i);
+    for (int i = 0; i < (int)consoles().size(); i++) invalidate_games(i);
     if (app.screen == Screen::List) rebuild_list();
     else if (app.screen == Screen::Quick) rebuild_quick();
     else if (app.screen == Screen::Activity) {
@@ -3720,7 +3736,7 @@ void anim_save_panel(SDL_Renderer* r, const std::string& path)
 int console_icon_index(const char* id)
 {
     const auto& cons = consoles();
-    for (int i = 0; i < (int)cons.size() && i < 5; i++)
+    for (int i = 0; i < (int)cons.size(); i++)
         if (strcmp(cons[i].id, id) == 0) return i;
     return -1;
 }
@@ -4262,8 +4278,10 @@ void launch_anim(const Console& c, const Game& g)
     SDL_Texture* cover_b = (cpath.empty() || !app.ren_bot)
                              ? nullptr : cover_tex(app.ren_bot, cpath);
     int idx = console_icon_index(c.id);
-    SDL_Texture* icon_t = (idx >= 0) ? app.icons[idx] : nullptr;
-    SDL_Texture* icon_b = (idx >= 0 && app.ren_bot) ? app.icons_bot[idx] : nullptr;
+    SDL_Texture* icon_t = (idx >= 0 && idx < (int)app.icons.size())
+                              ? app.icons[idx] : nullptr;
+    SDL_Texture* icon_b = (idx >= 0 && idx < (int)app.icons_bot.size() && app.ren_bot)
+                              ? app.icons_bot[idx] : nullptr;
     SDL_Texture* card = build_launch_card(app.ren_top, c, g, cover_t, icon_t);
 
     const char* shotdir = getenv("GAMEOS_LAUNCH_SHOT");
@@ -4655,7 +4673,10 @@ void navigate(int dx, int dy)
     }
     switch (app.screen) {
     case Screen::Home:
-        if (dx) app.carousel = (app.carousel + dx + CAR_N) % CAR_N;
+        if (dx) {
+            const int total = car_total();
+            app.carousel = (app.carousel + dx + total) % total;
+        }
         break;
     case Screen::List:
         if (dy && !app.games.empty())
@@ -4975,9 +4996,14 @@ void deck_home(SDL_Renderer* r)
         rrect(r, art, 18, rgba(255, 255, 255, 10));
         if (cv) {
             draw_tex(r, cv, art);
-        } else if (app.icons_bot[app.recent.con]) {
-            SDL_Rect dst = { 82, y + 32, 72, 72 };
-            draw_tex(r, app.icons_bot[app.recent.con], dst, 180);
+        } else {
+            SDL_Texture* ric =
+                (app.recent.con >= 0 && app.recent.con < (int)app.icons_bot.size())
+                    ? app.icons_bot[app.recent.con] : nullptr;
+            if (ric) {
+                SDL_Rect dst = { 82, y + 32, 72, 72 };
+                draw_tex(r, ric, dst, 180);
+            }
         }
         text(r, app.f_small, tr(T_RECENT), 192, y + 22, C_ACCENT);
         text(r, app.f_body, ellipsize(app.f_body, app.recent.game.title, 620),
@@ -5000,33 +5026,44 @@ void deck_home(SDL_Renderer* r)
     hit_add(rc, HIT_RECENT);
     y += 160;
 
-    // the five consoles: one tap opens, like the physical shortcut it is
-    SDL_Rect swipe = { 48, y, 928, 212 };
+    // Every console gets a tile. Four per row keeps eight platforms visible
+    // without turning the deck into a scrolling wall; a swipe still moves the
+    // carousel on the top screen.
+    const int ncons = (int)consoles().size();
+    const int cols = 4;
+    const int rows = (ncons + cols - 1) / cols;
+    const int gap = 12;
+    const int tw = (928 - (cols - 1) * gap) / cols;
+    const int th = 144;
+    SDL_Rect swipe = { 48, y, 928, rows * th + (rows - 1) * gap };
     hit_add(swipe, HIT_SYS, -1);           // background horizontal swipe
-    for (int i = 0; i < 5; i++) {
-        SDL_Rect tile = { 48 + i * 188, y, 176, 212 };
+    for (int i = 0; i < ncons; i++) {
+        SDL_Rect tile = { 48 + (i % cols) * (tw + gap),
+                          y + (i / cols) * (th + gap), tw, th };
         bool sel = app.carousel == i;
         if (sel) card(r, tile, 24, true, 238);
         else {
             rrect(r, tile, 24, rgba(255, 255, 255, 7));
             rrect_stroke(r, tile, 24, rgba(255, 255, 255, 10), 1);
         }
-        if (app.icons_bot[i]) {
-            SDL_Rect dst = { tile.x + 20, tile.y + 24, 56, 56 };
+        if (i < (int)app.icons_bot.size() && app.icons_bot[i]) {
+            SDL_Rect dst = { tile.x + 16, tile.y + 16, 44, 44 };
             draw_tex(r, app.icons_bot[i], dst, sel ? 255 : 200);
+            text(r, app.f_small, consoles()[i].name_en, tile.x + 70, tile.y + 22,
+                 sel ? C_ACCENT : C_DIM);
         } else {
-            text(r, app.f_title, consoles()[i].name_en, tile.x + 20, tile.y + 26,
+            text(r, app.f_title, consoles()[i].name_en, tile.x + 16, tile.y + 18,
                  sel ? C_ACCENT : C_DIM);
         }
         char b[32];
         snprintf(b, sizeof(b), tr(T_LIST_COUNT_FMT), games_for(i).size());
-        text(r, app.f_body, ellipsize(app.f_body, console_name(consoles()[i].id), 146),
-             tile.x + 15, tile.y + 104, sel ? C_TEXT : with_alpha(C_TEXT, 200));
-        text(r, app.f_small, b, tile.x + 15, tile.y + 158,
+        text(r, app.f_body, ellipsize(app.f_body, console_name(consoles()[i].id), 190),
+             tile.x + 16, tile.y + 66, sel ? C_TEXT : with_alpha(C_TEXT, 200));
+        text(r, app.f_small, b, tile.x + 16, tile.y + 108,
              sel ? with_alpha(C_ACCENT, 220) : C_DIM);
         hit_add(tile, HIT_SYS, i);
     }
-    y += 236;
+    y += rows * th + (rows - 1) * gap + 24;
 
     // hub shortcuts
     for (int j = 0; j < 3; j++) {
@@ -5041,7 +5078,19 @@ void deck_home(SDL_Renderer* r)
         }
         const char* name = j == 0 ? tr(T_ACTIVITY) : j == 1 ? tr(T_QUICK)
                                                            : tr(T_SETTINGS);
-        text(r, app.f_body, name, tile.x + 94, tile.y + 47, C_TEXT);
+        // Russian and English hub labels outgrow one 30px line; wrap inside the
+        // space left of the chevron instead of spilling into the neighbour.
+        const int hubw = tile.w - 80 - 56;
+        auto lines = wrap(app.f_small, name, hubw);
+        if (lines.size() > 2) {
+            lines.resize(2);
+            lines[1] = ellipsize(app.f_small, lines[1], hubw);
+        }
+        int ty = tile.y + (lines.size() > 1 ? 36 : 52);
+        for (const auto& ln : lines) {
+            text(r, app.f_small, ln, tile.x + 80, ty, C_TEXT);
+            ty += 30;
+        }
         icon_chevron(r, tile.x + tile.w - 44, tile.y + 52, 28,
                      with_alpha(C_DIM, 170), false);
         hit_add(tile, HIT_HUB, j);
@@ -5718,7 +5767,7 @@ void draw_cfg(SDL_Renderer* r)
         cover_fit(r, ct, { W / 2 - 72, 176, 144, 184 }, 235);
     } else {
         int idx = console_icon_index(c.id);
-        if (idx >= 0 && app.icons[idx])
+        if (idx >= 0 && idx < (int)app.icons.size() && app.icons[idx])
             draw_tex(r, app.icons[idx], { W / 2 - 58, 232, 116, 116 }, 220);
         else
             icon_gamepad(r, W / 2 - 56, 234, 112, C_ACCENT);
@@ -5933,24 +5982,26 @@ void deck_activity(SDL_Renderer* r)
     const int top = 154, rowh = 88;
     int n = act_row_count();
     if (app.act_tab == 2) {
-        long long per[5] = { 0, 0, 0, 0, 0 };
+        const auto& cons = consoles();
+        std::vector<long long> per(cons.size(), 0);
         for (const auto& g : app.act_games) {
             int ci = console_index(g.sys);
-            if (ci < 5) per[ci] += g.seconds;
+            if (ci < (int)per.size()) per[ci] += g.seconds;
         }
         long long pmx = 0;
         for (long long v : per) pmx = std::max(pmx, v);
         if (pmx == 0) {
             text(r, app.f_body, tr(T_ACT_NO_TREND), W / 2, 330, C_TEXT, Align::Center);
         } else {
-            for (int i = 0; i < 5; i++) {
-                int y = 168 + i * 92;
-                text(r, app.f_body, consoles()[i].name_en, 48, y, C_TEXT);
+            const int rh = per.size() > 5 ? 64 : 92;
+            for (int i = 0; i < (int)per.size(); i++) {
+                int y = 164 + i * rh;
+                text(r, app.f_body, cons[i].name_en, 48, y, C_TEXT);
                 text(r, app.f_body, fmt_duration(per[i]), W - 48, y, C_DIM,
                      Align::Right);
-                rrect(r, { 48, y + 44, 928, 12 }, 6, with_alpha(C_DIM, 55));
+                rrect(r, { 48, y + 38, 928, 10 }, 5, with_alpha(C_DIM, 55));
                 int w = (int)(928 * per[i] / pmx);
-                if (w > 0) rrect(r, { 48, y + 44, w, 12 }, 6, C_ACCENT);
+                if (w > 0) rrect(r, { 48, y + 38, w, 10 }, 5, C_ACCENT);
             }
         }
     } else if (n == 0) {
@@ -6524,7 +6575,7 @@ void deck_activate(int id, int a, int b)
         else app.screen = Screen::Home;
         break;
     case HIT_SYS:
-        if (a >= 0 && a < 5) {
+        if (a >= 0 && a < (int)consoles().size()) {
             app.carousel = a;
             enter_selection();
         }
@@ -7370,7 +7421,8 @@ int main(int, char**)
 
     // Only a console tile is a "last console"; Activity/Quick/Settings would
     // otherwise be clamped onto psp and reopen there next boot.
-    if (app.carousel < 5) app.settings.last_console = app.carousel;
+    if (app.carousel < (int)consoles().size())
+        app.settings.last_console = app.carousel;
     save_settings(app.settings);
     fs_shutdown();
     shutdown_gfx();

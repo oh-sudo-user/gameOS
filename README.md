@@ -40,8 +40,13 @@ Both models share one kernel and root filesystem and identify themselves at boot
 | Game Boy / Game Boy Color | mGBA | |
 | PlayStation 1 | PCSX-ReARMed (ARM64 dynarec) | .cue / .m3u / .chd supported properly |
 | PSP | PPSSPP (Mali-G52 via Panfrost) | 1x render resolution by default |
+| NES / Famicom | FCEUmm | Pinned upstream libretro core; .nes / .fds / .unf / .unif |
+| SNES | Snes9x | Pinned upstream libretro core; .sfc / .smc / .fig / .swc / .bs |
+| Sega Mega Drive / Genesis | Genesis Plus GX | Pinned upstream libretro core; Sega CD and 32X are not supported |
 
 NDS, GBA, GBC and PS1 run comfortably on this chip. PSP is the heaviest thing it can do: most games are fine, but demanding titles will stutter. PPSSPP ships at 1x internal resolution; raise it in PPSSPP's own graphics settings if you want the sharper look.
+
+NES, SNES and Mega Drive use long-established upstream libretro cores (FCEUmm, Snes9x, Genesis Plus GX), vendored at pinned commits — they are not in-house emulators. FCEUmm is GPL-2.0+; Snes9x and Genesis Plus GX carry their upstream non-commercial licences. Frame time, temperature and power on the handheld have **not** been measured yet; [docs/PLATFORMS.md](docs/PLATFORMS.md) records exactly what is verified.
 
 NDS works out of the box: the melonDS core carries FreeBIOS, an open-source BIOS replacement, so no files are needed. Own console dumps (`bios7.bin`, `bios9.bin`, `firmware.bin`) in `bios/` take priority when present; a card in the TF2 slot (Plus) can supply them automatically.
 
@@ -99,7 +104,10 @@ GAMEOS-DATA/
 │   ├── gba/     .gba  .agb  .mb
 │   ├── gbc/     .gb  .gbc  .sgb
 │   ├── ps1/     .cue  .m3u  .chd  .pbp  .iso  .bin
-│   └── psp/     .iso  .cso  .pbp  .elf
+│   ├── psp/     .iso  .cso  .pbp  .elf
+│   ├── nes/     .nes  .fds  .unf  .unif
+│   ├── snes/    .sfc  .smc  .fig  .swc  .bs
+│   └── md/      .md  .gen  .bin  .smd
 ├── bios/        bios7.bin  bios9.bin  firmware.bin   (optional, own dumps)
 ├── covers/      <system>/<game name>.png or .jpg      (optional box art)
 ├── saves/       emulator saves — browse/delete in Settings
@@ -215,8 +223,13 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机：开机直接�
 | GB / GBC | mGBA | |
 | PS1 | PCSX-ReARMed（ARM64 动态编译） | 完整支持 .cue / .m3u / .chd |
 | PSP | PPSSPP（Panfrost 驱动 Mali-G52） | 默认 1 倍渲染分辨率 |
+| NES / 红白机 | FCEUmm | 锁定版本的上游 libretro 核心；.nes / .fds / .unf / .unif |
+| SNES / 超任 | Snes9x | 锁定版本的上游 libretro 核心；.sfc / .smc / .fig / .swc / .bs |
+| 世嘉 MD / Genesis | Genesis Plus GX | 锁定版本的上游 libretro 核心；不支持 Sega CD 与 32X |
 
 NDS、GBA、GBC、PS1 在这颗芯片上都很从容。PSP 是它能干的最大的活：大部分游戏没问题，重负载作品会掉帧。PPSSPP 默认 1 倍内部分辨率；想要更锐利，可以在 PPSSPP 自己的图形设置里调高。
+
+NES、SNES、MD 使用成熟的上游 libretro 核心（FCEUmm、Snes9x、Genesis Plus GX），按固定提交引入——不是自研模拟器。FCEUmm 为 GPL-2.0+；Snes9x 与 Genesis Plus GX 沿用上游的非商业许可证。这三套核心在掌机上的帧时间、温度与功耗**尚未实测**；已确认和未确认的项目都记在 [docs/PLATFORMS.md](docs/PLATFORMS.md)。
 
 NDS 开箱即玩：melonDS 核心自带 FreeBIOS（开源的 BIOS 替代实现），不放任何文件也能玩。自己导出的 `bios7.bin`、`bios9.bin`、`firmware.bin` 放进 `bios/` 会优先使用；Plus 的 TF2 卡里有这些文件时会自动补齐。
 
@@ -274,7 +287,10 @@ GAMEOS-DATA/
 │   ├── gba/     .gba  .agb  .mb
 │   ├── gbc/     .gb  .gbc  .sgb
 │   ├── ps1/     .cue  .m3u  .chd  .pbp  .iso  .bin
-│   └── psp/     .iso  .cso  .pbp  .elf
+│   ├── psp/     .iso  .cso  .pbp  .elf
+│   ├── nes/     .nes  .fds  .unf  .unif
+│   ├── snes/    .sfc  .smc  .fig  .swc  .bs
+│   └── md/      .md  .gen  .bin  .smd
 ├── bios/        bios7.bin  bios9.bin  firmware.bin   (可选，自己导出)
 ├── covers/      <平台>/<游戏名>.png 或 .jpg           (可选封面)
 ├── saves/       模拟器存档——设置里可浏览/删除

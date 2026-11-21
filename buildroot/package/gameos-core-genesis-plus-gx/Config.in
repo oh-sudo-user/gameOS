@@ -1,0 +1,10 @@
+config BR2_PACKAGE_GAMEOS_CORE_GENESIS_PLUS_GX
+	bool "gameos-core-genesis-plus-gx (Mega Drive)"
+	depends on BR2_aarch64
+	help
+	  Genesis Plus GX libretro core for Sega Mega Drive / Genesis,
+	  Master System, Game Gear and SG-1000 emulation.
+	  Upstream: https://github.com/libretro/Genesis-Plus-GX
+	  License: Genesis Plus GX non-commercial license (see LICENSE.txt);
+	  redistribution is permitted for non-commercial projects. gameOS
+	  ships it as a separate dynamically loaded core.

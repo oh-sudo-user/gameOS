@@ -40,6 +40,15 @@ const std::vector<Console>& consoles()
         { "psp", "索尼 PSP", "PSP",
           nullptr, nullptr, false,
           { ".iso", ".cso", ".pbp", ".elf" } },
+        { "nes", "任天堂 NES", "NES",
+          "fceumm_libretro.so", "nes.cfg", false,
+          { ".nes", ".fds", ".unf", ".unif" } },
+        { "snes", "超级任天堂", "SNES",
+          "snes9x_libretro.so", "snes.cfg", false,
+          { ".sfc", ".smc", ".fig", ".swc", ".bs" } },
+        { "md", "世嘉 MD", "MD",
+          "genesis_plus_gx_libretro.so", "md.cfg", false,
+          { ".md", ".gen", ".bin", ".smd" } },
     };
     return list;
 }
@@ -216,6 +225,17 @@ static void scan_dir(const std::string& dir, const Console& c,
 static std::vector<std::string> rom_roots(const Console& c)
 {
     std::vector<std::string> roots;
+    // Test hook: point the scanner at a temporary tree instead of the two
+    // real cards. Production never sets this variable.
+    const char* test_root = getenv("GAMEOS_ROM_ROOT");
+    if (test_root && *test_root) {
+        roots.push_back(std::string(test_root) + "/roms/" + c.id);
+        std::string up = c.id;
+        for (char& ch : up) if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
+        if (up != c.id) roots.push_back(std::string(test_root) + "/roms/" + up);
+        roots.push_back(std::string(test_root) + "/roms/");
+        return roots;
+    }
     roots.push_back(std::string("/userdata/roms/") + c.id);
     std::string up = c.id;
     for (char& ch : up) if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
@@ -314,7 +334,8 @@ Settings load_settings()
         int n = atoi(v.c_str());
         if (k == "brightness") s.brightness = std::clamp(n, 10, 100);
         else if (k == "volume") s.volume = std::clamp(n, 0, 100);
-        else if (k == "last_console") s.last_console = std::clamp(n, 0, 4);
+        else if (k == "last_console")
+            s.last_console = std::clamp(n, 0, (int)consoles().size() - 1);
         else if (k == "theme") s.theme = std::clamp(n, 0, 3);
         else if (k == "bluetooth") s.bluetooth = std::clamp(n, 0, 1);
         else if (k == "language") s.language = std::clamp(n, 0, LANG_COUNT - 1);
