@@ -100,6 +100,22 @@ const Table& table_for(Ease e)
 
 } // namespace
 
+ThemeProfile theme_profile(int theme)
+{
+    switch (theme) {
+    case 1: return { 1.00f, Ease::Move,   34.0f, 18.0f, 22.0f, 6 }; // pixel
+    case 2: return { 1.30f, Ease::Spring, 16.0f,  7.5f, 12.0f, 0 }; // fresh
+    case 3: return { 1.45f, Ease::Enter,   0.0f,  6.5f, 10.0f, 0 }; // ink
+    default: return { 0.85f, Ease::Enter, 30.0f, 13.0f, 16.0f, 0 }; // neon
+    }
+}
+
+int theme_ms(int ms, int theme)
+{
+    int v = (int)(ms * theme_profile(theme).speed + 0.5f);
+    return v < 60 ? 60 : v;
+}
+
 float ease(Ease e, float x)
 {
     if (e == Ease::Linear) {

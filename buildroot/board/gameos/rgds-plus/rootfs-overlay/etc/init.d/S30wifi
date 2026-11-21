@@ -3,12 +3,21 @@
 # module itself is loaded by S25wireless; this only runs wpa_supplicant so the
 # UI opens with the link already up when a known network is in range. With no
 # saved network the supplicant stays down and Settings > WiFi drives it.
-LOG=/userdata/system/wifi-boot.log
 log() {
-    mountpoint -q /userdata 2>/dev/null || return 0
+    dir=""
+    if mountpoint -q /userdata 2>/dev/null && mkdir -p /userdata/system/logs 2>/dev/null \
+        && [ -w /userdata/system/logs ]; then
+        dir=/userdata/system/logs
+    elif mountpoint -q /boot 2>/dev/null && mkdir -p /boot/logs 2>/dev/null \
+        && [ -w /boot/logs ]; then
+        dir=/boot/logs
+    else
+        mkdir -p /tmp/gameos-logs 2>/dev/null
+        dir=/tmp/gameos-logs
+    fi
     printf '[%s +%ss] [S30wifi] %s\n' \
         "$(date '+%F %T' 2>/dev/null)" \
-        "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
+        "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$dir/wifi-boot.log"
     return 0
 }
 

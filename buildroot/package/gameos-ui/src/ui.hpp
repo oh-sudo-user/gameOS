@@ -14,7 +14,7 @@ namespace gameos {
 // Palette (swapped by apply_theme; every screen reads these)
 // ---------------------------------------------------------------------------
 extern SDL_Color C_TEXT, C_DIM, C_ACCENT, C_PANEL, C_BG, C_TRACK, g_accent;
-extern const SDL_Color C_AMBER, C_RED, C_GREEN;
+extern SDL_Color C_AMBER, C_RED, C_GREEN;
 extern int g_tint_top, g_tint_bot;
 
 struct UiFonts {

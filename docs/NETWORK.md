@@ -83,7 +83,7 @@ bash scripts/ci.sh                  # 主机门禁
 
 - `output/target/usr/bin/gameos-ui` 与 `gameos-splash` 均为 AArch64；
 - `readelf -d gameos-ui` 的 `NEEDED` 含 `libssh2.so.1`；
-- `scripts/verify-image.sh`：`IMAGE: PASSED`，整包版本 `1.0.1+g88bb172`。
+- `scripts/verify-image.sh`：`IMAGE: PASSED`，整包版本 `1.0.0+g<提交号>`。
 
 未执行：真机端到端传输（大文件、断网、取消、空间不足、指纹变化）以及真实
 SFTP 服务器登录。真机结果出来前不要把本功能标为“已验证”。

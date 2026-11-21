@@ -164,7 +164,7 @@ busybox init
   或电量 ≤15% 时把 performance 档压到 balanced，达到 95 °C 或 ≤8% 时
   全部压到 powersave；温度回到 80 °C 且电量恢复 20% 才释放。阈值在
   `/etc/gameos/perf.conf`，`GUARD_ENABLE=0` 可整体关闭，内核 thermal
-  框架仍负责硬件降频。档位切换写入 `/tmp/gameos-perf.log`；请求和守护状态
+  框架仍负责硬件降频。档位切换写入 `system/logs/perf.log`；请求和守护状态
   在 `/run/gameos/perf-request`、`perf-guard`。`superdrastic` 暂与
   performance 使用同一 governor，因为没有实测的频率下限可供设置。
 - 触摸：下屏每帧重建命中区；移动超过 12 DP 视为拖动，不再触发点击；页面
@@ -174,7 +174,7 @@ busybox init
   enter/exit/move/spring/linear 五条（60 点采样表）；每帧采样主线程 CPU
   时间，30 帧窗口 P95 超过 4 ms 时按 L0→L3 逐级降级（页面转场在 L1
   去缩放、L2 只淡入淡出、L3 硬切），连续 120 帧低于预算一半才回退一级，
-  回退后 300 帧内不再变化；级别变化写入 `ui.log`。
+  回退后 300 帧内不再变化；级别变化写入 `system/logs/ui.log`。
 - 主题调色板：`assets/themes/<key>/palette.conf`（schema v1：七个
   `#rrggbb` 颜色 + 面板透明度/染色三个字节）。开机 splash 与 UI 共用
   同一文件；缺字段、重复键或非法值会让整个文件被忽略并回退到内置色板。

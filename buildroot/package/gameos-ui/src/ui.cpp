@@ -21,9 +21,9 @@ SDL_Color C_ACCENT = {  53, 208, 186, 255 };
 SDL_Color C_PANEL  = {  20,  27,  51, 235 };
 SDL_Color C_BG     = {  11,  16,  32, 255 };
 SDL_Color C_TRACK  = {  28,  38,  58, 255 };
-const SDL_Color C_AMBER = { 255, 180,  84, 255 };
-const SDL_Color C_RED   = { 255,  99,  99, 255 };
-const SDL_Color C_GREEN = { 105, 220, 140, 255 };
+SDL_Color C_AMBER = { 255, 180,  84, 255 };
+SDL_Color C_RED   = { 255,  99,  99, 255 };
+SDL_Color C_GREEN = { 105, 220, 140, 255 };
 SDL_Color g_accent = C_ACCENT;
 int g_tint_top = 14, g_tint_bot = 26;
 

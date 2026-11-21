@@ -33,9 +33,18 @@ IFACE=${WIFI_IFACE:-}
 WPA="timeout 5 wpa_cli -p $SOCK"
 ACTION=/etc/gameos/wpa_action.sh
 CA=/etc/ssl/certs/ca-certificates.crt
-LOG=/userdata/system/wifi.log
-WPA_LOG=/userdata/system/wpa_supplicant.log
-WPS_ERR=/userdata/system/wpa_supplicant.err.log
+if mountpoint -q /userdata 2>/dev/null; then
+  LOGDIR=/userdata/system/logs
+elif mountpoint -q /boot 2>/dev/null; then
+  LOGDIR=/boot/logs
+else
+  LOGDIR=/tmp/gameos-logs
+fi
+mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR=/tmp/gameos-logs
+mkdir -p "$LOGDIR" 2>/dev/null
+LOG=$LOGDIR/wifi.log
+WPA_LOG=$LOGDIR/wpa_supplicant.log
+WPS_ERR=$LOGDIR/wpa_supplicant.err.log
 
 mkdir -p "$RUN"
 
@@ -44,7 +53,6 @@ have_data() { mountpoint -q /userdata 2>/dev/null; }
 # stdout belongs to the caller (status/scan parsing), so diagnostics go to a
 # file on the card. The data partition is exFAT, so this is readable on a PC.
 log() {
-    have_data || return 0
     printf '[%s +%ss] [gameos-wifi] %s\n' \
         "$(date '+%F %T' 2>/dev/null)" \
         "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"

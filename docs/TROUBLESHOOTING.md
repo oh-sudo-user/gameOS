@@ -63,7 +63,7 @@ FreeBIOS 许可（Drastic BIOS replacement，随 melonDS 核心二进制分发�
 ## 6. 游戏卡顿
 
 - 确认设置里亮度不是唯一调过的项：系统默认 CPU/GPU 均为 performance governor。
-- PSP 默认 2x 渲染分辨率；个别重负载游戏可在 PPSSPP 设置改 1x。
+- PSP 默认 1x 渲染分辨率；若在 PPSSPP 里调高过，重负载游戏可改回 1x。
 - PS1 默认开启 ARM64 dynarec；若某游戏异常可在 RetroArch 核心选项关闭 DRC。
 - 散热：长时间游玩注意通风，RK3568 过热会降频。
 
@@ -80,8 +80,11 @@ gameOS 不会写入机器内部存储，随便折腾。
 ## 9. 报告问题
 
 提 Issue 时请附：卡型号容量、镜像 sha256、串口日志（如有）、
-复现步骤。日志位置：`/tmp/gameos-setup.log`、`/tmp/gameos-session.log`
-（可在串口 shell 中查看）。
+复现步骤。日志都在卡的 `system/logs/` 文件夹（数据分区不可用时写在
+启动分区的 `logs/`，再不行才落到内存）：`setup.log`、`session.log`、
+`ui.log`、`emu.log`、`retroarch.log`、`wifi.log`、`bt.log`、`tf2.log`、
+`splash.log`、`inputd-supervisor.log`、`volume.log` 等，写入时会自动轮转。
+卡拔下来插到电脑即可直接取走。
 
 ## 10. 界面卡顿：采集 UI 渲染性能日志
 
@@ -91,7 +94,7 @@ gameOS 不会写入机器内部存储，随便折腾。
 1. 关机拔卡，插到电脑，在卡的 `system` 文件夹里新建一个**空文件**
    `ui-perf.on`（没有扩展名，0 字节）。
 2. 装回开机，正常来回切几个界面、滑动列表 30 秒以上，再关机拔卡。
-3. 读同一目录下的 `ui-perf.log`。大约每 600 帧（10 秒）或切换界面时
+3. 读同一目录下 `logs` 文件夹里的 `ui-perf.log`。大约每 600 帧（10 秒）或切换界面时
    写一行，字段含义：
    - `screen`：这一段属于哪个界面；
    - `wall`：该帧在 UI 线程的耗时（不含 60Hz 限帧等待）的
@@ -109,7 +112,7 @@ gameOS 不会写入机器内部存储，随便折腾。
 
 ## 11. OTA 更新失败：manifest signature invalid
 
-1.0.1 之后的固件只安装带有效 Ed25519 签名的 release。更新状态文件
+1.0.0 之后的固件只安装带有效 Ed25519 签名的 release。更新状态文件
 `/run/gameos/update-state` 里出现 `manifest signature invalid` 时：
 
 1. 确认该 release 上传了 `manifest.json.sig`，并且是对当前

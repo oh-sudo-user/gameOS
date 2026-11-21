@@ -19,7 +19,7 @@
 #
 # The guard clamps the requested strategy when any thermal zone is hot or the
 # battery is low, releases it only after a cool/recover hysteresis band, and
-# logs every transition to /tmp/gameos-perf.log. Missing sensors never force a
+# logs every transition to system/logs/perf.log on the card. Missing sensors never force a
 # clamp (the kernel still protects the SoC).
 #
 # The GAMEOS_PERF_* environment variables exist so the host test can redirect
@@ -32,7 +32,19 @@ RUN=${GAMEOS_PERF_RUN:-/run/gameos}
 ORIG="$RUN/perf-original"
 REQ="$RUN/perf-request"
 GUARD="$RUN/perf-guard"
-LOG=${GAMEOS_PERF_LOG:-/tmp/gameos-perf.log}
+if [ -z "$GAMEOS_PERF_LOG" ]; then
+  if mountpoint -q /userdata 2>/dev/null; then
+    LOGDIR=/userdata/system/logs
+  elif mountpoint -q /boot 2>/dev/null; then
+    LOGDIR=/boot/logs
+  else
+    LOGDIR=/tmp/gameos-logs
+  fi
+  mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR=/tmp/gameos-logs
+  mkdir -p "$LOGDIR" 2>/dev/null
+  GAMEOS_PERF_LOG=$LOGDIR/perf.log
+fi
+LOG=$GAMEOS_PERF_LOG
 CPUFREQ=${GAMEOS_PERF_CPUFREQ:-/sys/devices/system/cpu/cpufreq}
 DEVFREQ=${GAMEOS_PERF_DEVFREQ:-/sys/class/devfreq}
 THERMAL=${GAMEOS_PERF_THERMAL:-/sys/class/thermal}

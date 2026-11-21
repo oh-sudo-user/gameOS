@@ -14,6 +14,7 @@
 #include "fileops.hpp"
 #include "gameos.hpp"
 #include "i18n.hpp"
+#include "logutil.hpp"
 #include "motion.hpp"
 #include "netparse.hpp"
 #include "netsftp.hpp"
@@ -451,12 +452,15 @@ SDL_Texture* load_tex(SDL_Renderer* r, const std::string& path)
     return t; // nullptr is fine — fallbacks are drawn
 }
 
-// Tiny persistent debug log: also kept on the data partition so input
-// problems can be diagnosed by reading the card on a PC after a reboot.
+// Tiny persistent debug log: kept on the card (system/logs, falling back to
+// the boot partition) so input problems can be diagnosed on a PC.
 void ui_dbg(const char* s)
 {
     fputs(s, stderr);
-    FILE* f = fopen("/userdata/system/ui.log", "a");
+    static const std::string path = gameos::log_file("ui.log");
+    static bool rotated = false;
+    if (!rotated) { rotated = true; gameos::log_rotate(path, 1 << 20); }
+    FILE* f = fopen(path.c_str(), "a");
     if (!f) f = fopen("/boot/ui.log", "a");
     if (f) { fputs(s, f); fclose(f); }
 }
@@ -538,6 +542,11 @@ void apply_theme(int idx)
     C_PANEL  = { p.panel.r,  p.panel.g,  p.panel.b,  p.panel_a };
     C_BG     = { p.bg.r,     p.bg.g,     p.bg.b,     255 };
     C_TRACK  = { p.track.r,  p.track.g,  p.track.b,  255 };
+    // positive/warning/danger text needs a darker tone on the light themes
+    const bool light = idx >= 2;
+    C_GREEN = light ? SDL_Color{ 22, 122, 74, 255 }  : SDL_Color{ 105, 220, 140, 255 };
+    C_AMBER = light ? SDL_Color{ 150, 96, 12, 255 }  : SDL_Color{ 255, 180, 84, 255 };
+    C_RED   = light ? SDL_Color{ 176, 38, 30, 255 }  : SDL_Color{ 255, 99, 99, 255 };
     g_accent = C_ACCENT;
     g_tint_top = p.tint_top;
     g_tint_bot = p.tint_bot;
@@ -849,7 +858,8 @@ void draw_home(SDL_Renderer* r)
     const int ncons = (int)cons.size();
     const int total = car_total();
 
-    app.car_f = damp(app.car_f, (float)app.carousel, 11.0f);
+    app.car_f = damp(app.car_f, (float)app.carousel,
+                     motion::theme_profile(app.settings.theme).carousel);
 
     // A slow halo and a frosted plate give the focused console its weight.
     float breathe = 0.5f + 0.5f * sinf(now_sec() * 1.3f);
@@ -999,8 +1009,10 @@ void draw_list(SDL_Renderer* r)
     const int listw = 928, listx = 48;
     if (app.sel < app.scroll) app.scroll = app.sel;
     if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
-    app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll);
-    app.list_sel_f = damp(app.list_sel_f, (float)app.sel);
+    app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll,
+                             motion::theme_profile(app.settings.theme).scroll);
+    app.list_sel_f = damp(app.list_sel_f, (float)app.sel,
+                          motion::theme_profile(app.settings.theme).scroll);
 
     SDL_Rect cliprc = { listx, top, listw, vis * rowh - gap };
     set_clip(r, &cliprc);
@@ -3507,7 +3519,8 @@ void draw_settings(SDL_Renderer* r)
     draw_background(r);
     draw_topbar(r);
 
-    app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
+    app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel,
+                         motion::theme_profile(app.settings.theme).scroll);
     top_plate(r, W / 2, 290, 142);
     settings_icon(r, app.set_sel, W / 2 - 62, 228, 124, C_ACCENT);
 
@@ -4014,9 +4027,12 @@ static void tf2_poll()
 // only the tail keeps this cheap even when RetroArch has logged for an hour.
 static std::string log_tail_line()
 {
-    for (const char* path : { "/userdata/system/retroarch.log",
-                              "/userdata/system/emu.log" }) {
-        FILE* f = fopen(path, "rb");
+    const std::string files[] = { gameos::log_file("retroarch.log"),
+                                  gameos::log_file("emu.log"),
+                                  "/userdata/system/retroarch.log",
+                                  "/userdata/system/emu.log" };
+    for (const std::string& path : files) {
+        FILE* f = fopen(path.c_str(), "rb");
         if (!f) continue;
         long sz = -1;
         if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
@@ -5498,8 +5514,10 @@ void deck_list(SDL_Renderer* r)
 
     if (app.sel < app.scroll) app.scroll = app.sel;
     if (app.sel >= app.scroll + vis) app.scroll = app.sel - vis + 1;
-    app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll);
-    app.list_sel_f = damp(app.list_sel_f, (float)app.sel);
+    app.list_scroll_f = damp(app.list_scroll_f, (float)app.scroll,
+                             motion::theme_profile(app.settings.theme).scroll);
+    app.list_sel_f = damp(app.list_sel_f, (float)app.sel,
+                          motion::theme_profile(app.settings.theme).scroll);
 
     SDL_Rect rows = { listx, top, listw, vis * rowh - 4 };
     hit_add(rows, HIT_LIST_ROWS);
@@ -5898,7 +5916,8 @@ void deck_net(SDL_Renderer* r)
 void deck_settings(SDL_Renderer* r)
 {
     deck_header(r, tr(T_SETTINGS));
-    app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
+    app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel,
+                         motion::theme_profile(app.settings.theme).scroll);
 
     const int tw = 301, th = 96, gx = 12, gy = 12;
     for (int i = 0; i < 15; i++) {
@@ -7048,17 +7067,20 @@ void draw_deck()
     // the deck follows the top panel's fade/slide, at a shorter distance
     Uint32 te = SDL_GetTicks() - g_deck_start;
     const int mlevel = g_degrade.level();
+    const motion::ThemeProfile& mp = motion::theme_profile(app.settings.theme);
+    const int deck_ms = motion::theme_ms(motion::kNormalMs, app.settings.theme);
     SDL_Rect full = { 0, 0, W, H };
-    if (te < (Uint32)motion::kNormalMs && g_deck_tex[g_deck_cur ^ 1] &&
+    if (te < (Uint32)deck_ms && g_deck_tex[g_deck_cur ^ 1] &&
         mlevel < motion::Degrade::kL3) {
-        float p = motion::ease(motion::Ease::Enter,
-                               te / (float)motion::kNormalMs);
+        float q = te / (float)deck_ms;
+        if (mp.steps > 1) q = floorf(q * mp.steps) / mp.steps;
+        float p = motion::ease(mp.scene, q);
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur ^ 1], 255);
         perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur ^ 1], nullptr, &full);
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur], (Uint8)(255 * p));
         SDL_Rect dst = mlevel < motion::Degrade::kL2
-                           ? SDL_Rect{ 0, (int)((1 - p) * 18), W, H }
+                           ? SDL_Rect{ 0, (int)((1 - p) * mp.slide_px * 0.6f), W, H }
                            : full;
         perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur], nullptr, &dst);
@@ -7935,13 +7957,16 @@ int main(int, char**)
 
         const bool dialog = app.screen == Screen::Msg || app.screen == Screen::Confirm;
         const int mlevel = g_degrade.level();
-        const Uint32 dur = dialog ? (Uint32)motion::kEnterMs
-                                  : (Uint32)motion::kNormalMs;
+        const motion::ThemeProfile& sp = motion::theme_profile(app.settings.theme);
+        const Uint32 dur = (Uint32)motion::theme_ms(dialog ? motion::kEnterMs
+                                                           : motion::kNormalMs,
+                                                    app.settings.theme);
         Uint32 trans_elapsed = now - g_trans_start;
         SDL_Rect full = { 0, 0, W, H };
         if (had_scene && trans_elapsed < dur && mlevel < motion::Degrade::kL3) {
-            float p = motion::ease(motion::Ease::Enter,
-                                   trans_elapsed / (float)dur);
+            float q = trans_elapsed / (float)dur;
+            if (sp.steps > 1) q = floorf(q * sp.steps) / sp.steps;
+            float p = motion::ease(dialog ? motion::Ease::Enter : sp.scene, q);
             SDL_SetTextureAlphaMod(g_scene_tex[g_scene_cur ^ 1], 255);
             perf::note_draw();
             SDL_RenderCopy(r, g_scene_tex[g_scene_cur ^ 1], nullptr, &full);
@@ -7951,8 +7976,8 @@ int main(int, char**)
                 int dw = (int)(W * (0.92f + 0.08f * p));
                 int dh = (int)(H * (0.92f + 0.08f * p));
                 dst = { (W - dw) / 2, (H - dh) / 2, dw, dh };
-            } else if (!dialog && mlevel < motion::Degrade::kL2) {
-                dst = { 0, (int)((1 - p) * 26), W, H };
+            } else if (!dialog && mlevel < motion::Degrade::kL2 && sp.slide_px > 0) {
+                dst = { 0, (int)((1 - p) * sp.slide_px), W, H };
             } else {
                 dst = full;
             }

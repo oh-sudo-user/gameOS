@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gameos.hpp"
 #include "i18n.hpp"
+#include "logutil.hpp"
 #include "overrides.hpp"
 
 #include <algorithm>
@@ -77,13 +78,10 @@ static int panel_height()
 //
 // The UI comes back to life after a black-screen emulator exit, so the card
 // is the only reliable witness. Everything here is appended under
-// /userdata/system/diag and survives reboots; the data partition is exFAT,
+// /userdata/system/logs and survives reboots; the data partition is exFAT,
 // so the logs can be read directly on a PC. Sampling never blocks the child.
 // ---------------------------------------------------------------------------
 namespace {
-
-constexpr const char* DIAG_DIR = "/userdata/system/diag";
-constexpr const char* SESSION_LOG = "/userdata/system/diag/emu-session.log";
 
 bool userdata_mounted()
 {
@@ -91,6 +89,9 @@ bool userdata_mounted()
     if (stat("/userdata", &a) != 0 || stat("/", &b) != 0) return false;
     return a.st_dev != b.st_dev;
 }
+
+std::string emu_log() { return gameos::log_file("emu.log"); }
+std::string ra_log()  { return gameos::log_file("retroarch.log"); }
 
 std::string clean_line(std::string s)
 {
@@ -139,15 +140,9 @@ struct Diag {
 
     Diag()
     {
-        if (!userdata_mounted()) return;
-        mkdir("/userdata/system", 0755);
-        mkdir(DIAG_DIR, 0755);
-        struct stat st = {};
-        if (stat(SESSION_LOG, &st) == 0 && st.st_size > (4 << 20)) {
-            unlink("/userdata/system/diag/emu-session.log.1");
-            rename(SESSION_LOG, "/userdata/system/diag/emu-session.log.1");
-        }
-        f = fopen(SESSION_LOG, "a");
+        const std::string path = gameos::log_file("emu-session.log");
+        gameos::log_rotate(path, 4 << 20);
+        f = fopen(path.c_str(), "a");
         if (f) {
             setvbuf(f, nullptr, _IOLBF, 0);
             fcntl(fileno(f), F_SETFD, FD_CLOEXEC);
@@ -375,8 +370,7 @@ bool read_proc(pid_t pid, ProcInfo& out)
 
 void append_marker(const char* fmt, ...)
 {
-    if (!userdata_mounted()) return;
-    FILE* f = fopen("/userdata/system/emu.log", "a");
+    FILE* f = fopen(emu_log().c_str(), "a");
     if (!f) return;
     va_list ap;
     va_start(ap, fmt);
@@ -486,8 +480,8 @@ static int run_emu(const Console& c, const Game& g,
 {
     d.line("----- attempt %d begin -----", attempt);
     if (attempt > 1) {
-        std::string from = "/userdata/system/retroarch.log";
-        std::string to = std::string(DIAG_DIR) + "/retroarch-" + sid + "-a" +
+        std::string from = ra_log();
+        std::string to = gameos::log_dir() + "/retroarch-" + sid + "-a" +
                          std::to_string(attempt - 1) + ".log";
         if (rename(from.c_str(), to.c_str()) == 0)
             d.line("archived previous retroarch.log -> %s", to.c_str());
@@ -508,7 +502,7 @@ static int run_emu(const Console& c, const Game& g,
         core_path = std::string("/usr/lib/libretro/") + c.core;
         cfg_path = std::string("/usr/share/gameos/retroarch/") + c.appendcfg;
         args = { "retroarch",
-                 "--log-file", "/userdata/system/retroarch.log",
+                 "--log-file", ra_log(),
                  "-L", core_path,
                  "--appendconfig", cfg_path,
                  "--appendconfig", "/tmp/gameos-ra-lang.cfg" };
@@ -537,8 +531,9 @@ static int run_emu(const Console& c, const Game& g,
     if (c.dual) ph = std::to_string(panel_height());
 
     struct stat est = {};
+    const std::string emu_path = emu_log();
     const char* logmode = "a";
-    if (stat("/userdata/system/emu.log", &est) == 0 && est.st_size > (1 << 20))
+    if (stat(emu_path.c_str(), &est) == 0 && est.st_size > (1 << 20))
         logmode = "w";
     append_marker("\n===== gameos attempt %d at %s (%s) =====\n",
                   attempt, wall_clock().c_str(), g.path.c_str());
@@ -562,10 +557,9 @@ static int run_emu(const Console& c, const Game& g,
         setenv("XDG_RUNTIME_DIR", "/tmp/gameos-runtime", 1);
 
         // Emulator output (core printf, exec errors) lands in one log on
-        // /userdata so a failed launch can be diagnosed after the fact.
-        mkdir("/userdata/system", 0755);
-        freopen("/userdata/system/emu.log", logmode, stdout);
-        freopen("/userdata/system/emu.log", logmode, stderr);
+        // the card so a failed launch can be diagnosed after the fact.
+        freopen(emu_path.c_str(), logmode, stdout);
+        freopen(emu_path.c_str(), logmode, stderr);
         dprintf(1, "%s: launch %s\n", subsystem_name(c), g.path.c_str());
 
         if (c.dual) {
@@ -697,7 +691,7 @@ static int run_emu(const Console& c, const Game& g,
     }
     d.line("attempt %d end: reaped=%d rc=%d signal=%d runtime=%.1fs",
            attempt, (int)reaped, rc, sig, run_s);
-    d.tail("retroarch.log", "/userdata/system/retroarch.log", 120);
+    d.tail("retroarch.log", ra_log(), 120);
     if (rc != 0 || run_s < 30) dump_dmesg(d, "exit");
     dump_mem(d, "exit");
     dump_drm(d, "exit");
@@ -715,9 +709,9 @@ static int run_emu(const Console& c, const Game& g,
         summary += "rc=" + std::to_string(rc) + "\n";
         summary += "signal=" + std::to_string(sig) + "\n";
         summary += "runtime_s=" + std::to_string(seconds) + "\n";
-        summary += "retroarch_log=/userdata/system/retroarch.log\n";
-        summary += "session_log=/userdata/system/diag/emu-session.log\n";
-        write_file(std::string(DIAG_DIR) + "/last-result.txt", summary);
+        summary += "retroarch_log=" + ra_log() + "\n";
+        summary += "session_log=" + gameos::log_file("emu-session.log") + "\n";
+        write_file(gameos::log_dir() + "/last-result.txt", summary);
     }
 
     unlink("/run/gameos/game.pid");
@@ -752,9 +746,10 @@ int launch_game(const Console& c, const Game& g)
         // Start every launch with a fresh RetroArch log (the emulator may
         // append); the previous one is kept for comparison.
         struct stat st = {};
-        if (stat("/userdata/system/retroarch.log", &st) == 0) {
-            std::string prev = std::string(DIAG_DIR) + "/retroarch-prev.log";
-            if (rename("/userdata/system/retroarch.log", prev.c_str()) == 0)
+        const std::string path = ra_log();
+        if (stat(path.c_str(), &st) == 0) {
+            std::string prev = gameos::log_dir() + "/retroarch-prev.log";
+            if (rename(path.c_str(), prev.c_str()) == 0)
                 d.line("archived previous retroarch.log -> %s", prev.c_str());
         }
     }

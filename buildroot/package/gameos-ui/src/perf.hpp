@@ -4,7 +4,7 @@
 // long one frame takes on the UI thread, how much of it is CPU, how many
 // draw operations are submitted, and how often a frame misses the 60 Hz
 // cadence. This module records exactly those numbers in fixed-size windows
-// and appends one line per window to /userdata/system/ui-perf.log.
+// and appends one line per window to <log dir>/ui-perf.log.
 //
 // Off by default. Enable with an empty file at /userdata/system/ui-perf.on
 // (the card's system folder) or with GAMEOS_UI_PERF=1 in the environment.

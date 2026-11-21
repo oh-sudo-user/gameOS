@@ -25,10 +25,18 @@ export PATH
 MNT=/mnt/tf2
 RUN=/run/gameos
 STATE=$RUN/tf2
-LOG=/tmp/gameos-tf2.log
-# once the data partition is up, keep the log on the card so a failed mount
-# can be diagnosed from the card alone (tmpfs loses it at power-off)
-[ -d /userdata/system ] && LOG=/userdata/system/tf2.log
+# Keep the log on the card so a failed mount can be diagnosed from the card
+# alone (tmpfs loses it at power-off); the boot partition is the same card.
+if mountpoint -q /userdata 2>/dev/null; then
+  LOGDIR=/userdata/system/logs
+elif mountpoint -q /boot 2>/dev/null; then
+  LOGDIR=/boot/logs
+else
+  LOGDIR=/tmp/gameos-logs
+fi
+mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR=/tmp/gameos-logs
+mkdir -p "$LOGDIR" 2>/dev/null
+LOG=$LOGDIR/tf2.log
 
 mkdir -p "$RUN" "$MNT"
 case $1 in

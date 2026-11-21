@@ -46,7 +46,13 @@ reconcile_bootscr() {
     sync
     mv -f /boot/boot.scr.new /boot/boot.scr || return 1
     sync
-    echo "[gameos] boot.scr reconciled to $model" >> /tmp/gameos-setup.log
+    logf=/tmp/gameos-setup.log
+    if mkdir -p /userdata/system/logs 2>/dev/null && [ -w /userdata/system/logs ]; then
+        logf=/userdata/system/logs/setup.log
+    elif mkdir -p /boot/logs 2>/dev/null && [ -w /boot/logs ]; then
+        logf=/boot/logs/setup.log
+    fi
+    echo "[gameos] boot.scr reconciled to $model" >> "$logf"
     return 0
 }
 

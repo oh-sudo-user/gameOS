@@ -4,6 +4,28 @@
 
 LOG=/tmp/gameos-setup.log
 log() { echo "[gameos-setup] $*" >> "$LOG"; }
+
+# The setup log starts on tmpfs (the data partition does not exist yet). Once
+# a card partition is mounted, copy this boot's log there so a failed setup can
+# be diagnosed by reading the card on a PC; /boot and /userdata are both on it.
+persist_log() {
+  [ -f "$LOG" ] || return 0
+  dst=""
+  if mountpoint -q /userdata 2>/dev/null; then
+    mkdir -p /userdata/system/logs 2>/dev/null
+    [ -w /userdata/system/logs ] && dst=/userdata/system/logs/setup.log
+  fi
+  if [ -z "$dst" ] && mountpoint -q /boot 2>/dev/null; then
+    mkdir -p /boot/logs 2>/dev/null
+    [ -w /boot/logs ] && dst=/boot/logs/setup.log
+  fi
+  [ -n "$dst" ] || return 0
+  [ "$(wc -c < "$dst" 2>/dev/null || echo 0)" -gt 524288 ] && mv -f "$dst" "$dst.1"
+  {
+    echo "----- boot $(date '+%F %T' 2>/dev/null) uptime $(cut -d' ' -f1 /proc/uptime 2>/dev/null)s -----"
+    cat "$LOG"
+  } >> "$dst" 2>/dev/null
+}
 log "start"
 /usr/bin/gameos-bootstage 10 storage
 
@@ -39,7 +61,8 @@ log "boot disk = $DEV (root source '$root_src')"
 
 # --- mount the boot partition: persistent log fallback ----------------------
 # /userdata may be unavailable (first boot, format failure); /boot always
-# exists so diagnostics (ui.log) survive reboots either way.
+# exists so diagnostics (system/logs/ui.log, else /boot/logs/ui.log) survive
+# reboots either way.
 mkdir -p /boot
 if ! mountpoint -q /boot; then
   mount -t vfat ${DEV}p1 /boot 2>>"$LOG" || log "WARN: could not mount /boot"
@@ -54,6 +77,7 @@ while [ ! -b "$DEV" ] && [ $i -lt 100 ]; do
 done
 if [ ! -b "$DEV" ]; then
   log "ERROR: $DEV never appeared"
+  persist_log
   exit 0
 fi
 
@@ -170,6 +194,7 @@ if mountpoint -q /userdata; then
     mkdir -p "/userdata/roms/$d"
   done
   mkdir -p /userdata/saves /userdata/bios /userdata/screenshots /userdata/system
+  mkdir -p /userdata/system/logs
 
   # --- PPSSPP: default config (fullscreen, GLES, 2x render resolution) ------
   PPDIR=/userdata/system/ppsspp/.config/ppsspp/PSP/SYSTEM
@@ -240,3 +265,4 @@ if [ "$FIRSTBOOT" = 1 ]; then
 fi
 
 log "done"
+persist_log

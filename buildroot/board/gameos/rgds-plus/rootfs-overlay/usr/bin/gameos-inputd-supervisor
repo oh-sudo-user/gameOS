@@ -18,7 +18,14 @@ RUN=/run/gameos
 PIDFILE="$RUN/inputd-supervisor.pid"
 INPUTD_PIDFILE="$RUN/inputd.pid"
 INPUTD=/usr/bin/gameos-inputd
-LOG=/tmp/gameos-inputd-supervisor.log
+LOGDIR=/userdata/system/logs
+if ! mountpoint -q /userdata 2>/dev/null; then
+  if mountpoint -q /boot 2>/dev/null; then LOGDIR=/boot/logs; else LOGDIR=/tmp/gameos-logs; fi
+fi
+mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR=/tmp/gameos-logs
+mkdir -p "$LOGDIR" 2>/dev/null
+LOG=$LOGDIR/inputd-supervisor.log
+[ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ] && mv -f "$LOG" "$LOG.1"
 CHILD=
 
 mkdir -p "$RUN" 2>/dev/null

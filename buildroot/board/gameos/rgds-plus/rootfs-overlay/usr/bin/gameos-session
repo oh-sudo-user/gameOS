@@ -11,7 +11,16 @@ export XDG_RUNTIME_DIR=/tmp/gameos-runtime
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-SLOG=/tmp/gameos-session.log
+# Session/ui/supervisor logs live on the card; fall back to the boot
+# partition and finally to RAM when the data partition is unavailable.
+LOGDIR=/userdata/system/logs
+if ! mountpoint -q /userdata 2>/dev/null; then
+  if mountpoint -q /boot 2>/dev/null; then LOGDIR=/boot/logs; else LOGDIR=/tmp/gameos-logs; fi
+fi
+mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR=/tmp/gameos-logs
+mkdir -p "$LOGDIR" 2>/dev/null
+SLOG=$LOGDIR/session.log
+[ "$(wc -c < "$SLOG" 2>/dev/null || echo 0)" -gt 262144 ] && mv -f "$SLOG" "$SLOG.1"
 SUP_PID=
 
 # inputd is kept alive by gameos-inputd-supervisor, which runs independently of

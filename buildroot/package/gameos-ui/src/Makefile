@@ -9,10 +9,10 @@ SRCS = main.cpp library.cpp launch.cpp activity.cpp i18n.cpp sound.cpp displays.
 
 all: gameos-ui gameos-splash
 
-gameos-ui: $(SRCS) gameos.hpp i18n.hpp sound.hpp displays.hpp ui.hpp touch.hpp perf.hpp drawcall.hpp motion.hpp widget.hpp tokens.hpp netparse.hpp overrides.hpp fileops.hpp netsftp.hpp
+gameos-ui: $(SRCS) gameos.hpp i18n.hpp sound.hpp displays.hpp ui.hpp touch.hpp perf.hpp drawcall.hpp motion.hpp widget.hpp tokens.hpp netparse.hpp overrides.hpp fileops.hpp netsftp.hpp logutil.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LIBS)
 
-gameos-splash: splash.cpp i18n.cpp i18n.hpp displays.hpp displays.cpp
+gameos-splash: splash.cpp i18n.cpp i18n.hpp displays.hpp displays.cpp logutil.hpp
 	$(CXX) $(CXXFLAGS) -o $@ splash.cpp i18n.cpp displays.cpp $(LIBS)
 
 clean:

@@ -3,7 +3,7 @@
 A game system built from scratch for the Anbernic RG DS Plus and RG DS.
 为 Anbernic RG DS Plus 与 RG DS 从零打造的游戏系统。
 
-**v1.0.1 — bug-fix release / 问题修复版**
+**v1.0.0 — first release / 首发版**
 
 ![gameOS](docs/assets/preview.png)
 
@@ -19,14 +19,11 @@ Bootloader, kernel, root filesystem, front-end and device patches are all built 
 
 Both models share one kernel and root filesystem and identify themselves at boot; the Plus drives dual 1024×768 panels, the DS dual 640×480 with the interface scaled. These handhelds have no internal storage and gameOS never writes to any — everything lives on the microSD card, so pulling the card leaves the device exactly as it was.
 
-### What's new in 1.0.1
-
-- **In-game menus stay on the top screen.** Every RetroArch (RGUI) page — main menu, settings, subscreens — is now drawn on the top panel only instead of being centred across the seam between the two screens; the bottom panel keeps showing the game.
-- **Wi-Fi asks for the password.** Picking a secured network opens the on-screen keyboard again, and a failed attempt no longer leaves a keyless "saved" entry behind (which made later taps skip the prompt). The prompt, network name and masked input are mirrored on the top screen.
-- **Box-art download from Settings.** The libretro cover scraper that used to be wizard-only now has its own Settings tile, with progress, stop and a status line; it keeps running if you leave the page.
-
 ### What's new in 1.0.0
 
+- **In-game menus stay on the top screen.** Every RetroArch (RGUI) page — main menu, settings, subscreens — is drawn on the top panel only instead of being centred across the seam between the two screens; the bottom panel keeps showing the game.
+- **Wi-Fi asks for the password.** Picking a secured network opens the on-screen keyboard again, and a failed attempt no longer leaves a keyless "saved" entry behind (which made later taps skip the prompt). The prompt, network name and masked input are mirrored on the top screen.
+- **Box-art download from Settings.** The libretro cover scraper that used to be wizard-only now has its own Settings tile, with progress, stop and a status line; it keeps running if you leave the page.
 - **A faster NDS core.** melonDS's ARM64 JIT now links blocks, caches CPU flags and invalidates 16 bytes at a time, tuned with profile-guided optimisation: 74.5 → 121.3 fps on the host bench (1.63x) — see Performance.
 - **NDS starts at once.** ROM images are memory-mapped on demand, so the 8–10 s cartridge read is gone, and the launch animation hands over to the emulator without a black gap.
 - **A polished shell.** Per-console launch animations, non-blocking dual-screen output, instant language switching, and Wi-Fi / Bluetooth / sleep handling that does not stall.
@@ -128,7 +125,7 @@ The first power-on runs a short wizard: language, Wi-Fi (with a link / route / D
 - **A library that stays out of the way.** Favorites, play history, optional box art (local or downloaded), subfolders, and multi-disc PS1 games shown as one entry.
 - **Activity.** Play time per game, a day-by-day timeline, trends and a "what to play next" pick.
 - **Look and language.** Four complete themes (Neon, Pixel, Fresh, Ink) and six languages; both switch instantly, and emulator menus follow the language.
-- **The rest.** Second card slot (Plus), save browser, Bluetooth audio, brightness and volume, battery indicator, lid sleep, clean low-battery shutdown, and a small chime for every action.
+- **The rest.** Second card slot (Plus), save browser, Bluetooth audio, brightness and volume, battery indicator, lid sleep, clean low-battery shutdown, and a small chime for every action. All runtime logs go to `system/logs/` on the card (boot-partition fallback) and rotate automatically, so a device can be diagnosed from the card alone.
 
 ### Controls (front-end)
 
@@ -204,14 +201,11 @@ gameOS 把 RG DS / RG DS Plus 变成一台纯粹的游戏掌机：开机直接�
 
 两种机型共用同一个内核和根文件系统，开机时自动识别：Plus 驱动两块 1024×768 屏，DS 驱动两块 640×480 屏并缩放界面。这两台掌机没有内置存储，gameOS 也不往里写任何东西——一切都在 microSD 卡上，拔掉卡机器就恢复原样。
 
-### 1.0.1 修复
+### 1.0.0 新内容
 
 - **模拟器菜单只在上屏显示。** RetroArch（RGUI）的主菜单、设置、各子页面不再跨两块屏居中、被接缝切开，统一画在上屏；下屏继续显示游戏画面。
 - **Wi-Fi 会正常要求输入密码。** 选中加密网络会弹出屏幕键盘；连接失败不再留下"已保存但没密码"的空记录（那会让之后点同一网络直接跳过密码）。密码提示、网络名和掩码输入会同步显示在上屏。
 - **设置里可以下载游戏封面。** 原来只在首次引导里有的 libretro 封面刮削，现在有独立的"游戏封面"设置项，带进度、停止和状态提示；离开页面后下载继续在后台进行。
-
-### 1.0.0 新内容
-
 - **更快的 NDS 核心。** melonDS 的 ARM64 JIT 加入块链接、CPU 标志缓存和 16 字节粒度失效，并用按实际运行的剖面优化（PGO）构建：电脑测试台 74.5 → 121.3 帧/秒（1.63 倍），详见"性能"。
 - **NDS 即开即玩。** ROM 改为按需内存映射，8–10 秒的整卡读取没有了，启动动画和模拟器之间也不再黑屏。
 - **打磨过的基线。** 每平台启动动画、双屏非阻塞输出、语言即时切换，以及不再卡顿的 Wi-Fi / 蓝牙 / 休眠处理。
@@ -314,8 +308,8 @@ GAMEOS-DATA/
 - **网络传输（SFTP）。** 设置 → 网络传输：用电脑的 SSH/SFTP 账号浏览远端目录，把游戏下载到 `/userdata/network`，再到文件管理移进 `roms/`。显示进度、速度、剩余时间，可取消/重试；服务器支持时从 `.part` 断点续传，下载前检查空间。首次连接记住服务器指纹，指纹变化立即中止；密码只留在内存，不写盘。目前只支持 SFTP（密码登录），SMB/FTP 和上传留在后续版本。
 - **Activity 统计。** 总时长与单游戏时长、逐日时间线、趋势，以及"下一款玩什么"推荐。
 - **外观与语言。** 四套完整主题（霓虹、像素、清新、水墨）和六种语言，都是即时切换；模拟器菜单也跟随语言。
-- **性能与温控。** 每游戏可选省电、平衡、性能三档，CPU/GPU 只切 governor、不锁频率；高温或低电量自动降档，冷却后自动恢复，切换记录在 `/tmp/gameos-perf.log`。
-- **其余。** 双卡槽（Plus）、存档浏览器、蓝牙音频、亮度音量、电量显示、合盖休眠、低电量正常关机，以及每个操作一声小音效。
+- **性能与温控。** 每游戏可选省电、平衡、性能三档，CPU/GPU 只切 governor、不锁频率；高温或低电量自动降档，冷却后自动恢复，切换记录在 `system/logs/perf.log`。
+- **其余。** 双卡槽（Plus）、存档浏览器、蓝牙音频、亮度音量、电量显示、合盖休眠、低电量正常关机，以及每个操作一声小音效。运行日志写在卡的 `system/logs/`（数据分区不可用时回退到启动分区），自动轮转，拔卡就能取日志。
 
 ### 按键（前端界面）
 

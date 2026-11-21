@@ -4,12 +4,21 @@
 # to avoid early firmware-loader boot stalls. BT stays unloaded (chip
 # unpowered) until the Bluetooth stack explicitly enables it.
 
-LOG=/userdata/system/wifi-boot.log
-
-have_data() { mountpoint -q /userdata 2>/dev/null; }
+log_dir() {
+    if mountpoint -q /userdata 2>/dev/null; then
+        mkdir -p /userdata/system/logs 2>/dev/null
+        [ -w /userdata/system/logs ] && { echo /userdata/system/logs; return; }
+    fi
+    if mountpoint -q /boot 2>/dev/null; then
+        mkdir -p /boot/logs 2>/dev/null
+        [ -w /boot/logs ] && { echo /boot/logs; return; }
+    fi
+    mkdir -p /tmp/gameos-logs 2>/dev/null
+    echo /tmp/gameos-logs
+}
+LOG=$(log_dir)/wifi-boot.log
 
 log() {
-    have_data || return 0
     printf '[%s +%ss] [S25wireless] %s\n' \
         "$(date '+%F %T' 2>/dev/null)" \
         "$(cut -d. -f1 /proc/uptime 2>/dev/null)" "$*" >> "$LOG"
@@ -17,7 +26,6 @@ log() {
 }
 
 rotate_log() {
-    have_data || return 0
     [ -f "$LOG" ] || return 0
     sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
     [ "$sz" -gt 2097152 ] && mv -f "$LOG" "$LOG.1"

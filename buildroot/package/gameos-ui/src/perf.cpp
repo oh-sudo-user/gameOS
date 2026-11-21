@@ -1,6 +1,7 @@
 // gameOS front-end — UI frame profiler. See perf.hpp for the contract.
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "perf.hpp"
+#include "logutil.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -20,9 +21,14 @@ namespace perf {
 namespace {
 
 constexpr const char* kMarker = "/userdata/system/ui-perf.on";
-constexpr const char* kLog = "/userdata/system/ui-perf.log";
 constexpr long kRotateBytes = 256 * 1024;
 constexpr int kMinFlushFrames = 60;   // shorter windows are noise, not data
+
+const std::string& log_path()
+{
+    static const std::string path = gameos::log_file("ui-perf.log");
+    return path;
+}
 
 bool g_checked = false;
 bool g_on = false;
@@ -50,11 +56,11 @@ void stamp(char* out, size_t cap)
 void rotate_if_needed()
 {
     struct stat st;
-    if (stat(kLog, &st) != 0 || st.st_size <= kRotateBytes)
+    if (stat(log_path().c_str(), &st) != 0 || st.st_size <= kRotateBytes)
         return;
-    const std::string old = std::string(kLog) + ".1";
+    const std::string old = log_path() + ".1";
     unlink(old.c_str());
-    rename(kLog, old.c_str());
+    rename(log_path().c_str(), old.c_str());
     g_header_written = false;
 }
 
@@ -66,9 +72,9 @@ void flush_window()
     }
 
     rotate_if_needed();
-    FILE* f = fopen(kLog, "a");
+    FILE* f = fopen(log_path().c_str(), "a");
     if (!f) {
-        // /userdata not mounted or read-only: keep running, drop the window.
+        // card read-only: keep running, drop the window.
         g_window.reset();
         return;
     }

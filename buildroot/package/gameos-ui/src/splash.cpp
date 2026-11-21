@@ -45,6 +45,7 @@
 
 #include "displays.hpp"
 #include "i18n.hpp"
+#include "logutil.hpp"
 
 namespace {
 
@@ -113,6 +114,30 @@ void cleanup_files()
 {
     unlink(PID_FILE);
     unlink(STOP_FILE);
+}
+
+// The daemon starts before GAMEOS-DATA is mounted, so its live log has to sit
+// on tmpfs; append it to the card when the splash exits (the UI has started by
+// then, so /userdata is up; the helper falls back to /boot/logs).
+void persist_log()
+{
+    FILE* in = fopen("/run/gameos/splash.log", "r");
+    if (!in) return;
+    fseek(in, 0, SEEK_END);
+    const long sz = ftell(in);
+    fseek(in, 0, SEEK_SET);
+    if (sz > 0) {
+        const std::string dst = gameos::log_file("splash.log");
+        gameos::log_rotate(dst, 1 << 20);
+        if (FILE* out = fopen(dst.c_str(), "a")) {
+            char buf[2048];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof buf, in)) > 0)
+                fwrite(buf, 1, n, out);
+            fclose(out);
+        }
+    }
+    fclose(in);
 }
 
 // Double-fork so rcS continues immediately; stdio goes to a log on tmpfs.
@@ -432,10 +457,13 @@ void poll_boot(Boot& b)
     }
 
     // /userdata only exists from S20gameos onwards; until then keep zh-CN.
-    if (!lang_done) {
+    // Language and theme are tracked separately: an older config can carry a
+    // language without a theme key, and a later theme edit must still apply.
+    static bool theme_done = false;
+    if (!lang_done || !theme_done) {
         std::ifstream s(SETTINGS_FILE);
         while (std::getline(s, line)) {
-            if (line.compare(0, 9, "language=") == 0) {
+            if (!lang_done && line.compare(0, 9, "language=") == 0) {
                 int v = atoi(line.c_str() + 9);
                 if (v >= 0 && v < gameos::LANG_COUNT) {
                     gameos::g_lang = (gameos::Lang)v;
@@ -443,9 +471,12 @@ void poll_boot(Boot& b)
                 }
             } else if (line.compare(0, 6, "theme=") == 0) {
                 int v = atoi(line.c_str() + 6);
-                if (v >= 0 && v <= 3 && v != g_theme) {
-                    g_theme = v;
-                    g_theme_dirty = true;
+                if (v >= 0 && v <= 3) {
+                    theme_done = true;
+                    if (v != g_theme) {
+                        g_theme = v;
+                        g_theme_dirty = true;
+                    }
                 }
             }
         }
@@ -457,8 +488,8 @@ struct Panel {
     SDL_Window*   win = nullptr;
     SDL_Renderer* ren = nullptr;
     SDL_Texture*  bg = nullptr;          // UI background, for the cross-fade
-    SDL_Texture*  word = nullptr;        // "gameOS" in the brand colour
-    SDL_Texture*  sheen = nullptr;       // same text, bright: the light sweep
+    SDL_Texture*  word = nullptr;        // theme logo, native size
+    SDL_Texture*  sheen = nullptr;       // same logo: the light sweep
     int ww = 0, wh = 0;
     SDL_Texture*  glow_a = nullptr;      // accent halo
     SDL_Texture*  glow_s = nullptr;      // sheen halo
@@ -478,6 +509,7 @@ struct Panel {
     Txt bus_lab, bus_val;
     Txt row[6], row_st[6];
     std::string fontdir;
+    std::string assetdir;
     bool top = true;
     int cache_lang = -1;
 };
@@ -518,6 +550,28 @@ void close_fonts(Panel& p)
 
 bool build_brand(Panel& p)
 {
+    // The splash brand is the theme's own logo so boot and UI match.
+    const std::string path = p.assetdir + "/themes/" +
+                             gameos::theme_key(g_theme) + "/logo.png";
+    SDL_Texture* logo = IMG_LoadTexture(p.ren, path.c_str());
+    SDL_Texture* gloss = logo ? IMG_LoadTexture(p.ren, path.c_str()) : nullptr;
+    if (logo && gloss) {
+        int w = 0, h = 0;
+        SDL_QueryTexture(logo, nullptr, nullptr, &w, &h);
+        if (w > 0 && h > 0) {
+            if (p.word) SDL_DestroyTexture(p.word);
+            if (p.sheen) SDL_DestroyTexture(p.sheen);
+            p.word = logo;
+            p.sheen = gloss;
+            p.ww = w;
+            p.wh = h;
+            SDL_SetTextureBlendMode(p.sheen, SDL_BLENDMODE_ADD);
+            return true;
+        }
+    }
+    if (logo) SDL_DestroyTexture(logo);
+    if (gloss) SDL_DestroyTexture(gloss);
+
     if (!p.f_word) return false;
     SDL_Surface* s = TTF_RenderUTF8_Blended(p.f_word, "gameOS", C_TEXT);
     SDL_Surface* b = TTF_RenderUTF8_Blended(p.f_word, "gameOS", { 255, 255, 255, 255 });
@@ -547,10 +601,13 @@ bool build_brand(Panel& p)
 
 void build_glows(Panel& p)
 {
-    SDL_Texture* ga = make_radial(p.ren, 256, 2.4f, 220, C_ACCENT);
-    SDL_Texture* gs = make_radial(p.ren, 256, 2.8f, 130, C_SHEEN);
+    // Ink glows are ink-coloured, not accent red: the red only marks the seal.
+    const bool ink = g_theme == 3;
+    SDL_Texture* ga = make_radial(p.ren, 256, 2.4f, 220, ink ? C_TEXT : C_ACCENT);
+    SDL_Texture* gs = make_radial(p.ren, 256, 2.8f, 130, ink ? C_TRACK : C_SHEEN);
     SDL_Texture* da = make_radial(p.ren, 32, 1.7f, 255, C_ACCENT);
-    SDL_Texture* dw = make_radial(p.ren, 12, 1.4f, 255, { 255, 255, 255, 255 });
+    SDL_Texture* dw = make_radial(p.ren, 12, 1.4f, 255,
+                                  ink ? C_ACCENT : SDL_Color{ 255, 255, 255, 255 });
     for (SDL_Texture* t : { p.glow_a, p.glow_s, p.dot_a, p.dot_w })
         if (t) SDL_DestroyTexture(t);
     p.glow_a = ga;
@@ -571,6 +628,7 @@ bool setup_panel(Panel& p, int display, bool top, const std::string& fonts,
 {
     p.top = top;
     p.fontdir = fonts;
+    p.assetdir = assets;
     p.win = SDL_CreateWindow("gameOS boot",
         SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display),
         W, H, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -606,75 +664,156 @@ void teardown(Panel& p)
     if (p.win) { SDL_DestroyWindow(p.win);   p.win = nullptr; }
 }
 
+// Each theme gets its own ambience: neon orbits, pixel chunks, fresh
+// bubbles, ink washes. Same layout, different motion language.
+void ambient_top(Panel& p, float t, Uint8 fa, float cx, float cy)
+{
+    SDL_Renderer* r = p.ren;
+    switch (g_theme) {
+    case 0: {   // neon — aurora + orbit rings
+        float bx = W * 0.5f + std::sin(t * 0.21f) * 70.f;
+        float by = H * 0.40f + std::cos(t * 0.17f) * 34.f;
+        blit(r, p.glow_a, bx - 330, by - 330, 660, 660,
+             (Uint8)(fa * (0.26f + 0.05f * std::sin(t * 1.1f))));
+        blit(r, p.glow_s, W * 0.42f + std::cos(t * 0.13f) * 90 - 240,
+             H * 0.52f + std::sin(t * 0.19f) * 40 - 240, 480, 480,
+             (Uint8)(fa * 0.10f));
+        for (int i = 0; i < 34; i++) {
+            int x = (i * 337 + 71) % W;
+            int y = (i * 197 + 43) % H;
+            float tw = 0.5f + 0.5f * std::sin(t * (0.7f + (i % 5) * 0.23f) + i);
+            Uint8 a = (Uint8)(fa * (0.10f + 0.20f * tw) * (y < 560 ? 1.f : 0.4f));
+            if (a < 6) continue;
+            float s = (i % 7 == 0) ? 8.f : 4.f;
+            blit(r, p.dot_w, x - s / 2, y - s / 2, s, s, a);
+        }
+        ering(r, cx, cy, 352.f, 118.f, -0.24f, 1.4f, with_alpha(C_ACCENT, (int)(fa * 0.24f)));
+        ering(r, cx, cy, 286.f, 92.f, 0.20f, 1.0f, with_alpha(C_SHEEN, (int)(fa * 0.14f)));
+        ering(r, cx, cy, 196.f, 62.f, -0.05f, 1.0f, with_alpha(C_ACCENT, (int)(fa * 0.12f)));
+        struct Sat { float rx, ry, rot, speed, off; int size; };
+        const Sat sats[2] = {
+            { 352.f, 118.f, -0.24f, 0.32f, 0.f, 34 },
+            { 286.f, 92.f, 0.20f, -0.47f, 2.1f, 24 },
+        };
+        for (const Sat& s : sats) {
+            float ang = t * s.speed + s.off;
+            for (int k = 7; k >= 0; k--) {
+                EllipsePt q = ellipse_pt(cx, cy, s.rx, s.ry, s.rot, ang - k * 0.035f);
+                Uint8 a = (Uint8)(fa * (k == 0 ? 0.85f : 0.30f * (1.f - k / 8.f)));
+                float sz = k == 0 ? s.size : s.size * 0.55f;
+                blit(r, p.dot_a, q.x - sz / 2, q.y - sz / 2, sz, sz, a);
+            }
+        }
+        break;
+    }
+    case 1: {   // pixel — chunky grid, stepped twinkle, dotted orbit
+        for (int x = 0; x <= W; x += 32)
+            fill(r, x, 0, 1, H, with_alpha(C_DIM, (int)(fa * 0.030f)));
+        for (int y = 0; y <= H; y += 32)
+            fill(r, 0, y, W, 1, with_alpha(C_DIM, (int)(fa * 0.030f)));
+        for (int i = 0; i < 28; i++) {
+            int x = (i * 331 + 53) % W;
+            int y = (i * 173 + 61) % H;
+            int step = (int)(t * 3.f) + i % 5;
+            float lv = step % 3 == 0 ? 1.f : 0.3f;
+            Uint8 a = (Uint8)(fa * (0.08f + 0.25f * lv));
+            int s = i % 6 == 0 ? 10 : 6;
+            fill(r, x - s / 2, y - s / 2, s, s,
+                 with_alpha(SDL_Color{ 255, 255, 255, 255 }, a));
+        }
+        float base_ang = std::floor(t * 12.f) / 12.f * 0.5f;
+        for (int k = 0; k < 20; k++) {
+            EllipsePt q = ellipse_pt(cx, cy, 340.f, 112.f, -0.20f,
+                                     k / 20.f * 2.f * PI + base_ang);
+            int s = k % 5 == 0 ? 12 : 7;
+            fill(r, (int)q.x - s / 2, (int)q.y - s / 2, s, s,
+                 with_alpha(C_ACCENT, (int)(fa * (k % 5 == 0 ? 0.55f : 0.20f))));
+        }
+        float ts = std::floor(t * 8.f) / 8.f;
+        for (int i = 0; i < 2; i++) {
+            float ang = ts * (i ? -2.f : 1.5f) + i * 2.1f;
+            EllipsePt q = ellipse_pt(cx, cy, i ? 286.f : 352.f, i ? 92.f : 118.f,
+                                     i ? 0.20f : -0.24f, ang);
+            int s = i ? 16 : 22;
+            fill(r, (int)q.x - s / 2, (int)q.y - s / 2, s, s,
+                 with_alpha(C_SHEEN, (int)(fa * 0.85f)));
+        }
+        break;
+    }
+    case 2: {   // fresh — soft drifting bubbles
+        blit(r, p.glow_a, W * 0.20f, H * 0.18f, 520, 520, (Uint8)(fa * 0.10f));
+        blit(r, p.glow_s, W * 0.60f, H * 0.34f, 460, 460, (Uint8)(fa * 0.14f));
+        for (int i = 0; i < 11; i++) {
+            float x = (i * 211 + 37) % W + std::sin(t * 0.25f + i * 1.3f) * 38.f;
+            float y = H + 80.f - std::fmod(i * 97.f + t * 11.f, H + 160.f);
+            float rr = 10.f + (i % 5) * 13.f;
+            bool soft = i % 3 != 0;
+            disc(r, x, y, rr, with_alpha(soft ? C_SHEEN : C_ACCENT,
+                                         (int)(fa * 0.10f)), 48);
+            ring(r, x, y, rr, 1.5f, with_alpha(soft ? C_ACCENT : C_SHEEN,
+                                               (int)(fa * 0.16f)), 48);
+        }
+        break;
+    }
+    default: {  // ink — brush rings, splatter, red seal
+        ering(r, cx, cy, 352.f, 118.f, -0.24f, 2.2f, with_alpha(C_TEXT, (int)(fa * 0.10f)));
+        ering(r, cx, cy, 286.f, 92.f, 0.20f, 1.4f, with_alpha(C_TEXT, (int)(fa * 0.07f)));
+        ering(r, cx, cy, 196.f, 62.f, -0.05f, 1.2f, with_alpha(C_TEXT, (int)(fa * 0.05f)));
+        for (int i = 0; i < 14; i++) {
+            int x = (i * 467 + 83) % W;
+            int y = (i * 281 + 59) % H;
+            disc(r, (float)x, (float)y, (float)(2 + i % 4 * 2),
+                 with_alpha(C_TEXT, (int)(fa * 0.12f)), 20);
+        }
+        break;
+    }
+    }
+}
+
 // --- top panel: brand hero -------------------------------------------------
 void draw_top(Panel& p, float t, float fade, const Boot& b)
 {
     SDL_Renderer* r = p.ren;
     Uint8 fa = (Uint8)(fade * 255);
 
-    vgrad(r, 0, 0, W, H, dark(C_BG, 0.55f), dark(C_BG, 0.92f));
-    if (p.bg && fade < 1.f) blit(r, p.bg, 0, 0, W, H, (Uint8)((1.f - fade) * 255));
+    // Light themes keep a paper wash; dark themes dim toward black.
+    if (g_theme >= 2)
+        vgrad(r, 0, 0, W, H, mixc(C_BG, SDL_Color{ 255, 255, 255, 255 }, 0.35f), C_BG);
+    else
+        vgrad(r, 0, 0, W, H, dark(C_BG, 0.55f), dark(C_BG, 0.92f));
+    if (p.bg) blit(r, p.bg, 0, 0, W, H,
+                   (Uint8)(fade < 1.f ? (1.f - fade) * 255 : 120));
 
-    // aurora: two slow accent clouds
-    float bx = W * 0.5f + std::sin(t * 0.21f) * 70.f;
-    float by = H * 0.40f + std::cos(t * 0.17f) * 34.f;
-    blit(r, p.glow_a, bx - 330, by - 330, 660, 660,
-         (Uint8)(fa * (0.26f + 0.05f * std::sin(t * 1.1f))));
-    blit(r, p.glow_s, W * 0.42f + std::cos(t * 0.13f) * 90 - 240,
-         H * 0.52f + std::sin(t * 0.19f) * 40 - 240, 480, 480,
-         (Uint8)(fa * 0.10f));
-
-    // starfield
-    for (int i = 0; i < 34; i++) {
-        int x = (i * 337 + 71) % W;
-        int y = (i * 197 + 43) % H;
-        float tw = 0.5f + 0.5f * std::sin(t * (0.7f + (i % 5) * 0.23f) + i);
-        Uint8 a = (Uint8)(fa * (0.10f + 0.20f * tw) * (y < 560 ? 1.f : 0.4f));
-        if (a < 6) continue;
-        float s = (i % 7 == 0) ? 8.f : 4.f;
-        blit(r, p.dot_w, x - s / 2, y - s / 2, s, s, a);
-    }
-
-    // orbit rings + satellites
     float cx = W * 0.5f, cy = 318.f;
-    ering(r, cx, cy, 352.f, 118.f, -0.24f, 1.4f, with_alpha(C_ACCENT, (int)(fa * 0.24f)));
-    ering(r, cx, cy, 286.f, 92.f, 0.20f, 1.0f, with_alpha(C_SHEEN, (int)(fa * 0.14f)));
-    ering(r, cx, cy, 196.f, 62.f, -0.05f, 1.0f, with_alpha(C_ACCENT, (int)(fa * 0.12f)));
+    ambient_top(p, t, fa, cx, cy);
 
-    struct Sat { float rx, ry, rot, speed, off; int size; };
-    const Sat sats[2] = {
-        { 352.f, 118.f, -0.24f, 0.32f, 0.f, 34 },
-        { 286.f, 92.f, 0.20f, -0.47f, 2.1f, 24 },
-    };
-    for (const Sat& s : sats) {
-        float ang = t * s.speed + s.off;
-        for (int k = 7; k >= 0; k--) {
-            EllipsePt q = ellipse_pt(cx, cy, s.rx, s.ry, s.rot, ang - k * 0.035f);
-            Uint8 a = (Uint8)(fa * (k == 0 ? 0.85f : 0.30f * (1.f - k / 8.f)));
-            float sz = k == 0 ? s.size : s.size * 0.55f;
-            blit(r, p.dot_a, q.x - sz / 2, q.y - sz / 2, sz, sz, a);
-        }
-    }
-
-    // wordmark
+    // brand: the theme's logo, scaled to a fixed height so the layout never
+    // jumps between themes while the lettering stays each theme's own
     float wa = clampf((t - 0.20f) / 0.55f, 0.f, 1.f);
-    int wy = (int)(252 + (1.f - ease_out(wa)) * 16);
-    if (p.ww) {
-        blit(r, p.glow_a, cx - 420, wy + p.wh * 0.5f - 150, 840, 300,
-             (Uint8)(fa * wa * (0.20f + 0.05f * std::sin(t * 1.4f))));
+    if (g_theme == 1) wa = std::floor(wa * 5.f) / 5.f;
+    else if (g_theme == 3) wa = clampf((t - 0.35f) / 0.90f, 0.f, 1.f);
+    float sc = g_theme == 2 ? 0.92f + 0.08f * ease_out(wa) : 1.f;
+    int lh = (int)(140 * sc);
+    int lw = p.wh > 0 ? p.ww * lh / p.wh : 0;
+    int wy = (int)(252 + (1.f - ease_out(wa)) * (g_theme == 3 ? 8.f : 16.f));
+    if (p.ww && lw > 0) {
+        float ga = g_theme >= 2 ? 0.08f : 0.20f;
+        blit(r, p.glow_a, cx - lw * 0.75f, wy + lh * 0.5f - 150, lw * 1.5f, 300,
+             (Uint8)(fa * wa * (ga + 0.05f * std::sin(t * 1.4f))));
         SDL_SetTextureAlphaMod(p.word, (Uint8)(fa * wa));
-        SDL_Rect d = { (int)(cx - p.ww / 2), wy, p.ww, p.wh };
+        SDL_Rect d = { (int)(cx - lw / 2), wy, lw, lh };
         SDL_RenderCopy(r, p.word, nullptr, &d);
 
-        // sheen: one narrow band every 3.6 s
+        // sheen: one narrow band every 3.6 s (ink keeps its paper calm)
         float ph = t < 1.2f ? -1.f : std::fmod(t - 1.2f, 3.6f) / 3.6f;
-        if (ph >= 0.f && wa > 0.9f) {
-            int band = (int)(p.ww * 0.11f) + 10;
-            int sx = (int)(-band + ph * (p.ww + 2 * band));
-            int x0 = std::max(0, sx), x1 = std::min(p.ww, sx + band);
+        if (g_theme != 3 && ph >= 0.f && wa > 0.9f) {
+            int band = (int)(lw * 0.11f) + 10;
+            int sx = (int)(-band + ph * (lw + 2 * band));
+            int x0 = std::max(0, sx), x1 = std::min(lw, sx + band);
             if (x1 > x0) {
-                SDL_Rect src = { x0, 0, x1 - x0, p.wh };
-                SDL_Rect dst = { d.x + x0, d.y, x1 - x0, p.wh };
+                int nx0 = x0 * p.ww / lw, nx1 = x1 * p.ww / lw;
+                SDL_Rect src = { nx0, 0, nx1 - nx0, p.wh };
+                SDL_Rect dst = { d.x + x0, d.y, x1 - x0, lh };
                 SDL_SetTextureAlphaMod(p.sheen, (Uint8)(fa * 0.55f));
                 SDL_RenderCopy(r, p.sheen, &src, &dst);
             }
@@ -690,7 +829,7 @@ void draw_top(Panel& p, float t, float fade, const Boot& b)
     // underline draws itself, then a node breathes at its centre
     float ul = ease_out(clampf((t - 0.45f) / 0.7f, 0.f, 1.f));
     float half = 170.f * ul;
-    int uy = wy + p.wh + 22;
+    int uy = wy + lh + 22;
     if (half > 2.f) {
         line(r, cx - half, (float)uy, cx + half, (float)uy, 2.f,
              with_alpha(C_ACCENT, (int)(fa * 0.75f)));
@@ -742,22 +881,46 @@ void draw_bottom(Panel& p, float t, float fade, const Boot& b)
     SDL_Renderer* r = p.ren;
     Uint8 fa = (Uint8)(fade * 255);
 
-    vgrad(r, 0, 0, W, H, dark(C_BG, 0.78f), dark(C_BG, 0.96f));
-    if (p.bg && fade < 1.f) blit(r, p.bg, 0, 0, W, H, (Uint8)((1.f - fade) * 255));
+    if (g_theme >= 2)
+        vgrad(r, 0, 0, W, H, mixc(C_BG, SDL_Color{ 255, 255, 255, 255 }, 0.55f), C_BG);
+    else
+        vgrad(r, 0, 0, W, H, dark(C_BG, 0.78f), dark(C_BG, 0.96f));
+    if (p.bg) blit(r, p.bg, 0, 0, W, H,
+                   (Uint8)(fade < 1.f ? (1.f - fade) * 255 : 90));
 
-    // blueprint grid
-    for (int x = 0; x <= W; x += 64)
-        fill(r, x, 0, 1, H, with_alpha(C_DIM, (int)(fa * 0.045f)));
-    for (int y = 0; y <= H; y += 64)
-        fill(r, 0, y, W, 1, with_alpha(C_DIM, (int)(fa * 0.045f)));
+    // Theme-specific backdrop texture behind the monitor.
+    if (g_theme == 1) {
+        for (int x = 0; x <= W; x += 32)
+            fill(r, x, 0, 1, H, with_alpha(C_DIM, (int)(fa * 0.055f)));
+        for (int y = 0; y <= H; y += 32)
+            fill(r, 0, y, W, 1, with_alpha(C_DIM, (int)(fa * 0.055f)));
+    } else if (g_theme == 3) {
+        for (int y = 0; y <= H; y += 40)
+            fill(r, 0, y, W, 1, with_alpha(C_TEXT, (int)(fa * 0.045f)));
+    } else if (g_theme != 2) {
+        for (int x = 0; x <= W; x += 64)
+            fill(r, x, 0, 1, H, with_alpha(C_DIM, (int)(fa * 0.045f)));
+        for (int y = 0; y <= H; y += 64)
+            fill(r, 0, y, W, 1, with_alpha(C_DIM, (int)(fa * 0.045f)));
+    }
 
     blit(r, p.glow_a, 60, 120, 560, 560, (Uint8)(fa * 0.13f));
     blit(r, p.glow_a, 620, 30, 440, 440, (Uint8)(fa * 0.10f));
 
-    // slow scanline
-    float sy = std::fmod(t * 74.f, H + 160.f) - 80.f;
-    if (sy > 0 && sy < H)
-        fill(r, 0, (int)sy, W, 1, with_alpha(C_ACCENT, (int)(fa * 0.10f)));
+    // slow scanline (pixel steps it, fresh has none, ink crawls)
+    if (g_theme == 1) {
+        float sy = std::fmod(std::floor(t * 24.f) / 24.f * 140.f, H + 160.f) - 80.f;
+        if (sy > 0 && sy < H)
+            fill(r, 0, (int)sy, W, 2, with_alpha(C_ACCENT, (int)(fa * 0.12f)));
+    } else if (g_theme == 3) {
+        float sy = std::fmod(t * 18.f, H + 160.f) - 80.f;
+        if (sy > 0 && sy < H)
+            fill(r, 0, (int)sy, W, 1, with_alpha(C_TEXT, (int)(fa * 0.06f)));
+    } else if (g_theme == 0) {
+        float sy = std::fmod(t * 74.f, H + 160.f) - 80.f;
+        if (sy > 0 && sy < H)
+            fill(r, 0, (int)sy, W, 1, with_alpha(C_ACCENT, (int)(fa * 0.10f)));
+    }
 
     // header
     fill(r, 60, 46, 4, 28, with_alpha(C_ACCENT, fa));
@@ -970,6 +1133,7 @@ int main()
     if (!ok || TTF_Init() < 0) {
         fprintf(stderr, "splash: init failed: %s / %s\n", SDL_GetError(), TTF_GetError());
         SDL_Quit();
+        persist_log();
         cleanup_files();
         return 1;
     }
@@ -980,6 +1144,15 @@ int main()
     std::string fonts  = env_dir("GAMEOS_FONTS",  "/usr/share/gameos/fonts");
     std::string assets = env_dir("GAMEOS_ASSETS", "/usr/share/gameos/assets");
 
+    // Preview hook: pick a theme before the settings file is reachable.
+    if (const char* e = getenv("GAMEOS_THEME")) {
+        int v = atoi(e);
+        if (v >= 0 && v <= 3) {
+            g_theme = v;
+            g_theme_dirty = true;
+        }
+    }
+
     Panel top, bot;
     const gameos::Panels panels = gameos::panel_displays();
     const int dtop = panels.top;
@@ -988,6 +1161,7 @@ int main()
         fprintf(stderr, "splash: top panel: %s\n", SDL_GetError());
         teardown(top);
         TTF_Quit(); IMG_Quit(); SDL_Quit();
+        persist_log();
         cleanup_files();
         return 1;
     }
@@ -1054,6 +1228,7 @@ int main()
     teardown(top);
     teardown(bot);
     TTF_Quit(); IMG_Quit(); SDL_Quit();
+    persist_log();
     cleanup_files();
     return 0;
 }

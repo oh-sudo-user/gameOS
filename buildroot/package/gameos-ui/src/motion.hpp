@@ -18,6 +18,21 @@ constexpr int kInstantMs = 0;
 
 enum class Ease { Enter, Exit, Move, Spring, Linear };
 
+// Per-theme motion language: the same tokens, a different rhythm. Theme 1
+// (pixel) steps its transitions like a low frame-rate console; theme 2
+// (fresh) floats with a soft spring; theme 3 (ink) is slow and fade-only.
+struct ThemeProfile {
+    float speed;      // multiplier applied to the duration tokens
+    Ease scene;       // incoming-screen curve
+    float slide_px;   // vertical travel of the incoming scene (0 = pure fade)
+    float carousel;   // damp rate for the console carousel
+    float scroll;     // damp rate for lists and selectors
+    int steps;        // >1 quantises transition progress (retro stepping)
+};
+
+ThemeProfile theme_profile(int theme);
+int theme_ms(int ms, int theme);
+
 // Cubic bezier easing sampled from a 60-entry lookup table.
 float ease(Ease e, float x);
 
