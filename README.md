@@ -3,7 +3,7 @@
 A game system built from scratch for the Anbernic RG DS Plus and RG DS.
 为 Anbernic RG DS Plus 与 RG DS 从零打造的游戏系统。
 
-**v1.1.0**
+**v1.1.1**
 
 ![gameOS](docs/assets/preview.png)
 
