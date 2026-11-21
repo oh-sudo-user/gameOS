@@ -160,8 +160,9 @@ bool OverrideStore::load(std::vector<std::string>* warnings)
             entry_bad = true;
         } else if (j) {
             std::string p = json_object_get_string(j);
-            if (p == "light") ov.perf = 0;
-            else if (p == "heavy") ov.perf = 1;
+            if (p == "powersave") ov.perf = 0;
+            else if (p == "balanced" || p == "light") ov.perf = 1;
+            else if (p == "performance" || p == "heavy") ov.perf = 2;
             else entry_bad = true;
         }
 
@@ -253,9 +254,11 @@ bool OverrideStore::save()
         }
         if (!ov.title.empty())
             json_object_object_add(e, "title", json_object_new_string(ov.title.c_str()));
-        if (ov.perf >= 0)
-            json_object_object_add(e, "perf",
-                                   json_object_new_string(ov.perf ? "heavy" : "light"));
+        if (ov.perf >= 0) {
+            const char* pn = ov.perf == 0 ? "powersave"
+                           : ov.perf == 1 ? "balanced" : "performance";
+            json_object_object_add(e, "perf", json_object_new_string(pn));
+        }
         if (ov.scale_integer >= 0)
             json_object_object_add(e, "video_scale_integer",
                                    json_object_new_boolean(ov.scale_integer != 0));

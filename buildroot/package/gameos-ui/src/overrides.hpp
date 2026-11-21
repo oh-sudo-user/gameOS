@@ -16,7 +16,7 @@ namespace gameos {
 
 struct GameOverride {
     std::string title;      // custom display title (empty = use the file name)
-    int perf = -1;          // -1 unset, 0 light, 1 heavy
+    int perf = -1;          // -1 unset, 0 powersave, 1 balanced, 2 performance
     int scale_integer = -1; // -1 unset, 0 false, 1 true (video_scale_integer)
     int video_smooth = -1;  // -1 unset, 0 false, 1 true
     int frameskip = -1;     // -1 unset, 0..5 (gpSP only)

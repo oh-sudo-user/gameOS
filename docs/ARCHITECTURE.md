@@ -119,6 +119,17 @@ busybox init
   ZIP 先解到目标父目录下的 `.gameos-unzip-*` 暂存区，逐项校验 CRC 与大小，
   拒绝 ZIP64、加密、符号链接、重复名、绝对名和越界路径，完成后原子改名
   落盘。界面为单窗格加 TF1/TF2 切换，复制与移动默认目标是另一张卡。
+- 性能与电源：`gameos-perf` 只写 governor 名称，从不写频率。策略名为
+  `ui` / `powersave` / `balanced` / `performance` / `superdrastic`，
+  `light` / `heavy` 是 `balanced` / `performance` 的兼容别名；CPU 逐个
+  policy 读取 `scaling_available_governors` 后选择并回退，GPU 默认 `KEEP`。
+  `gameos-sleepd` 每 30 秒调用 `gameos-perf guard`：任一热区达到 85 °C
+  或电量 ≤15% 时把 performance 档压到 balanced，达到 95 °C 或 ≤8% 时
+  全部压到 powersave；温度回到 80 °C 且电量恢复 20% 才释放。阈值在
+  `/etc/gameos/perf.conf`，`GUARD_ENABLE=0` 可整体关闭，内核 thermal
+  框架仍负责硬件降频。档位切换写入 `/tmp/gameos-perf.log`；请求和守护状态
+  在 `/run/gameos/perf-request`、`perf-guard`。`superdrastic` 暂与
+  performance 使用同一 governor，因为没有实测的频率下限可供设置。
 - 触摸：下屏每帧重建命中区；移动超过 12 DP 视为拖动，不再触发点击；页面
   转场期间丢弃触摸，避免点按落在新页面刚建立的命中区上；抬起时重新命中
   同一控件才执行动作。

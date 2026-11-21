@@ -128,7 +128,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "正在读取卡带", "正在校验数据", "正在启动模拟器",
         // per-game settings
         "游戏设置", "自定义名称", "性能档位", "整数缩放", "平滑缩放", "帧跳",
-        "默认", "轻量", "高性能",
+        "默认", "轻量", "省电", "平衡", "高性能",
         "已保存", "保存失败", "恢复默认", "已恢复默认",
         "轻触切换 · 返回即生效",
         // file manager
@@ -249,7 +249,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "正在讀取卡帶", "正在驗證資料", "正在啟動模擬器",
         // per-game settings
         "遊戲設定", "自訂名稱", "效能檔位", "整數縮放", "平滑縮放", "幀跳",
-        "預設", "輕量", "高效能",
+        "預設", "輕量", "省電", "平衡", "高效能",
         "已儲存", "儲存失敗", "恢復預設", "已恢復預設",
         "輕觸切換 · 返回即生效",
         // file manager
@@ -382,7 +382,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // per-game settings
         "ゲーム設定", "表示名", "パフォーマンス", "整数スケーリング",
         "スムーズスケーリング", "フレームスキップ",
-        "既定", "軽量", "高性能",
+        "既定", "軽量", "省電力", "バランス", "高性能",
         "保存しました", "保存に失敗", "既定に戻す", "既定に戻しました",
         "タップで切替 · 戻ると反映",
         // file manager
@@ -520,7 +520,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // per-game settings
         "Game settings", "Custom title", "Performance", "Integer scale",
         "Smooth scaling", "Frame skip",
-        "Default", "Light", "High",
+        "Default", "Light", "Power saver", "Balanced", "High",
         "Saved", "Save failed", "Reset to default", "Defaults restored",
         "Tap to change · applied on back",
         // file manager
@@ -662,7 +662,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // per-game settings
         "Настройки игры", "Своё название", "Производительность",
         "Целочисленный масштаб", "Сглаживание", "Пропуск кадров",
-        "По умолчанию", "Лёгкий", "Высокий",
+        "По умолчанию", "Лёгкий", "Экономия", "Сбалансированный", "Высокий",
         "Сохранено", "Ошибка сохранения", "Сбросить настройки",
         "Настройки сброшены",
         "Коснитесь для выбора · применяется сразу",
@@ -809,7 +809,7 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         // per-game settings
         "Ajustes del juego", "Título propio", "Rendimiento", "Escalado entero",
         "Suavizado", "Salto de fotogramas",
-        "Predeterminado", "Ligero", "Alto",
+        "Predeterminado", "Ligero", "Ahorro", "Equilibrado", "Alto",
         "Guardado", "Error al guardar", "Restablecer", "Ajustes restablecidos",
         "Toca para cambiar · se aplica al volver",
         // file manager

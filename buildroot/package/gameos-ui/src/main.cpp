@@ -1503,7 +1503,8 @@ void cfg_cycle(int row)
     if (app.games.empty()) return;
     GameOverride ov = cfg_current();
     switch (row) {
-    case 1: ov.perf = ov.perf < 0 ? 0 : (ov.perf == 0 ? 1 : -1); break;
+    case 1: ov.perf = ov.perf < 0 ? 0
+                          : (ov.perf >= 2 ? -1 : ov.perf + 1); break;
     case 2: ov.scale_integer = ov.scale_integer < 0 ? 1
                             : (ov.scale_integer ? 0 : -1); break;
     case 3: ov.video_smooth = ov.video_smooth < 0 ? 1
@@ -5753,7 +5754,8 @@ void deck_cfg(SDL_Renderer* r)
             break;
         case 1:
             val = ov.perf < 0 ? tr(T_CFG_DEFAULT)
-                : tr(ov.perf ? T_CFG_HEAVY : T_CFG_LIGHT);
+                : tr(ov.perf == 0 ? T_CFG_POWERSAVE
+                     : ov.perf == 1 ? T_CFG_BALANCED : T_CFG_HEAVY);
             break;
         case 2:
             val = ov.scale_integer < 0 ? tr(T_CFG_DEFAULT)

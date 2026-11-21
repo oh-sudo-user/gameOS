@@ -1,58 +1,126 @@
 #!/bin/sh
-# gameOS CPU/GPU performance profiles.
+# gameOS CPU/GPU performance policies and the thermal/battery guard.
 #
-#   gameos-perf ui|light|heavy|restore|status
+#   gameos-perf ui|powersave|balanced|performance|superdrastic
+#   gameos-perf light|heavy     (aliases: balanced / performance)
+#   gameos-perf guard           (re-evaluate the guard; run by gameos-sleepd)
+#   gameos-perf restore|status
 #
 # Policy preferences come from /etc/gameos/perf.conf. NO fixed frequencies are
 # ever written: each CPU policy's scaling_available_governors is read first and
-# only a governor the kernel actually offers is selected (configured value ->
-# schedutil -> ondemand -> performance). GPU devfreq is left at the driver
-# default (KEEP) until a governor is proven stable on real hardware. The
-# boot-time governor of each policy is saved once to /run/gameos/perf-original
-# so "restore" can put it back. Every failure is logged and never aborts the
-# caller -- boot and game launch must not depend on a governor write succeeding.
+# only a governor the kernel actually offers is selected, falling back through
+# schedutil -> ondemand -> performance. The kernel thermal framework keeps
+# ownership of throttling; this script only chooses a governor strategy.
+#
+# "superdrastic" is the top strategy name from the roadmap, but it currently
+# maps to the same governor as performance because no frequency floor has been
+# measured on real hardware. Do not add min/max frequency writes here without a
+# report proving them safe.
+#
+# The guard clamps the requested strategy when any thermal zone is hot or the
+# battery is low, releases it only after a cool/recover hysteresis band, and
+# logs every transition to /tmp/gameos-perf.log. Missing sensors never force a
+# clamp (the kernel still protects the SoC).
+#
+# The GAMEOS_PERF_* environment variables exist so the host test can redirect
+# sysfs/conf/run paths into a sandbox. They are unset on the device.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-CONF=/etc/gameos/perf.conf
-RUN=/run/gameos
+CONF=${GAMEOS_PERF_CONF:-/etc/gameos/perf.conf}
+RUN=${GAMEOS_PERF_RUN:-/run/gameos}
 ORIG="$RUN/perf-original"
-LOG=/tmp/gameos-perf.log
-CPUFREQ=/sys/devices/system/cpu/cpufreq
-DEVFREQ=/sys/class/devfreq
+REQ="$RUN/perf-request"
+GUARD="$RUN/perf-guard"
+LOG=${GAMEOS_PERF_LOG:-/tmp/gameos-perf.log}
+CPUFREQ=${GAMEOS_PERF_CPUFREQ:-/sys/devices/system/cpu/cpufreq}
+DEVFREQ=${GAMEOS_PERF_DEVFREQ:-/sys/class/devfreq}
+THERMAL=${GAMEOS_PERF_THERMAL:-/sys/class/thermal}
+POWER=${GAMEOS_PERF_POWER:-/sys/class/power_supply}
 
 mkdir -p "$RUN" 2>/dev/null
 
-log() { echo "[gameos-perf] $*" >> "$LOG" 2>/dev/null; }
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [gameos-perf] $*" >>"$LOG" 2>/dev/null
+}
 
 # Defaults; perf.conf overrides them. Keeping defaults here means a missing or
-# unreadable conf still yields a safe schedutil/KEEP policy rather than nothing.
+# unreadable conf still yields a safe policy rather than nothing. The LIGHT and
+# HEAVY keys are kept for compatibility; the roadmap names balanced and
+# performance map onto them.
 UI_CPU_GOVERNOR=schedutil
 LIGHT_CPU_GOVERNOR=schedutil
 HEAVY_CPU_GOVERNOR=performance
+POWERSAVE_CPU_GOVERNOR=powersave
+SUPERDRASTIC_CPU_GOVERNOR=performance
 UI_GPU_GOVERNOR=KEEP
 LIGHT_GPU_GOVERNOR=KEEP
 HEAVY_GPU_GOVERNOR=KEEP
+POWERSAVE_GPU_GOVERNOR=KEEP
+SUPERDRASTIC_GPU_GOVERNOR=KEEP
+GUARD_ENABLE=1
+THERMAL_HOT_MC=85000
+THERMAL_CRIT_MC=95000
+THERMAL_COOL_MC=80000
+BATTERY_LOW_PCT=15
+BATTERY_CRIT_PCT=8
+BATTERY_RECOVER_PCT=20
 [ -r "$CONF" ] && . "$CONF"
 
 # Read a sysfs attribute (empty string if unreadable).
 rd() { cat "$1" 2>/dev/null; }
 
-# True if governor $1 appears in the space-separated list $2.
+is_num() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    return 0
+}
+
 has_gov() {
     case " $2 " in *" $1 "*) return 0 ;; esac
     return 1
 }
 
-# Echo the first available governor among: wanted, schedutil, ondemand,
-# performance. Echoes nothing (returns 1) when none are available.
-pick_cpu_gov() {
-    pc_want=$1; pc_avail=$2
-    for pc_g in "$pc_want" schedutil ondemand performance; do
-        [ -n "$pc_g" ] || continue
-        if has_gov "$pc_g" "$pc_avail"; then echo "$pc_g"; return 0; fi
-    done
-    return 1
+# Canonical strategy names accepted on the command line.
+canon_profile() {
+    case "$1" in
+        ui|powersave|balanced|performance|superdrastic) echo "$1" ;;
+        light) echo balanced ;;
+        heavy) echo performance ;;
+        *) return 1 ;;
+    esac
+}
+
+cpu_for_profile() {
+    case "$1" in
+        ui) echo "$UI_CPU_GOVERNOR" ;;
+        powersave) echo "$POWERSAVE_CPU_GOVERNOR" ;;
+        balanced) echo "$LIGHT_CPU_GOVERNOR" ;;
+        performance) echo "$HEAVY_CPU_GOVERNOR" ;;
+        superdrastic) echo "$SUPERDRASTIC_CPU_GOVERNOR" ;;
+        *) echo "$LIGHT_CPU_GOVERNOR" ;;
+    esac
+}
+
+gpu_for_profile() {
+    case "$1" in
+        ui) echo "$UI_GPU_GOVERNOR" ;;
+        powersave) echo "$POWERSAVE_GPU_GOVERNOR" ;;
+        balanced) echo "$LIGHT_GPU_GOVERNOR" ;;
+        performance) echo "$HEAVY_GPU_GOVERNOR" ;;
+        superdrastic) echo "$SUPERDRASTIC_GPU_GOVERNOR" ;;
+        *) echo "$LIGHT_GPU_GOVERNOR" ;;
+    esac
+}
+
+# Candidate governors for a policy, preferred first. A write failure moves on
+# to the next available candidate instead of leaving the old (possibly hot)
+# governor in place.
+cpu_candidates() {
+    case "$1" in
+        powersave) echo "powersave schedutil ondemand performance" ;;
+        performance) echo "performance schedutil ondemand" ;;
+        *) echo "$1 schedutil ondemand performance" ;;
+    esac
 }
 
 # Record the policy's current governor once. First write wins, so switching
@@ -64,7 +132,7 @@ save_orig() {
         return 0
     fi
     so_cur=$(rd "$1/scaling_governor")
-    [ -n "$so_cur" ] && echo "$so_base $so_cur" >> "$ORIG"
+    [ -n "$so_cur" ] && echo "$so_base $so_cur" >>"$ORIG"
 }
 
 apply_cpu() {
@@ -76,18 +144,28 @@ apply_cpu() {
             log "$ac_p: no scaling_available_governors; skipping"
             continue
         fi
-        ac_gov=$(pick_cpu_gov "$ac_want" "$ac_avail")
-        if [ -z "$ac_gov" ]; then
-            log "$ac_p: no usable governor (available: $ac_avail)"
-            continue
-        fi
         ac_cur=$(rd "$ac_p/scaling_governor")
-        [ "$ac_cur" = "$ac_gov" ] && continue
-        save_orig "$ac_p"
-        if echo "$ac_gov" > "$ac_p/scaling_governor" 2>>"$LOG"; then
-            log "$ac_p: $ac_cur -> $ac_gov"
-        else
-            log "$ac_p: FAILED to set governor $ac_gov"
+        ac_ok=0
+        for ac_g in $(cpu_candidates "$ac_want"); do
+            if ! has_gov "$ac_g" "$ac_avail"; then
+                continue
+            fi
+            if [ "$ac_cur" = "$ac_g" ]; then
+                ac_ok=1
+                break
+            fi
+            save_orig "$ac_p"
+            if echo "$ac_g" >"$ac_p/scaling_governor" 2>>"$LOG"; then
+                log "$ac_p: $ac_cur -> $ac_g (want $ac_want)"
+                ac_ok=1
+                break
+            else
+                log "$ac_p: FAILED to set $ac_g; trying next candidate"
+                ac_cur=$(rd "$ac_p/scaling_governor")
+            fi
+        done
+        if [ "$ac_ok" != 1 ]; then
+            log "$ac_p: no usable governor for $ac_want (available: $ac_avail)"
         fi
     done
 }
@@ -108,7 +186,6 @@ apply_gpu() {
         [ -d "$ag_d" ] || continue
         is_gpu "$ag_d" || continue
         if [ "$ag_want" = KEEP ] || [ -z "$ag_want" ]; then
-            log "GPU $ag_d: KEEP (driver default: $(rd "$ag_d/governor"))"
             continue
         fi
         ag_avail=$(rd "$ag_d/available_governors")
@@ -118,12 +195,174 @@ apply_gpu() {
         fi
         ag_cur=$(rd "$ag_d/governor")
         [ "$ag_cur" = "$ag_want" ] && continue
-        if echo "$ag_want" > "$ag_d/governor" 2>>"$LOG"; then
+        if echo "$ag_want" >"$ag_d/governor" 2>>"$LOG"; then
             log "GPU $ag_d: $ag_cur -> $ag_want"
         else
-            log "GPU $ag_d: FAILED to set governor $ag_want"
+            log "GPU $ag_d: FAILED to set governor $ag_want; KEEP"
         fi
     done
+}
+
+# Highest valid thermal zone temperature, in millidegrees. Drivers that report
+# whole degrees (value < 1000) are normalised; obvious sentinels are ignored.
+max_temp_mc() {
+    mt_max=
+    for mt_z in "$THERMAL"/thermal_zone*; do
+        [ -d "$mt_z" ] || continue
+        mt_t=$(rd "$mt_z/temp")
+        is_num "$mt_t" || continue
+        [ "$mt_t" -gt 0 ] || continue
+        [ "$mt_t" -lt 1000 ] && mt_t=$((mt_t * 1000))
+        [ "$mt_t" -le 150000 ] || continue
+        if [ -z "$mt_max" ] || [ "$mt_t" -gt "$mt_max" ]; then
+            mt_max=$mt_t
+        fi
+    done
+    echo "$mt_max"
+}
+
+battery_pct_read() {
+    for bp_b in "$POWER"/*; do
+        [ -d "$bp_b" ] || continue
+        [ "$(rd "$bp_b/type")" = Battery ] || continue
+        bp_c=$(rd "$bp_b/capacity")
+        is_num "$bp_c" || continue
+        [ "$bp_c" -ge 0 ] && [ "$bp_c" -le 100 ] || continue
+        echo "$bp_c"
+        return 0
+    done
+    return 1
+}
+
+# A hot or low-battery state never keeps a top-tier strategy. ui/balanced stay
+# as-is (schedutil already scales); critical states go all the way to powersave.
+clamp_hot_profile() {
+    case "$1" in
+        performance|superdrastic) echo balanced ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Prefix the lock file descriptor; flock is present in the shipped BusyBox.
+# Failure is logged but never blocks a launch: the writes are idempotent and
+# the next guard tick repairs a lost race.
+lock_perf() {
+    exec 9>"$RUN/perf.lock" 2>/dev/null || { log "lock: cannot open $RUN/perf.lock"; return 1; }
+    flock -w 5 9 2>/dev/null || { log "lock: timeout"; return 1; }
+    return 0
+}
+
+unlock_perf() {
+    exec 9>&- 2>/dev/null
+}
+
+guard_read_state() {
+    GR_PREV_ACTIVE=0
+    GR_PREV_EFF=
+    [ -r "$GUARD" ] || return 0
+    gr_line=$(rd "$GUARD")
+    [ -n "$gr_line" ] || return 0
+    GR_PREV_ACTIVE=${gr_line%% *}
+    case "$GR_PREV_ACTIVE" in 0|1) ;; *) GR_PREV_ACTIVE=0 ;; esac
+    case "$gr_line" in *" "*) GR_PREV_EFF=${gr_line#* } ;; esac
+}
+
+# Populates GE_* for a requested strategy. Uses the previous guard state to add
+# hysteresis: once clamped, it holds until the temperature has dropped below
+# THERMAL_COOL_MC and the battery has recovered above BATTERY_RECOVER_PCT.
+guard_eval() {
+    GE_REQ=$1
+    GE_TEMP=$(max_temp_mc)
+    GE_BATT=$(battery_pct_read)
+    guard_read_state
+    GE_ACTIVE=0
+    GE_EFF=$GE_REQ
+    GE_REASON=ok
+    GE_HOT=0
+    GE_CRIT=0
+    if [ -n "$GE_TEMP" ]; then
+        [ "$GE_TEMP" -ge "$THERMAL_HOT_MC" ] && GE_HOT=1
+        [ "$GE_TEMP" -ge "$THERMAL_CRIT_MC" ] && GE_CRIT=1
+    fi
+    if [ -n "$GE_BATT" ]; then
+        [ "$GE_BATT" -le "$BATTERY_LOW_PCT" ] && GE_HOT=1
+        [ "$GE_BATT" -le "$BATTERY_CRIT_PCT" ] && GE_CRIT=1
+    fi
+    if [ "$GUARD_ENABLE" != 1 ]; then
+        GE_REASON=disabled
+        return 0
+    fi
+    if [ "$GE_CRIT" = 1 ]; then
+        GE_ACTIVE=1
+        GE_EFF=powersave
+        GE_REASON=critical
+    elif [ "$GE_HOT" = 1 ]; then
+        GE_ACTIVE=1
+        GE_EFF=$(clamp_hot_profile "$GE_REQ")
+        # A critical clamp stays at powersave while the hot/low band persists;
+        # it must not step back up to balanced before full recovery.
+        if [ "$GR_PREV_ACTIVE" = 1 ] && [ "$GR_PREV_EFF" = powersave ]; then
+            GE_EFF=powersave
+        fi
+        GE_REASON=hot
+    elif [ "$GR_PREV_ACTIVE" = 1 ]; then
+        ge_cool=1
+        ge_batt_ok=1
+        [ -n "$GE_TEMP" ] && [ "$GE_TEMP" -gt "$THERMAL_COOL_MC" ] && ge_cool=0
+        [ -n "$GE_BATT" ] && [ "$GE_BATT" -lt "$BATTERY_RECOVER_PCT" ] && ge_batt_ok=0
+        if [ "$ge_cool" = 1 ] && [ "$ge_batt_ok" = 1 ]; then
+            GE_REASON=released
+        else
+            GE_ACTIVE=1
+            GE_EFF=${GR_PREV_EFF:-$(clamp_hot_profile "$GE_REQ")}
+            GE_REASON=hold
+        fi
+    fi
+}
+
+guard_save_state() {
+    gs_tmp="$GUARD.tmp"
+    if echo "$GE_ACTIVE $GE_EFF" >"$gs_tmp" 2>/dev/null; then
+        mv -f "$gs_tmp" "$GUARD" 2>/dev/null || rm -f "$gs_tmp"
+    fi
+}
+
+guard_apply() {
+    ga_req=$1
+    apply_cpu "$(cpu_for_profile "$GE_EFF")"
+    apply_gpu "$(gpu_for_profile "$GE_EFF")"
+    guard_save_state
+    if [ "$GE_ACTIVE" != "$GR_PREV_ACTIVE" ] || [ "$GE_EFF" != "$GR_PREV_EFF" ]; then
+        log "guard: requested=$ga_req effective=$GE_EFF state=$GE_REASON temp=${GE_TEMP:-NA} battery=${GE_BATT:-NA}"
+    fi
+}
+
+write_request() {
+    wr_tmp="$REQ.tmp"
+    if echo "$1" >"$wr_tmp" 2>/dev/null; then
+        mv -f "$wr_tmp" "$REQ" 2>/dev/null || rm -f "$wr_tmp"
+    fi
+}
+
+do_profile() {
+    dp_req=$(canon_profile "$1") || return 2
+    lock_perf
+    write_request "$dp_req"
+    guard_eval "$dp_req"
+    guard_apply "$dp_req"
+    unlock_perf
+}
+
+do_guard() {
+    gq_req=$(rd "$REQ")
+    # No request means restore/never started: stay out of the way so a
+    # deliberate gameos-perf restore is not overwritten by the daemon.
+    [ -n "$gq_req" ] || return 0
+    gq_req=$(canon_profile "$gq_req") || gq_req=ui
+    lock_perf
+    guard_eval "$gq_req"
+    guard_apply "$gq_req"
+    unlock_perf
 }
 
 do_restore() {
@@ -134,7 +373,7 @@ do_restore() {
         [ -d "$dr_p" ] || continue
         dr_avail=$(rd "$dr_p/scaling_available_governors")
         if has_gov "$dr_gov" "$dr_avail"; then
-            if echo "$dr_gov" > "$dr_p/scaling_governor" 2>>"$LOG"; then
+            if echo "$dr_gov" >"$dr_p/scaling_governor" 2>>"$LOG"; then
                 log "restore $dr_p -> $dr_gov"
             else
                 log "restore $dr_p: FAILED to set $dr_gov"
@@ -142,13 +381,25 @@ do_restore() {
         else
             log "restore $dr_p: saved governor '$dr_gov' unavailable; skipping"
         fi
-    done < "$ORIG"
+    done <"$ORIG"
     rm -f "$ORIG"
     # GPU was never modified under KEEP, so there is nothing to restore.
 }
 
-# Benchmark/diagnostic snapshot (audit doc 7.3). Reads only; writes nothing.
+# Read-only diagnostic snapshot for the integration report.
 do_status() {
+    st_req=$(rd "$REQ")
+    [ -n "$st_req" ] || st_req="(none, guard idle)"
+    st_state=$(rd "$GUARD")
+    [ -n "$st_state" ] || st_state="(none)"
+    echo "=== policy ==="
+    echo "requested       = $st_req"
+    echo "guard state     = $st_state (active effective)"
+    echo "guard enabled   = $GUARD_ENABLE"
+    echo "thermal hot/crit/cool (mC) = $THERMAL_HOT_MC / $THERMAL_CRIT_MC / $THERMAL_COOL_MC"
+    echo "battery low/crit/recover (%) = $BATTERY_LOW_PCT / $BATTERY_CRIT_PCT / $BATTERY_RECOVER_PCT"
+    echo "temperature     = $(max_temp_mc)"
+    echo "battery         = $(battery_pct_read)"
     echo "=== CPU ==="
     for st_p in "$CPUFREQ"/policy*; do
         [ -d "$st_p" ] || continue
@@ -170,18 +421,36 @@ do_status() {
         echo "  avail_freq    = $(rd "$st_d/available_frequencies")"
     done
     echo "=== thermal ==="
-    for st_t in /sys/class/thermal/thermal_zone*; do
+    for st_t in "$THERMAL"/thermal_zone*; do
         [ -d "$st_t" ] || continue
         echo "  $(rd "$st_t/type") = $(rd "$st_t/temp")"
+    done
+    echo "=== power ==="
+    for st_b in "$POWER"/*; do
+        [ -d "$st_b" ] || continue
+        echo "  ${st_b##*/}: type=$(rd "$st_b/type") capacity=$(rd "$st_b/capacity") status=$(rd "$st_b/status")"
     done
 }
 
 case "${1:-ui}" in
-    ui)      apply_cpu "$UI_CPU_GOVERNOR";    apply_gpu "$UI_GPU_GOVERNOR" ;;
-    light)   apply_cpu "$LIGHT_CPU_GOVERNOR"; apply_gpu "$LIGHT_GPU_GOVERNOR" ;;
-    heavy)   apply_cpu "$HEAVY_CPU_GOVERNOR"; apply_gpu "$HEAVY_GPU_GOVERNOR" ;;
-    restore) do_restore ;;
-    status)  do_status ;;
-    *) echo "usage: gameos-perf {ui|light|heavy|restore|status}" >&2; exit 2 ;;
+    ui|powersave|balanced|performance|superdrastic|light|heavy)
+        do_profile "$1" || exit 2
+        ;;
+    guard)
+        do_guard
+        ;;
+    restore)
+        lock_perf
+        do_restore
+        rm -f "$REQ" "$GUARD"
+        unlock_perf
+        ;;
+    status)
+        do_status
+        ;;
+    *)
+        echo "usage: gameos-perf {ui|powersave|balanced|performance|superdrastic|light|heavy|guard|restore|status}" >&2
+        exit 2
+        ;;
 esac
 exit 0

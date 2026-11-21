@@ -436,14 +436,24 @@ void dump_session_header(Diag& d, const Console& c, const Game& g,
 } // namespace
 
 // Performance profile by console identity (never guessed from the ROM
-// extension): NDS/PS1/PSP are heavy, GBA/GBC are light. gameos-perf maps these
-// to governor preferences in /etc/gameos/perf.conf.
+// extension): NDS/PS1/PSP are heavy, GBA/GBC are balanced. gameos-perf maps
+// these strategy names to governor preferences in /etc/gameos/perf.conf.
 static const char* perf_profile(const Console& c)
 {
-    if (c.dual) return "heavy";                 // NDS spans both panels
-    if (strcmp(c.id, "ps1") == 0) return "heavy";
-    if (strcmp(c.id, "psp") == 0) return "heavy";
-    return "light";                             // GBA / GBC
+    if (c.dual) return "performance";           // NDS spans both panels
+    if (strcmp(c.id, "ps1") == 0) return "performance";
+    if (strcmp(c.id, "psp") == 0) return "performance";
+    return "balanced";                          // GBA / GBC
+}
+
+// Per-game override: 0 powersave, 1 balanced, 2 performance.
+static const char* perf_name(int p)
+{
+    switch (p) {
+    case 0: return "powersave";
+    case 1: return "balanced";
+    default: return "performance";
+    }
 }
 
 // Subsystem identity: our own launch/tuning layer around each engine.
@@ -753,7 +763,7 @@ int launch_game(const Console& c, const Game& g)
     const GameOverride* ov = overrides().find(c.id, g.path);
     const std::string base_cfg = ov ? override_cfg(*ov, c.id) : "";
     const std::string perf = (ov && ov->perf >= 0)
-                             ? (ov->perf ? "heavy" : "light")
+                             ? perf_name(ov->perf)
                              : perf_profile(c);
     d.line("override key=%s perf=%s title=%s",
            override_key(c.id, g.path).c_str(), perf.c_str(),

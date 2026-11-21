@@ -83,6 +83,7 @@ int main()
         "   \"frameskip\": 2\n"
         "  },\n"
         "  \"nds:/tmp/other.nds|0\": { \"perf\": \"light\" },\n"
+        "  \"gba:/tmp/power.gba|0\": { \"perf\": \"powersave\" },\n"
         "  \"not-an-object\": 5,\n"
         "  \"bad-perf\": { \"perf\": \"turbo\" },\n"
         "  \"bad-skip\": { \"frameskip\": 9 }\n"
@@ -92,20 +93,22 @@ int main()
         OverrideStore st(path);
         std::vector<std::string> w;
         check(st.load(&w), "valid document loads");
-        check(st.entries().size() == 2, "invalid entries are skipped");
+        check(st.entries().size() == 3, "invalid entries are skipped");
         check(w.size() == 3, "each invalid entry warns");
         const GameOverride* ov = st.find("gba", rom);
         check(ov != nullptr, "entry found by system and path");
         if (ov) {
             check(ov->title == "Custom", "title parsed");
-            check(ov->perf == 1, "heavy perf parsed");
+            check(ov->perf == 2, "heavy perf parsed as performance");
             check(ov->scale_integer == 0, "false boolean parsed");
             check(ov->video_smooth == 1, "true boolean parsed");
             check(ov->frameskip == 2, "frameskip parsed");
             check(ov->any(), "override reports fields");
         }
         const GameOverride* light = st.find("nds:/tmp/other.nds|0");
-        check(light && light->perf == 0, "entry found by raw key");
+        check(light && light->perf == 1, "legacy light maps to balanced");
+        const GameOverride* power = st.find("gba:/tmp/power.gba|0");
+        check(power && power->perf == 0, "powersave perf parsed");
 
         GameOverride cfg_ov;
         cfg_ov.scale_integer = 0;
@@ -135,6 +138,8 @@ int main()
         check(!exists(path + ".tmp"), "temporary file is renamed away");
         check(read_all(path).find("\"schema\"") != std::string::npos,
               "saved document carries the schema");
+        check(read_all(path).find("\"powersave\"") != std::string::npos,
+              "saved perf uses the canonical strategy name");
 
         OverrideStore st2(path);
         check(st2.load(), "saved document reloads");
@@ -145,7 +150,7 @@ int main()
         OverrideStore st3(path);
         st3.load();
         check(st3.find("gba:new|1") == nullptr, "removed entry is gone on disk");
-        check(st3.entries().size() == 2, "other entries survive the rewrite");
+        check(st3.entries().size() == 3, "other entries survive the rewrite");
     }
 
     // Hot reload reacts to an external edit and stays quiet when unchanged.

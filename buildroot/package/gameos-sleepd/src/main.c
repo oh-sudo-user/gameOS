@@ -32,6 +32,7 @@
 #define POLL_MS    300
 #define CHECK_SEC  (6 * 3600)
 #define OFF_PCT    5
+#define GUARD_SEC  30
 
 static int lid_fd = -1;
 static int pwr_fd = -1;
@@ -371,6 +372,25 @@ wake:
     hooks("post", 1);
 }
 
+static time_t last_guard;
+
+// Launch applies a strategy once, but temperature and battery change during
+// play. The guard carries its own hysteresis and logs only real transitions.
+static void perf_guard(void)
+{
+    time_t now = time(NULL);
+    if (last_guard != 0 && now - last_guard < GUARD_SEC) return;
+    last_guard = now;
+    int rc = system("/usr/bin/gameos-perf guard");
+    if (rc != 0) {
+        FILE* lf = fopen("/tmp/gameos-sleepd.log", "a");
+        if (lf) {
+            fprintf(lf, "gameos-perf guard rc=%d\n", rc);
+            fclose(lf);
+        }
+    }
+}
+
 int main(void)
 {
     int last = 0;
@@ -380,6 +400,7 @@ int main(void)
         if (cur && !last) suspend_now();
         else if (!cur && last) backlights(1);   // lid open: panels back on
         last = lid_closed();
+        perf_guard();
         usleep(POLL_MS * 1000);
     }
     return 0;
