@@ -42,6 +42,10 @@ struct Window {
     int draw_ops[kCap] = {};      // SDL draw calls submitted for this frame
     int n = 0;
     int dropped = 0;              // periods above 20 ms (~one missed vblank)
+    int dirty_rec = 0;            // command-buffer recordings
+    int dirty_full = 0;           // recordings that repainted everything
+    int dirty_skip = 0;           // identical frames not drawn at all
+    double dirty_area = 0.0;      // summed damaged fraction (skips excluded)
     const char* screen = nullptr;
 
     void add(double wall, double cpu, double period, int draws);
@@ -55,6 +59,9 @@ struct Window {
 bool enabled();
 void frame_begin();
 void note_draw(int count = 1);
+// Called once per command-buffer recording (top panel and deck separately).
+// area is the damaged fraction of the screen, 0 for an identical-frame skip.
+void note_dirty(double area, bool full, bool skipped);
 void frame_end(const char* screen);
 void shutdown();
 

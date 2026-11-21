@@ -347,6 +347,7 @@ void end(SDL_Renderer* r)
         }
         if (same) {
             out.skipped = true;
+            perf::note_dirty(0.0, false, true);
             s->dirty.clear();
             s->next.clear();
             return;
@@ -382,6 +383,7 @@ void end(SDL_Renderer* r)
     for (const SDL_Rect& rc : s->dirty) area += (long long)rc.w * rc.h;
     out.dirty = (double)s->w * s->h > 0
                     ? (double)area / ((double)s->w * s->h) : 1.0;
+    perf::note_dirty(out.dirty, out.full, out.skipped);
 
     std::swap(s->shown, s->next);
     s->next.clear();

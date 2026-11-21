@@ -86,8 +86,11 @@ int main()
         else
             no("window ignores samples past kCap");
 
+        w.dirty_rec = 3; w.dirty_full = 1; w.dirty_skip = 2; w.dirty_area = 0.5;
         w.reset();
-        if (w.n == 0 && w.dropped == 0 && w.screen == nullptr)
+        if (w.n == 0 && w.dropped == 0 && w.screen == nullptr &&
+            w.dirty_rec == 0 && w.dirty_full == 0 && w.dirty_skip == 0 &&
+            near(w.dirty_area, 0.0))
             ok("window reset clears state");
         else
             no("window reset clears state");

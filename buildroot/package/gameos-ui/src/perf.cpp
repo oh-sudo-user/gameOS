@@ -74,8 +74,10 @@ void flush_window()
     }
     if (!g_header_written) {
         fputs("# gameOS ui-perf (wall/cpu in ms on the UI thread; draws = SDL\n"
-              "# draw ops/frame; dropped = frame period > 20 ms; one line per\n"
-              "# ~600 frames or screen change; wall excludes the 60 Hz sleep)\n",
+              "# draw ops/frame; dropped = frame period > 20 ms; dirty = command\n"
+              "# buffer recordings, full repaints, skipped identical frames and\n"
+              "# mean damaged area; one line per ~600 frames or screen change;\n"
+              "# wall excludes the 60 Hz sleep)\n",
               f);
         g_header_written = true;
     }
@@ -83,18 +85,23 @@ void flush_window()
     const Stats w = g_window.wall();
     const Stats c = g_window.cpu();
     const Stats d = g_window.draw();
+    const int drawn = g_window.dirty_rec - g_window.dirty_skip;
+    const double area = drawn > 0 ? g_window.dirty_area / drawn : 0.0;
     char t[32];
     stamp(t, sizeof t);
     fprintf(f,
             "t=%s screen=%s frames=%d wall p50=%.2f p95=%.2f p99=%.2f max=%.2f "
             "cpu p50=%.2f p95=%.2f p99=%.2f max=%.2f "
-            "draws p50=%.0f p95=%.0f max=%.0f dropped=%d\n",
+            "draws p50=%.0f p95=%.0f max=%.0f dropped=%d "
+            "dirty rec=%d full=%d skip=%d area=%.3f\n",
             t, g_window.screen ? g_window.screen : "?",
             g_window.n,
             w.p50, w.p95, w.p99, w.max,
             c.p50, c.p95, c.p99, c.max,
             d.p50, d.p95, d.max,
-            g_window.dropped);
+            g_window.dropped,
+            g_window.dirty_rec, g_window.dirty_full, g_window.dirty_skip,
+            area);
     fclose(f);
     g_window.reset();
 }
@@ -149,6 +156,10 @@ void Window::reset()
 {
     n = 0;
     dropped = 0;
+    dirty_rec = 0;
+    dirty_full = 0;
+    dirty_skip = 0;
+    dirty_area = 0.0;
     screen = nullptr;
 }
 
@@ -175,6 +186,18 @@ void note_draw(int count)
 {
     if (g_on)
         g_draw_this_frame += count;
+}
+
+void note_dirty(double area, bool full, bool skipped)
+{
+    if (!g_on)
+        return;
+    g_window.dirty_rec++;
+    if (full) g_window.dirty_full++;
+    if (skipped)
+        g_window.dirty_skip++;
+    else
+        g_window.dirty_area += area;
 }
 
 void frame_end(const char* screen)
