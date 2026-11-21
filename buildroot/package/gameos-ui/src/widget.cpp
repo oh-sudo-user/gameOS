@@ -107,9 +107,11 @@ void list_row(SDL_Renderer* r, SDL_Rect rc, const ListRow& row)
     }
     if (!row.value.empty()) {
         int vw = text_width(g_ui.small, row.value);
+        SDL_Color vc = row.value_color.a ? row.value_color
+                                         : with_alpha(C_TEXT, 220);
+        if (row.disabled) vc = with_alpha(vc, 110);
         text(r, g_ui.small, row.value, right - vw,
-             rc.y + (rc.h - 30) / 2,
-             with_alpha(C_TEXT, row.disabled ? 110 : 220));
+             rc.y + (rc.h - 30) / 2, vc);
         right -= vw + token::space_12;
     }
 

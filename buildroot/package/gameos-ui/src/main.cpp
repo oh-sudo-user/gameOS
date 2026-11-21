@@ -4178,20 +4178,14 @@ void deck_row(SDL_Renderer* r, SDL_Rect rc, bool sel, const std::string& title,
     rrect(r, rc, 18, rgba(255, 255, 255, sel ? 17 : 7));
     rrect_stroke(r, rc, 18, rgba(255, 255, 255, sel ? 24 : 9), 1);
     if (sel) rrect(r, { rc.x + 16, rc.y + 18, 4, rc.h - 36 }, 2, C_ACCENT);
-    int rw = right.empty() ? 0 : text_width(app.f_small, right) + 28;
-    int tw = rc.w - 64 - rw;
-    if (meta.empty()) {
-        text(r, app.f_body, ellipsize(app.f_body, title, tw),
-             rc.x + 34, rc.y + (rc.h - 38) / 2, sel ? C_TEXT : with_alpha(C_TEXT, 205));
-    } else {
-        text(r, app.f_body, ellipsize(app.f_body, title, tw),
-             rc.x + 34, rc.y + 12, sel ? C_TEXT : with_alpha(C_TEXT, 205));
-        text(r, app.f_small, ellipsize(app.f_small, meta, tw),
-             rc.x + 34, rc.y + rc.h - 34, C_DIM);
-    }
-    if (!right.empty())
-        text(r, app.f_small, right, rc.x + rc.w - 24, rc.y + (rc.h - 28) / 2,
-             rightc, Align::Right);
+    widget::ListRow row;
+    row.title = title;
+    row.detail = meta;
+    row.value = right;
+    row.value_color = rightc;
+    row.dim = !sel;
+    row.chrome = false;
+    widget::list_row(r, rc, row);
 }
 
 // ---------------------------------------------------------------------------

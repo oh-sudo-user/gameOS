@@ -99,6 +99,8 @@ struct ListRow {
     bool dim = false;
     bool disabled = false;
     bool chrome = true;
+    // zero alpha keeps the default text colour
+    SDL_Color value_color = { 0, 0, 0, 0 };
     State state = State::Normal;
 };
 
