@@ -17,6 +17,7 @@ device-presence predicates into a temp sandbox.
 | `test-firstboot-data.sh` | an **existing** p4 is **NEVER** auto-formatted (exFAT preserved, corrupt/foreign preserved); format only after create+verify succeed; sgdisk/parted/node-timeout/mkfs/verify failures all keep the first-boot marker | §3.3 / §0 |
 | `test-boot-state.sh` | `confirm()` records slot=fallback=current, n=0; `reconcile_bootscr()` atomically deploys the model-matched script; the start gate runs confirm **only** after `ui-ok` exists | §2.3 |
 | `test-ui-perf.sh` | compiles `tests/host/test-ui-perf.cpp` against the real `src/perf.cpp`; nearest-rank percentiles, window cap/dropped/reset, and the disabled-path no-op | §10 |
+| `test-ui-drawcall.sh` | compiles `tests/host/test-drawcall.cpp` against the real `src/drawcall.cpp`; rectangle intersection/merge/area limits and geometry hash stability (skips when SDL2 dev files are absent) | §10 |
 
 The OTA tests need `openssl` with Ed25519 support (OpenSSL 3.x); they print
 `SKIP` only when the host has no openssl at all.

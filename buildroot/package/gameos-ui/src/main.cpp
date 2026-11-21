@@ -10,6 +10,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "displays.hpp"
+#include "drawcall.hpp"
 #include "gameos.hpp"
 #include "i18n.hpp"
 #include "perf.hpp"
@@ -476,18 +477,19 @@ void apply_theme(int idx)
 void load_theme_assets()
 {
     const std::string dir = assets_dir() + "/themes/" + theme_key(app.settings.theme);
-    if (app.bg)      { SDL_DestroyTexture(app.bg);      app.bg = nullptr; }
-    if (app.ambient) { SDL_DestroyTexture(app.ambient); app.ambient = nullptr; }
-    if (app.logo)    { SDL_DestroyTexture(app.logo);    app.logo = nullptr; }
-    if (app.logo_bot) { SDL_DestroyTexture(app.logo_bot); app.logo_bot = nullptr; }
-    for (auto& t : app.icons) { if (t) SDL_DestroyTexture(t); t = nullptr; }
-    if (app.icon_settings) { SDL_DestroyTexture(app.icon_settings); app.icon_settings = nullptr; }
-    if (app.icon_activity) { SDL_DestroyTexture(app.icon_activity); app.icon_activity = nullptr; }
-    if (app.icon_quick)    { SDL_DestroyTexture(app.icon_quick);    app.icon_quick = nullptr; }
-    for (auto& t : app.icons_bot) { if (t) SDL_DestroyTexture(t); t = nullptr; }
-    if (app.icon_settings_bot) { SDL_DestroyTexture(app.icon_settings_bot); app.icon_settings_bot = nullptr; }
-    if (app.icon_activity_bot) { SDL_DestroyTexture(app.icon_activity_bot); app.icon_activity_bot = nullptr; }
-    if (app.icon_quick_bot)    { SDL_DestroyTexture(app.icon_quick_bot);    app.icon_quick_bot = nullptr; }
+    drawcall::invalidate();
+    if (app.bg)      { drawcall::destroy_texture(app.bg);      app.bg = nullptr; }
+    if (app.ambient) { drawcall::destroy_texture(app.ambient); app.ambient = nullptr; }
+    if (app.logo)    { drawcall::destroy_texture(app.logo);    app.logo = nullptr; }
+    if (app.logo_bot) { drawcall::destroy_texture(app.logo_bot); app.logo_bot = nullptr; }
+    for (auto& t : app.icons) { if (t) drawcall::destroy_texture(t); t = nullptr; }
+    if (app.icon_settings) { drawcall::destroy_texture(app.icon_settings); app.icon_settings = nullptr; }
+    if (app.icon_activity) { drawcall::destroy_texture(app.icon_activity); app.icon_activity = nullptr; }
+    if (app.icon_quick)    { drawcall::destroy_texture(app.icon_quick);    app.icon_quick = nullptr; }
+    for (auto& t : app.icons_bot) { if (t) drawcall::destroy_texture(t); t = nullptr; }
+    if (app.icon_settings_bot) { drawcall::destroy_texture(app.icon_settings_bot); app.icon_settings_bot = nullptr; }
+    if (app.icon_activity_bot) { drawcall::destroy_texture(app.icon_activity_bot); app.icon_activity_bot = nullptr; }
+    if (app.icon_quick_bot)    { drawcall::destroy_texture(app.icon_quick_bot);    app.icon_quick_bot = nullptr; }
     app.bg      = load_tex(app.ren_top, dir + "/home_bg.png");
     app.ambient = app.ren_bot ? load_tex(app.ren_bot, dir + "/ambient_bg.png") : nullptr;
     app.logo    = load_tex(app.ren_top, dir + "/logo.png");
@@ -595,6 +597,7 @@ bool userdata_mounted();    // defined with the system helpers below
 
 void shutdown_gfx()
 {
+    drawcall::shutdown();
     sound_quit();          // release ALSA before the emulator takes over
     touch_shutdown();
     clear_text_cache();  // text textures belong to the renderers destroyed below
@@ -676,12 +679,8 @@ void draw_background(SDL_Renderer* r)
         // texture with BLENDMODE_NONE. With alphaMod 55 a plain copy then
         // *writes* 55 into the scene's alpha instead of blending, leaving the
         // whole background translucent; composited over alternating
-        // backbuffers that reads as a flicker. Force blending.
-        SDL_SetTextureBlendMode(app.bg, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureAlphaMod(app.bg, 55);
-        SDL_Rect dst = { 0, 0, W, H };
-        perf::note_draw();
-        SDL_RenderCopy(r, app.bg, nullptr, &dst);
+        // backbuffers that reads as a flicker. draw_tex forces blending.
+        draw_tex(r, app.bg, SDL_Rect{ 0, 0, W, H }, 55);
     }
     glow(r, W - 120, 60, 420, g_accent, 12, 34);
     glow(r, 90, H - 40, 340, g_accent, 10, 16);
@@ -741,8 +740,9 @@ void top_dots(SDL_Renderer* r, int count, int cur, int y)
 std::map<SDL_Renderer*, std::map<std::string, SDL_Texture*>> g_cover_cache;
 void clear_cover_cache()
 {
+    drawcall::invalidate();
     for (auto& rr : g_cover_cache)
-        for (auto& kv : rr.second) SDL_DestroyTexture(kv.second);
+        for (auto& kv : rr.second) drawcall::destroy_texture(kv.second);
     g_cover_cache.clear();
 }
 SDL_Texture* cover_tex(SDL_Renderer* r, const std::string& path)
@@ -754,7 +754,8 @@ SDL_Texture* cover_tex(SDL_Renderer* r, const std::string& path)
     SDL_Texture* t = load_tex(r, path);
     if (!t) return nullptr;
     if (cache.size() >= 24) {
-        for (auto& kv : cache) SDL_DestroyTexture(kv.second);
+        drawcall::invalidate();
+        for (auto& kv : cache) drawcall::destroy_texture(kv.second);
         cache.clear();
     }
     cache.emplace(path, t);
@@ -3052,10 +3053,7 @@ void cover_fit(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha)
     SDL_Rect src;
     if (sa > da) { int w2 = (int)(th * da); src = { (tw - w2) / 2, 0, w2, th }; }
     else         { int h2 = (int)(tw / da); src = { 0, (th - h2) / 2, tw, h2 }; }
-    SDL_SetTextureAlphaMod(t, alpha);
-    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
-    perf::note_draw();
-    SDL_RenderCopy(r, t, &src, &dst);
+    draw_tex_src(r, t, src, dst, alpha);
 }
 
 // Cover art, or a clean synthesised label (accent gradient + console glyph)
@@ -5475,9 +5473,18 @@ void draw_deck()
 
     SDL_SetRenderTarget(r, g_deck_tex[g_deck_cur]);
     ui_hit_begin();
-    deck_base(r);
-    draw_deck_content(r);
-    deck_volume_osd(r);
+    if (drawcall::begin(r, g_deck_tex[g_deck_cur], W, H)) {
+        deck_base(r);
+        draw_deck_content(r);
+        deck_volume_osd(r);
+        drawcall::end(r);
+        drawcall::replay(r);
+        drawcall::flush();
+    } else {
+        deck_base(r);
+        draw_deck_content(r);
+        deck_volume_osd(r);
+    }
     SDL_SetRenderTarget(r, nullptr);
 
     // the deck follows the top panel's fade/slide, at a shorter distance
@@ -6202,7 +6209,14 @@ int main(int, char**)
             SDL_SetTextureBlendMode(g_scene_tex[1], SDL_BLENDMODE_BLEND);
         }
         SDL_SetRenderTarget(r, g_scene_tex[g_scene_cur]);
-        draw_current(r);
+        if (drawcall::begin(r, g_scene_tex[g_scene_cur], W, H)) {
+            draw_current(r);
+            drawcall::end(r);
+            drawcall::replay(r);
+            drawcall::flush();
+        } else {
+            draw_current(r);
+        }
         SDL_SetRenderTarget(r, nullptr);
 
         const bool dialog = app.screen == Screen::Msg || app.screen == Screen::Confirm;

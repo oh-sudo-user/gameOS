@@ -42,6 +42,8 @@ enum class Align { Left, Center, Right };
 
 void fill_rect(SDL_Renderer* r, int x, int y, int w, int h, SDL_Color c);
 void draw_tex(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha = 255);
+void draw_tex_src(SDL_Renderer* r, SDL_Texture* t, SDL_Rect src,
+                  SDL_Rect dst, Uint8 alpha = 255);
 void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
           int x, int y, SDL_Color c, Align align = Align::Left);
 int text_width(TTF_Font* f, const std::string& s);

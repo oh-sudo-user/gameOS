@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ui.hpp"
 
+#include "drawcall.hpp"
 #include "i18n.hpp"
-#include "perf.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -67,25 +67,23 @@ static SDL_Color hairline() {
 // ---------------------------------------------------------------------------
 void fill_rect(SDL_Renderer* r, int x, int y, int w, int h, SDL_Color c)
 {
-    perf::note_draw();
-    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    SDL_Rect rc = { x, y, w, h };
-    SDL_RenderFillRect(r, &rc);
+    drawcall::fill(r, SDL_Rect{ x, y, w, h }, c);
 }
 
 void draw_tex(SDL_Renderer* r, SDL_Texture* t, SDL_Rect dst, Uint8 alpha)
 {
-    if (!t) return;
-    perf::note_draw();
-    SDL_SetTextureAlphaMod(t, alpha);
-    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
-    SDL_RenderCopy(r, t, nullptr, &dst);
+    drawcall::tex(r, t, nullptr, dst, alpha);
+}
+
+void draw_tex_src(SDL_Renderer* r, SDL_Texture* t, SDL_Rect src,
+                  SDL_Rect dst, Uint8 alpha)
+{
+    drawcall::tex(r, t, &src, dst, alpha);
 }
 
 void set_clip(SDL_Renderer* r, SDL_Rect* rc)
 {
-    SDL_RenderSetClipRect(r, rc);
+    drawcall::clip(r, rc);
 }
 
 // Text cache, keyed by (renderer, font, colour, string).
@@ -113,7 +111,8 @@ static Uint32 g_text_tick = 0;
 
 void clear_text_cache()
 {
-    for (auto& kv : g_text_cache) SDL_DestroyTexture(kv.second.t);
+    drawcall::invalidate();
+    for (auto& kv : g_text_cache) drawcall::destroy_texture(kv.second.t);
     g_text_cache.clear();
 }
 
@@ -146,7 +145,7 @@ void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
             for (size_t i = 0; i < drop; i++) {
                 auto hit = g_text_cache.find(*order[i].second);
                 if (hit != g_text_cache.end()) {
-                    SDL_DestroyTexture(hit->second.t);
+                    drawcall::destroy_texture(hit->second.t);
                     g_text_cache.erase(hit);
                 }
             }
@@ -157,10 +156,7 @@ void text(SDL_Renderer* r, TTF_Font* f, const std::string& s,
     if (align == Align::Center) dx = x - tw / 2;
     else if (align == Align::Right) dx = x - tw;
     SDL_Rect dst = { dx, y, tw, th };
-    perf::note_draw();
-    SDL_SetTextureAlphaMod(t, 255);
-    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
-    SDL_RenderCopy(r, t, nullptr, &dst);
+    drawcall::tex(r, t, nullptr, dst, 255);
 }
 
 int text_width(TTF_Font* f, const std::string& s)
@@ -301,9 +297,7 @@ void fan_fill(SDL_Renderer* r, const SDL_FPoint* pts, int n,
         idx.push_back(1 + i);
         idx.push_back(1 + (i + 1) % n);
     }
-    perf::note_draw();
-    SDL_RenderGeometry(r, nullptr, v.data(), (int)v.size(),
-                       idx.data(), (int)idx.size());
+    drawcall::geom(r, v.data(), (int)v.size(), idx.data(), (int)idx.size());
 }
 
 void rrect_points(const SDL_Rect& rc, int radius, SDL_FPoint* pts)
@@ -362,9 +356,7 @@ void ring_geom(SDL_Renderer* r, const SDL_Rect& rc, int radius, int width,
         idx.push_back(i * 2); idx.push_back(i * 2 + 1); idx.push_back(j * 2);
         idx.push_back(j * 2); idx.push_back(i * 2 + 1); idx.push_back(j * 2 + 1);
     }
-    perf::note_draw();
-    SDL_RenderGeometry(r, nullptr, v.data(), (int)v.size(),
-                       idx.data(), (int)idx.size());
+    drawcall::geom(r, v.data(), (int)v.size(), idx.data(), (int)idx.size());
 }
 
 } // namespace
@@ -433,9 +425,7 @@ void ring(SDL_Renderer* r, int cx, int cy, int radius, int width, SDL_Color c)
         int j = (i + 1) % n;
         idx.insert(idx.end(), { i * 2, i * 2 + 1, j * 2, j * 2, i * 2 + 1, j * 2 + 1 });
     }
-    perf::note_draw();
-    SDL_RenderGeometry(r, nullptr, v.data(), (int)v.size(),
-                       idx.data(), (int)idx.size());
+    drawcall::geom(r, v.data(), (int)v.size(), idx.data(), (int)idx.size());
 }
 
 void glow(SDL_Renderer* r, int cx, int cy, int radius, SDL_Color c,
@@ -457,8 +447,7 @@ void grad_rect(SDL_Renderer* r, SDL_Rect rc, SDL_Color top, SDL_Color bottom)
         { { (float)rc.x, (float)(rc.y + rc.h) }, bottom, { 0, 0 } },
     };
     int idx[6] = { 0, 1, 2, 0, 2, 3 };
-    perf::note_draw();
-    SDL_RenderGeometry(r, nullptr, v, 4, idx, 6);
+    drawcall::geom(r, v, 4, idx, 6);
 }
 
 void thick_line(SDL_Renderer* r, float x1, float y1, float x2, float y2,
@@ -476,8 +465,7 @@ void thick_line(SDL_Renderer* r, float x1, float y1, float x2, float y2,
     std::vector<SDL_Vertex> v;
     for (auto& p : pts) v.push_back(SDL_Vertex{ p, c, { 0, 0 } });
     int idx[6] = { 0, 1, 2, 0, 2, 3 };
-    perf::note_draw();
-    SDL_RenderGeometry(r, nullptr, v.data(), 4, idx, 6);
+    drawcall::geom(r, v.data(), 4, idx, 6);
     int cap = std::max(1, (int)(width / 2));
     circle(r, (int)x1, (int)y1, cap, c);
     circle(r, (int)x2, (int)y2, cap, c);
