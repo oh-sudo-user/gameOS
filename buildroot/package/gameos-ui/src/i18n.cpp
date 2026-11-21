@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "i18n.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -836,6 +837,105 @@ ThemePal theme_palette(int idx)
     };
     if (idx < 0 || idx > 3) idx = 0;
     return pals[idx];
+}
+
+namespace {
+
+std::string trim(const char* s)
+{
+    const char* a = s;
+    while (*a && std::isspace((unsigned char)*a)) a++;
+    const char* b = a + std::strlen(a);
+    while (b > a && std::isspace((unsigned char)b[-1])) b--;
+    return std::string(a, (size_t)(b - a));
+}
+
+bool parse_color(const std::string& v, ThemeRGB* out)
+{
+    if (v.size() != 7 || v[0] != '#') return false;
+    unsigned n = 0;
+    for (size_t i = 1; i < v.size(); i++) {
+        const char c = v[i];
+        unsigned d;
+        if (c >= '0' && c <= '9') d = (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (unsigned)(c - 'A' + 10);
+        else return false;
+        n = n * 16 + d;
+    }
+    out->r = (unsigned char)(n >> 16);
+    out->g = (unsigned char)(n >> 8);
+    out->b = (unsigned char)n;
+    return true;
+}
+
+bool parse_byte(const std::string& v, unsigned char* out)
+{
+    if (v.empty() || v.size() > 3) return false;
+    int n = 0;
+    for (char c : v) {
+        if (c < '0' || c > '9') return false;
+        n = n * 10 + (c - '0');
+        if (n > 255) return false;
+    }
+    *out = (unsigned char)n;
+    return true;
+}
+
+} // namespace
+
+bool load_theme_palette(const std::string& path, ThemePal* out)
+{
+    if (!out) return false;
+    FILE* f = fopen(path.c_str(), "r");
+    if (!f) return false;
+
+    // Keys are numbered so the mask catches both a missing field and a
+    // duplicate one without a map allocation at boot.
+    enum { K_VERSION, K_ACCENT, K_TEXT, K_DIM, K_PANEL, K_PANEL_A,
+           K_BG, K_TRACK, K_SHEEN, K_TINT_TOP, K_TINT_BOT, K_COUNT };
+    static const char* const keys[K_COUNT] = {
+        "version", "accent", "text", "dim", "panel", "panel_a",
+        "bg", "track", "sheen", "tint_top", "tint_bot",
+    };
+
+    ThemePal p = *out;
+    unsigned seen = 0;
+    bool ok = true;
+    char buf[512];
+    while (ok && fgets(buf, sizeof buf, f)) {
+        const std::string line = trim(buf);
+        if (line.empty() || line[0] == '#') continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) { ok = false; break; }
+        const std::string k = trim(line.substr(0, eq).c_str());
+        const std::string v = trim(line.substr(eq + 1).c_str());
+
+        int bit = -1;
+        for (int i = 0; i < K_COUNT; i++)
+            if (k == keys[i]) { bit = i; break; }
+        if (bit < 0 || (seen & (1u << bit))) { ok = false; break; }
+        seen |= 1u << bit;
+
+        switch (bit) {
+        case K_VERSION:  ok = (v == "1"); break;
+        case K_ACCENT:   ok = parse_color(v, &p.accent); break;
+        case K_TEXT:     ok = parse_color(v, &p.text); break;
+        case K_DIM:      ok = parse_color(v, &p.dim); break;
+        case K_PANEL:    ok = parse_color(v, &p.panel); break;
+        case K_PANEL_A:  ok = parse_byte(v, &p.panel_a); break;
+        case K_BG:       ok = parse_color(v, &p.bg); break;
+        case K_TRACK:    ok = parse_color(v, &p.track); break;
+        case K_SHEEN:    ok = parse_color(v, &p.sheen); break;
+        case K_TINT_TOP: ok = parse_byte(v, &p.tint_top); break;
+        case K_TINT_BOT: ok = parse_byte(v, &p.tint_bot); break;
+        default:         ok = false; break;
+        }
+    }
+    fclose(f);
+    if (!ok || seen != ((1u << K_COUNT) - 1)) return false;
+    *out = p;
+    return true;
 }
 
 const char* lang_name(int l)

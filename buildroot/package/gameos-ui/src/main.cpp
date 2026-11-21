@@ -461,6 +461,8 @@ void reload_fonts()
 void apply_theme(int idx)
 {
     ThemePal p = theme_palette(idx);
+    load_theme_palette(assets_dir() + "/themes/" + theme_key(idx) +
+                       "/palette.conf", &p);
     C_TEXT   = { p.text.r,   p.text.g,   p.text.b,   255 };
     C_DIM    = { p.dim.r,    p.dim.g,    p.dim.b,    255 };
     C_ACCENT = { p.accent.r, p.accent.g, p.accent.b, 255 };

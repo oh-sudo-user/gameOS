@@ -132,6 +132,12 @@ struct ThemePal {
     unsigned char tint_top, tint_bot;   // accent wash over each panel
 };
 ThemePal theme_palette(int idx);
+// Overlay themes/<key>/palette.conf onto a built-in palette. The file is a
+// strict key=value schema (version, seven #rrggbb colours, three 0..255
+// bytes). Any missing, duplicate or malformed field rejects the whole file
+// and leaves *out untouched, so a bad token file can never ship a half
+// themed UI; scripts/lint-themes.sh checks the files before packaging.
+bool load_theme_palette(const std::string& path, ThemePal* out);
 // Language autonym — always in its own language ("简体中文", "English", ...).
 const char* lang_name(int l);
 // Full date line for the ambient panel, locale-aware (weekday/month names).

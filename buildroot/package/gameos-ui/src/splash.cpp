@@ -63,9 +63,11 @@ SDL_Color C_TRACK  = {  28,  38,  58, 255 };
 int g_theme = 0;
 bool g_theme_dirty = false;
 
-void apply_splash_theme(int idx)
+void apply_splash_theme(int idx, const std::string& assets)
 {
     gameos::ThemePal p = gameos::theme_palette(idx);
+    gameos::load_theme_palette(assets + "/themes/" + gameos::theme_key(idx) +
+                               "/palette.conf", &p);
     C_BG     = { p.bg.r,     p.bg.g,     p.bg.b,     255 };
     C_ACCENT = { p.accent.r, p.accent.g, p.accent.b, 255 };
     C_SHEEN  = { p.sheen.r,  p.sheen.g,  p.sheen.b,  255 };
@@ -1016,7 +1018,7 @@ int main()
         poll_boot(boot);
         if (g_theme_dirty) {
             g_theme_dirty = false;
-            apply_splash_theme(g_theme);
+            apply_splash_theme(g_theme, assets);
             build_brand(top);
             build_glows(top);
             load_panel_bg(top, assets, "home_bg.png");

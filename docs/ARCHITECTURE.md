@@ -96,6 +96,10 @@ busybox init
 - 渲染：每帧先录成绘制命令缓冲，可只重绘变化区域并跳过完全相同的帧；
   默认整屏重绘，测试时用 `GAMEOS_UI_DIRTY=1` 或 `/userdata/system/ui-dirty.on`
   开启局部重绘，像素结果由宿主比对测试保证一致。
+- 主题调色板：`assets/themes/<key>/palette.conf`（schema v1：七个
+  `#rrggbb` 颜色 + 面板透明度/染色三个字节）。开机 splash 与 UI 共用
+  同一文件；缺字段、重复键或非法值会让整个文件被忽略并回退到内置色板。
+  `scripts/lint-themes.sh` 在测试中校验四个主题，并确认文件与内置值一致。
 - 模拟器：melonDS（JIT）、gpSP（arm64 dynarec，默认 GBA 核心）、mGBA（GB/GBC）、PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x）。
 - 数据分区：exFAT（GAMEOS 盘符），Windows/macOS 可直接拷游戏。
 
