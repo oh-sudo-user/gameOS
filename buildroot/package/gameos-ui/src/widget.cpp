@@ -21,6 +21,12 @@ SDL_Color toast_accent(ToastKind kind)
     }
 }
 
+SDL_Color on_accent()
+{
+    int lum = (C_ACCENT.r * 299 + C_ACCENT.g * 587 + C_ACCENT.b * 114) / 1000;
+    return lum > 150 ? rgba(10, 16, 28, 255) : rgba(255, 255, 255, 255);
+}
+
 size_t utf8_len(unsigned char c)
 {
     if (c >= 0xF0) return 4;
@@ -157,7 +163,8 @@ void button(SDL_Renderer* r, SDL_Rect rc, const Button& b)
             bot = with_alpha(bot, 110);
         }
         rrect_grad(r, box, token::radius_button, top, bot);
-        fg = with_alpha(C_BG, disabled ? 150 : 255);
+        fg = on_accent();
+        if (disabled) fg = with_alpha(fg, 150);
     } else if (b.kind == ButtonKind::Danger) {
         SDL_Color base = disabled ? with_alpha(C_RED, 110) : C_RED;
         rrect_grad(r, box, token::radius_button, lighten(base, 0.08f), base);

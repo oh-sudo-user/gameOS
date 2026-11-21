@@ -4,6 +4,7 @@
 
 #include "drawcall.hpp"
 #include "i18n.hpp"
+#include "widget.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -53,10 +54,6 @@ SDL_Color lighten(SDL_Color c, float amount) {
 
 static bool dark_theme() {
     return (C_BG.r * 299 + C_BG.g * 587 + C_BG.b * 114) / 1000 < 128;
-}
-static SDL_Color on_accent() {
-    int lum = (C_ACCENT.r * 299 + C_ACCENT.g * 587 + C_ACCENT.b * 114) / 1000;
-    return lum > 150 ? rgba(10, 16, 28, 255) : rgba(255, 255, 255, 255);
 }
 static SDL_Color hairline() {
     return dark_theme() ? rgba(255, 255, 255, 16) : rgba(15, 22, 40, 20);
@@ -889,27 +886,14 @@ void card(SDL_Renderer* r, SDL_Rect rc, int radius, bool focus, Uint8 alpha)
 void button(SDL_Renderer* r, SDL_Rect rc, const std::string& label,
             bool primary, bool focus, bool pressed)
 {
-    SDL_Rect b = rc;
-    if (pressed) { b.x += 2; b.y += 2; b.w -= 4; b.h -= 4; }
-    int rad = std::min(18, b.h / 3);
-    if (primary) {
-        SDL_Color top = lighten(C_ACCENT, 0.12f);
-        SDL_Color bot = C_ACCENT;
-        if (pressed) { top = mix_color(top, C_BG, 0.08f); bot = mix_color(bot, C_BG, 0.08f); }
-        rrect_shadow(r, b, rad, 4, 2, dark_theme() ? 90 : 30);
-        rrect_grad(r, b, rad, top, bot);
-        text(r, g_ui.body, label, b.x + b.w / 2, b.y + (b.h - 38) / 2,
-             on_accent(), Align::Center);
-    } else {
-        rrect_shadow(r, b, rad, 3, 1, dark_theme() ? 60 : 24);
-        SDL_Color fill = C_PANEL;
-        fill.a = pressed ? 255 : 235;
-        rrect(r, b, rad, fill);
-        rrect_stroke(r, b, rad, focus ? with_alpha(C_ACCENT, 200) : hairline(),
-                     focus ? 2 : 1);
-        text(r, g_ui.body, label, b.x + b.w / 2, b.y + (b.h - 38) / 2,
-             focus ? C_ACCENT : C_TEXT, Align::Center);
-    }
+    widget::Button b;
+    b.label = label;
+    b.kind = primary ? widget::ButtonKind::Primary
+                     : widget::ButtonKind::Secondary;
+    b.state = pressed ? widget::State::Pressed
+            : focus ? widget::State::Focused
+            : widget::State::Normal;
+    widget::button(r, rc, b);
 }
 
 void pill(SDL_Renderer* r, int x, int y, const std::string& label,
