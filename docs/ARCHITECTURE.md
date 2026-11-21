@@ -120,8 +120,8 @@ busybox init
 ```
 
 - 图形栈：mesa3d Panfrost (Mali-G52) + EGL/GLES2，SDL2 KMSDRM，无 X11/Wayland。
-- 前端：C++17，上屏轮播/游戏列表/设置，下屏氛围时钟；七语言界面
-  （简中/繁中/日/英/俄/西/韩），Noto Sans SC/KR 字体，模拟器菜单语言同步。
+- 前端：C++17，上屏轮播/游戏列表/设置，下屏氛围时钟；六语言界面
+  （简中/繁中/日/英/俄/西），Noto Sans SC/KR 字体，模拟器菜单语言同步。
 - 渲染：每帧先录成绘制命令缓冲，可只重绘变化区域并跳过完全相同的帧；
   默认整屏重绘，测试时用 `GAMEOS_UI_DIRTY=1` 或 `/userdata/system/ui-dirty.on`
   开启局部重绘，像素结果由宿主比对测试保证一致。
@@ -148,6 +148,14 @@ busybox init
   ZIP 先解到目标父目录下的 `.gameos-unzip-*` 暂存区，逐项校验 CRC 与大小，
   拒绝 ZIP64、加密、符号链接、重复名、绝对名和越界路径，完成后原子改名
   落盘。界面为单窗格加 TF1/TF2 切换，复制与移动默认目标是另一张卡。
+- 网络传输：`netsftp` 封装 libssh2，在工作线程里完成 SFTP 目录列举与下载，
+  UI 只读取进度快照。主机指纹按 OpenSSH 格式 SHA256 写入
+  `/userdata/system/sftp_known_hosts` 做 TOFU 固定，不匹配立即中止；
+  服务器信息存 `sftp.ini`（0600，原子写），密码只保留在内存。下载前检查
+  远端大小与本地剩余空间，写 `.part` 并从已有长度续传，校验精确大小后
+  rename 落盘；取消/失败保留 `.part` 供重试。远端路径按 `/` 规范化并拒绝
+  `..` 越界，本地文件名剥掉目录成分，重名自动加序号。当前只实现 SFTP
+  密码登录；SMB/FTP、上传与递归下载不在本版本内。
 - 性能与电源：`gameos-perf` 只写 governor 名称，从不写频率。策略名为
   `ui` / `powersave` / `balanced` / `performance` / `superdrastic`，
   `light` / `heavy` 是 `balanced` / `performance` 的兼容别名；CPU 逐个
@@ -171,7 +179,9 @@ busybox init
   `#rrggbb` 颜色 + 面板透明度/染色三个字节）。开机 splash 与 UI 共用
   同一文件；缺字段、重复键或非法值会让整个文件被忽略并回退到内置色板。
   `scripts/lint-themes.sh` 在测试中校验四个主题，并确认文件与内置值一致。
-- 模拟器：melonDS（JIT）、gpSP（arm64 dynarec，默认 GBA 核心）、mGBA（GB/GBC）、PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x）。
+- 模拟器：melonDS（JIT）、gpSP（arm64 dynarec，默认 GBA 核心）、mGBA（GB/GBC）、
+  PCSX-ReARMed（dynarec）、PPSSPP（GLES 2x），以及 NES/SNES/MD 的 FCEUmm /
+  Snes9x / Genesis Plus GX；后三者是固定提交的上游核心，不是自研。
 - 数据分区：exFAT（GAMEOS 盘符），Windows/macOS 可直接拷游戏。
 
 ## 构建

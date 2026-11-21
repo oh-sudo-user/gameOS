@@ -22,6 +22,10 @@ buildroot/board/gameos/rgds-plus/panel-generic-dsi.c
 .DS_Store
 Thumbs.db
 
+# Host-built UI binaries (must never be rsynced into the target build)
+buildroot/package/gameos-ui/src/gameos-ui
+buildroot/package/gameos-ui/src/gameos-splash
+
 # Local preview scratch and generated drafts
 .shots/
 vibe_images/

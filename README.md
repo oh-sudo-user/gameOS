@@ -110,6 +110,7 @@ GAMEOS-DATA/
 │   └── md/      .md  .gen  .bin  .smd
 ├── bios/        bios7.bin  bios9.bin  firmware.bin   (optional, own dumps)
 ├── covers/      <system>/<game name>.png or .jpg      (optional box art)
+├── network/     files received over SFTP (move them into roms/)
 ├── saves/       emulator saves — browse/delete in Settings
 └── system/      settings and emulator configuration
 ```
@@ -122,6 +123,7 @@ The first power-on runs a short wizard: language, Wi-Fi (with a link / route / D
 
 - **A launch sequence for every console.** A game card drops into a console on the top screen while the bottom reports percentage, sector address, transfer rate and a live graph; it ends on black exactly as the emulator takes over.
 - **Wi-Fi.** WPA2/WPA3 via wpa_supplicant, managed from Settings with the gamepad keyboard; reconnects after sleep.
+- **SFTP transfer.** Settings → Network transfer logs in to an SSH/SFTP server on your computer, browses its folders and downloads games to `/userdata/network`; move them into `roms/` with the file manager. Progress, speed and ETA are shown, transfers can be cancelled or retried, and `.part` files resume when the server supports it. The host fingerprint is pinned on first use, a changed fingerprint aborts the connection, and the password is never written to disk. SFTP with password login only for now; SMB/FTP and uploads are not implemented.
 - **Updates over the air.** The latest release is checked at boot, written to the idle A/B slot after confirmation, and rolled back automatically if the new slot fails four times. Games and saves are never touched. OTA manifests are Ed25519-signed and verified before parsing — see [docs/OTA-SIGNING.md](docs/OTA-SIGNING.md).
 - **A library that stays out of the way.** Favorites, play history, optional box art (local or downloaded), subfolders, and multi-disc PS1 games shown as one entry.
 - **Activity.** Play time per game, a day-by-day timeline, trends and a "what to play next" pick.
@@ -130,7 +132,7 @@ The first power-on runs a short wizard: language, Wi-Fi (with a link / route / D
 
 ### Controls (front-end)
 
-The home screen is a carousel: five systems, then **Activity**, **Quick** and **Settings**. Browse with left/right, open with A.
+The home screen is a carousel: eight systems (NDS / GBA / GBC / PS1 / PSP / NES / SNES / MD), then **Activity**, **Quick** and **Settings**. Browse with left/right, open with A.
 
 | Button | Action |
 |---|---|
@@ -143,7 +145,7 @@ The home screen is a carousel: five systems, then **Activity**, **Quick** and **
 | R | Toggle favorites-only view |
 | HOME | Back to the home screen |
 
-In **Quick**, left/right switches between Favorites and History. In **Activity**, it switches overview, timeline, trends and picks. In Settings, up/down picks a row and left/right adjusts it; A opens the Wi-Fi, Bluetooth, update, save, power and about screens. Emulators keep their own controls and menus, and those menus follow the system language too.
+In **Quick**, left/right switches between Favorites and History. In **Activity**, it switches overview, timeline, trends and picks. Settings is a 3×5 tile grid: the d-pad moves between tiles and A opens the selected screen. Emulators keep their own controls and menus, and those menus follow the system language too.
 
 ### Under the hood
 
@@ -293,6 +295,7 @@ GAMEOS-DATA/
 │   └── md/      .md  .gen  .bin  .smd
 ├── bios/        bios7.bin  bios9.bin  firmware.bin   (可选，自己导出)
 ├── covers/      <平台>/<游戏名>.png 或 .jpg           (可选封面)
+├── network/     从电脑传进来的文件（再移到 roms/）
 ├── saves/       模拟器存档——设置里可浏览/删除
 └── system/      设置与模拟器配置
 ```
@@ -308,6 +311,7 @@ GAMEOS-DATA/
 - **OTA 更新。** 联网开机检查最新 release，确认后写入空闲的 A/B 槽；新槽四次启动失败会自动回滚。更新不碰游戏和存档。OTA 清单使用 Ed25519 签名，设备解析前先验签，详见 [docs/OTA-SIGNING.md](docs/OTA-SIGNING.md)。
 - **省心的游戏库。** 收藏、游玩历史、可选封面（本地或在线下载）、子文件夹，多盘 PS1 游戏合成一条。
 - **文件管理。** 内置双卡文件管理器：浏览、复制、移动、重命名、新建文件夹、删除，TF1/TF2 互拷；ZIP 先解到临时目录再原子落盘，拒绝路径穿越、符号链接、加密包和 ZIP64，删除、覆盖与挂载 TF2 可写都要二次确认。
+- **网络传输（SFTP）。** 设置 → 网络传输：用电脑的 SSH/SFTP 账号浏览远端目录，把游戏下载到 `/userdata/network`，再到文件管理移进 `roms/`。显示进度、速度、剩余时间，可取消/重试；服务器支持时从 `.part` 断点续传，下载前检查空间。首次连接记住服务器指纹，指纹变化立即中止；密码只留在内存，不写盘。目前只支持 SFTP（密码登录），SMB/FTP 和上传留在后续版本。
 - **Activity 统计。** 总时长与单游戏时长、逐日时间线、趋势，以及"下一款玩什么"推荐。
 - **外观与语言。** 四套完整主题（霓虹、像素、清新、水墨）和六种语言，都是即时切换；模拟器菜单也跟随语言。
 - **性能与温控。** 每游戏可选省电、平衡、性能三档，CPU/GPU 只切 governor、不锁频率；高温或低电量自动降档，冷却后自动恢复，切换记录在 `/tmp/gameos-perf.log`。
@@ -315,7 +319,7 @@ GAMEOS-DATA/
 
 ### 按键（前端界面）
 
-主界面是轮播：五个平台，然后 **Activity**、**快捷**、**设置**。左右浏览，A 打开。
+主界面是轮播：八个平台（NDS / GBA / GBC / PS1 / PSP / NES / SNES / MD），然后 **Activity**、**快捷**、**设置**。左右浏览，A 打开。
 
 | 按键 | 作用 |
 |---|---|
@@ -328,7 +332,7 @@ GAMEOS-DATA/
 | R | 只看收藏 |
 | HOME | 回主界面 |
 
-**快捷**里左右切换收藏/历史；**Activity** 里左右切换概览、时间线、趋势、推荐。设置里上下选行、左右调节，A 进入 Wi-Fi、蓝牙、更新、存档、关机、关于等页面。游戏里各模拟器保留自己的按键和菜单，菜单语言同样跟随系统。
+**快捷**里左右切换收藏/历史；**Activity** 里左右切换概览、时间线、趋势、推荐。设置是 3×5 的宫格：方向键在格子间移动，A 进入选中页面。游戏里各模拟器保留自己的按键和菜单，菜单语言同样跟随系统。
 
 ### 底层结构
 

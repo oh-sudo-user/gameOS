@@ -158,6 +158,9 @@ BR2_PACKAGE_WPA_SUPPLICANT_PASSPHRASE=y
 # OTA manifest verification uses the openssl CLI (Ed25519); the library is
 # already pulled in by WPA3, this only adds the binary.
 BR2_PACKAGE_LIBOPENSSL_BIN=y
+# SFTP transfers from the network screen (libssh2 uses the OpenSSL backend).
+BR2_PACKAGE_LIBSSH2=y
+BR2_PACKAGE_LIBSSH2_OPENSSL=y
 # OTA: HTTPS download of the release manifest and images (GitHub redirects to
 # objects.githubusercontent.com, so curl's redirect + TLS handling is used
 # instead of busybox wget), with the Mozilla bundle for certificate checks.

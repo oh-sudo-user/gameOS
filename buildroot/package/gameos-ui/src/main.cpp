@@ -16,6 +16,7 @@
 #include "i18n.hpp"
 #include "motion.hpp"
 #include "netparse.hpp"
+#include "netsftp.hpp"
 #include "overrides.hpp"
 #include "perf.hpp"
 #include "sound.hpp"
@@ -60,7 +61,7 @@ int car_total()    { return car_activity() + 3; }
 // The definitions live in ui.cpp; this file reads them through ui.hpp.
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
-                    Covers, Activity, Quick, GameCfg, Files, Msg, Confirm };
+                    Covers, Activity, Quick, GameCfg, Files, Net, Msg, Confirm };
 enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt,
                         FileDelete, FileOverwrite, FileTf2Rw };
 
@@ -82,6 +83,7 @@ const char* screen_key(Screen s)
     case Screen::Quick:     return "quick";
     case Screen::GameCfg:   return "gcfg";
     case Screen::Files:     return "files";
+    case Screen::Net:       return "net";
     case Screen::Msg:       return "msg";
     case Screen::Confirm:   return "confirm";
     }
@@ -111,6 +113,8 @@ enum HitId {
     HIT_FILES_PANE, HIT_FILES_ROWS, HIT_FILES_ROW,  // row: a = index
     HIT_FILES_OP,                                  // a = 0 copy .. 5 unzip
     HIT_FILES_CANCEL,
+    HIT_NET_FIELD, HIT_NET_CONNECT, HIT_NET_ROWS, HIT_NET_ROW, HIT_NET_FORM,
+    HIT_NET_UP, HIT_NET_REFRESH, HIT_NET_CANCEL, HIT_NET_RETRY,
     HIT_DLG_OK, HIT_DLG_CANCEL
 };
 
@@ -292,6 +296,28 @@ struct App {
     bool fs_pending_overwrite = false;
     uint64_t fs_last_done = 0;
     float fs_sel_f = 0, fs_scroll_f = 0;
+
+    // network transfer (PR-20): SFTP only, one background operation at a
+    // time. The password stays in this process and is never written to disk.
+    std::unique_ptr<netsftp::Task> net_task;
+    bool net_init = false;
+    netsftp::Config net_cfg;
+    std::string net_port;              // edited as text, parsed on connect
+    std::string net_password;
+    int  net_field = 0;                // 0 host, 1 port, 2 user, 3 pass, 4 path, 5 connect
+    bool net_browse = false;
+    bool net_op_pending = false;
+    std::vector<netsftp::Entry> net_entries;
+    int  net_sel = 0, net_scroll = 0;
+    float net_sel_f = 0, net_scroll_f = 0;
+    std::string net_remote;            // remote directory in the browser
+    std::string net_retry_remote;      // file to retry after a failure
+    std::string net_status;
+    bool net_status_bad = false;
+    Uint32 net_status_at = 0;
+    uint64_t net_done = 0, net_total = 0;
+    double net_speed = 0, net_eta = -1;
+    std::string net_fp;
 
     bool running = true;
     int exit_code = 0;
@@ -2137,6 +2163,255 @@ void fs_shutdown()
 }
 
 // ---------------------------------------------------------------------------
+// network transfer (PR-20)
+//
+// One SFTP operation at a time runs on netsftp::Task's worker thread. The
+// password lives only in this process; the saved config holds host/port/
+// user/path. Downloads land in /userdata/network and are moved into
+// /userdata/roms with the file manager (same card, so it is a rename).
+// ---------------------------------------------------------------------------
+void net_say(const std::string& s, bool bad = false)
+{
+    app.net_status = s;
+    app.net_status_bad = bad;
+    app.net_status_at = SDL_GetTicks();
+}
+
+std::string net_error_text(const std::string& raw, bool cancelled)
+{
+    if (cancelled) return tr(T_NET_CANCELLED);
+    if (raw.find("authentication failed") != std::string::npos)
+        return tr(T_NET_AUTH_FAILED);
+    if (raw.find("host key changed") != std::string::npos)
+        return tr(T_NET_KEY_CHANGED);
+    return fmt(tr(T_NET_FAILED), raw.empty() ? "?" : raw.c_str());
+}
+
+void net_enter()
+{
+    if (!app.net_init) {
+        app.net_task.reset(new netsftp::Task);
+        netsftp::load_config(&app.net_cfg);
+        app.net_port = std::to_string(app.net_cfg.port);
+        app.net_remote = app.net_cfg.path;
+        app.net_init = true;
+    }
+    app.screen = Screen::Net;
+    app.net_field = 0;
+    if (app.net_task && app.net_task->busy()) {
+        app.net_op_pending = true;
+        app.net_browse = true;
+    }
+}
+
+bool net_ready(std::string* why)
+{
+    int port = atoi(app.net_port.c_str());
+    if (port < 1 || port > 65535) {
+        *why = fmt(tr(T_NET_FAILED), "invalid port");
+        return false;
+    }
+    app.net_cfg.port = port;
+    std::string norm, err;
+    if (!netsftp::clean_remote_path(app.net_cfg.path, &norm, &err)) {
+        *why = net_error_text(err, false);
+        return false;
+    }
+    app.net_cfg.path = norm;
+    if (!netsftp::valid_config(app.net_cfg, &err)) {
+        *why = net_error_text(err, false);
+        return false;
+    }
+    if (app.net_password.empty()) {
+        *why = tr(T_NET_NEED_PASSWORD);
+        return false;
+    }
+    return true;
+}
+
+void net_start_list(const std::string& path)
+{
+    if (!app.net_task) return;
+    if (app.net_task->busy()) {
+        net_say(tr(T_NET_BUSY), true);
+        sound_play(SND_ERROR);
+        return;
+    }
+    std::string why;
+    if (!net_ready(&why)) {
+        net_say(why, true);
+        sound_play(SND_ERROR);
+        return;
+    }
+    std::string norm;
+    if (!netsftp::clean_remote_path(path, &norm, nullptr)) norm = "/";
+    netsftp::save_config(app.net_cfg);      // convenience only; no password
+    app.net_retry_remote.clear();
+    app.net_status = tr(T_NET_CONNECTING);
+    app.net_status_bad = false;
+    app.net_status_at = SDL_GetTicks();
+    app.net_op_pending = app.net_task->start_list(app.net_cfg,
+                                                  app.net_password, norm);
+}
+
+void net_start_download(const std::string& remote)
+{
+    if (!app.net_task) return;
+    if (app.net_task->busy()) {
+        net_say(tr(T_NET_BUSY), true);
+        sound_play(SND_ERROR);
+        return;
+    }
+    std::string why;
+    if (!net_ready(&why)) {
+        net_say(why, true);
+        sound_play(SND_ERROR);
+        return;
+    }
+    netsftp::save_config(app.net_cfg);
+    std::string leaf = remote.substr(remote.rfind('/') + 1);
+    app.net_status = fmt(tr(T_NET_DOWNLOADING), leaf.c_str());
+    app.net_status_bad = false;
+    app.net_status_at = SDL_GetTicks();
+    app.net_retry_remote.clear();
+    app.net_done = 0;
+    app.net_total = 0;
+    app.net_speed = 0;
+    app.net_eta = -1;
+    app.net_op_pending = app.net_task->start_download(app.net_cfg,
+                                                      app.net_password, remote);
+}
+
+void net_cancel_op()
+{
+    if (app.net_task && app.net_task->busy()) app.net_task->cancel();
+}
+
+void net_retry()
+{
+    if (app.net_retry_remote.empty()) {
+        net_start_list(app.net_browse ? app.net_remote : app.net_cfg.path);
+    } else {
+        net_start_download(app.net_retry_remote);
+    }
+}
+
+void net_back()
+{
+    if (app.net_task && app.net_task->busy()) {
+        app.net_task->cancel();
+        return;
+    }
+    if (!app.net_browse) {
+        app.screen = Screen::Settings;
+        return;
+    }
+    if (app.net_remote != "/")
+        net_start_list(netsftp::parent_remote(app.net_remote));
+    else
+        app.net_browse = false;
+}
+
+void net_activate_field(int i)
+{
+    if (app.net_task && app.net_task->busy()) {
+        net_say(tr(T_NET_BUSY), true);
+        return;
+    }
+    switch (i) {
+    case 0: kb_open(app.net_cfg.host, tr(T_NET_HOST), 255, false, false); break;
+    case 1: kb_open(app.net_port, tr(T_NET_PORT), 5, false, false); break;
+    case 2: kb_open(app.net_cfg.user, tr(T_NET_USER), 64, false, false); break;
+    case 3: kb_open(app.net_password, tr(T_NET_PASS), 127, false, true); break;
+    case 4: kb_open(app.net_cfg.path, tr(T_NET_PATH), 1024, false, false); break;
+    case 5: net_start_list(app.net_cfg.path); break;
+    default: break;
+    }
+}
+
+void net_open_entry(int idx)
+{
+    if (idx < 0 || idx >= (int)app.net_entries.size()) return;
+    const netsftp::Entry& e = app.net_entries[idx];
+    if (e.name == "..") {
+        net_start_list(netsftp::parent_remote(app.net_remote));
+        return;
+    }
+    if (e.dir) {
+        std::string path;
+        if (netsftp::join_remote(app.net_remote, e.name, &path, nullptr))
+            net_start_list(path);
+        return;
+    }
+    std::string path;
+    if (netsftp::join_remote(app.net_remote, e.name, &path, nullptr))
+        net_start_download(path);
+}
+
+void net_tick()
+{
+    if (!app.net_task) return;
+    if (app.net_status_at && !app.net_status.empty() &&
+        SDL_GetTicks() - app.net_status_at > 15000 && !app.net_task->busy()) {
+        app.net_status.clear();
+        app.net_status_bad = false;
+    }
+    if (!app.net_op_pending) return;
+    netsftp::Progress p = app.net_task->snapshot();
+    if (p.running || app.net_task->busy()) {
+        app.net_done = p.done;
+        app.net_total = p.total;
+        app.net_speed = p.speed;
+        app.net_eta = p.eta;
+        return;
+    }
+    app.net_op_pending = false;
+    app.net_done = p.done;
+    app.net_total = p.total;
+    app.net_speed = p.speed;
+    app.net_eta = p.eta;
+    if (p.ok && p.op == netsftp::Op::List) {
+        app.net_entries = p.entries;
+        if (p.remote_path != "/") {
+            netsftp::Entry up;
+            up.name = "..";
+            up.dir = true;
+            app.net_entries.insert(app.net_entries.begin(), up);
+        }
+        app.net_remote = p.remote_path;
+        app.net_cfg.path = p.remote_path;
+        app.net_browse = true;
+        app.net_sel = 0;
+        app.net_scroll = 0;
+        app.net_fp = p.fingerprint;
+        app.net_retry_remote.clear();
+        net_say(p.first_use ? tr(T_NET_FIRST_USE) : "");
+        sound_play(SND_CONFIRM);
+    } else if (p.ok) {
+        std::string leaf = p.local_path.substr(p.local_path.rfind('/') + 1);
+        app.net_retry_remote.clear();
+        net_say(fmt(tr(T_NET_DOWNLOADED), leaf.c_str()));
+        sound_play(SND_CONFIRM);
+    } else {
+        net_say(net_error_text(p.error, p.cancelled), true);
+        sound_play(SND_ERROR);
+        if (p.op == netsftp::Op::Download)
+            app.net_retry_remote = p.remote_path;
+        else
+            app.net_retry_remote.clear();
+        if (p.op == netsftp::Op::List && app.net_entries.empty())
+            app.net_browse = false;
+    }
+}
+
+void net_shutdown()
+{
+    if (!app.net_task) return;
+    app.net_task->cancel();
+    app.net_task->wait();
+}
+
+// ---------------------------------------------------------------------------
 // first-boot wizard
 //
 // Six questions then a done page. A (right button) acts on the highlighted row,
@@ -3175,6 +3450,58 @@ void draw_files(SDL_Renderer* r)
              fs_display_path(), sc, detail);
 }
 
+// ---------------------------------------------------------------------------
+// network transfer screen (PR-20)
+// ---------------------------------------------------------------------------
+void draw_net(SDL_Renderer* r)
+{
+    draw_background(r);
+    draw_topbar(r);
+
+    bool busy = app.net_task && app.net_task->busy();
+    netsftp::Progress p;
+    if (app.net_task) p = app.net_task->snapshot();
+
+    top_plate(r, W / 2, 290, 142);
+    icon_download(r, W / 2 - 62, 228, 124, busy ? C_AMBER : C_ACCENT);
+
+    std::string hero, status, detail;
+    SDL_Color sc = C_DIM;
+    if (!app.net_browse)
+        hero = tr(T_NET);
+    else
+        hero = app.net_remote;
+    detail = app.net_browse ? tr(T_NET_DEST) : tr(T_NET_PASSWORD_NOTE);
+
+    if (busy) {
+        char b[192];
+        if (p.op == netsftp::Op::Download && p.total > 0) {
+            snprintf(b, sizeof(b), "%s / %s", fs_size_str((long long)p.done).c_str(),
+                     fs_size_str((long long)p.total).c_str());
+            status = b;
+            if (p.speed > 0) {
+                snprintf(b, sizeof(b), " · %s/s", fs_size_str((long long)p.speed).c_str());
+                status += b;
+            }
+            if (p.eta >= 0) status += std::string(" · ") + fs_clock_str(p.eta);
+            detail = app.net_status;
+        } else {
+            status = app.net_status.empty() ? tr(T_NET_CONNECTING) : app.net_status;
+        }
+        sc = C_AMBER;
+    } else if (!app.net_status.empty()) {
+        status = app.net_status;
+        sc = app.net_status_bad ? C_AMBER : C_GREEN;
+    } else if (app.net_browse) {
+        status = tr(T_NET_BROWSE);
+        sc = C_TEXT;
+    } else {
+        status = tr(T_NET_SUB);
+        sc = C_TEXT;
+    }
+    top_hero(r, tr(T_NET), hero, status, sc, detail);
+}
+
 void draw_settings(SDL_Renderer* r)
 {
     draw_background(r);
@@ -3189,7 +3516,8 @@ void draw_settings(SDL_Renderer* r)
     if (app.set_sel == 3) vc = app.wifi_link.empty() ? C_DIM : C_GREEN;
     if (app.set_sel == 4 || app.set_sel == 5) vc = C_ACCENT;
     if (app.set_sel == 8) vc = C_RED;
-    if (app.set_sel == 4 || app.set_sel == 5 || app.set_sel == 13) vc = C_ACCENT;
+    if (app.set_sel == 4 || app.set_sel == 5 || app.set_sel == 13 ||
+        app.set_sel == 14) vc = C_ACCENT;
     if (app.set_sel == 12)
         vc = (app.cov_state == "running" ||
               (app.setup_busy && app.setup_op == "covers")) ? C_AMBER : C_DIM;
@@ -3203,7 +3531,7 @@ void draw_settings(SDL_Renderer* r)
         if (pct > 0) rrect(r, { track.x, track.y, 500 * pct / 100, 10 }, 5, C_ACCENT);
         circle(r, track.x + 500 * pct / 100, track.y + 5, 11, C_TEXT);
     }
-    top_dots(r, 14, app.set_sel, 712);
+    top_dots(r, 15, app.set_sel, 712);
 }
 
 void draw_saves(SDL_Renderer* r)
@@ -4449,6 +4777,10 @@ void go_back()
         if (app.wifi_kb) { kb_cancel(); break; }
         fs_up();
         break;
+    case Screen::Net:
+        if (app.wifi_kb) { kb_cancel(); break; }
+        net_back();
+        break;
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
                    : (app.confirm == ConfirmAct::Update)     ? Screen::Update
@@ -4486,6 +4818,11 @@ void confirm_btn()
     case Screen::Files:
         if (app.wifi_kb) kb_press();
         else fs_open_sel();
+        break;
+    case Screen::Net:
+        if (app.wifi_kb) kb_press();
+        else if (app.net_browse) net_open_entry(app.net_sel);
+        else net_activate_field(app.net_field);
         break;
     case Screen::Activity: {
         std::string sys, title;
@@ -4536,6 +4873,7 @@ void confirm_btn()
         else if (app.set_sel == 11) setup_enter();
         else if (app.set_sel == 12) covers_enter();
         else if (app.set_sel == 13) fs_enter();
+        else if (app.set_sel == 14) net_enter();
         break;
     case Screen::Setup:
         if (app.wifi_kb) kb_press();
@@ -4650,6 +4988,14 @@ void start_btn()
         sound_play(SND_BACK);
         app.screen = Screen::List;
     }
+    else if (app.screen == Screen::Net) {
+        sound_play(SND_BACK);
+        if (app.net_browse) {
+            if (!(app.net_task && app.net_task->busy())) app.net_browse = false;
+        } else {
+            app.screen = Screen::Settings;
+        }
+    }
     else if (app.screen != Screen::Confirm) {
         sound_play(SND_BACK);
         app.screen = Screen::Home;
@@ -4751,9 +5097,26 @@ void navigate(int dx, int dy)
             }
             if (dy) app.set_adjust = -1;   // leave adjust, then move
         }
-        // two-column tile grid: up/down changes row, left/right changes column
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 2, 0, 13);
-        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 13);
+        // three-column tile grid: up/down changes row, left/right changes column
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 3, 0, 14);
+        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 14);
+        break;
+    case Screen::Net:
+        if (app.wifi_kb) {
+            const auto& rows = kb_rows();
+            if (dy) {
+                app.kb_r = std::clamp(app.kb_r + dy, 0, (int)rows.size() - 1);
+                app.kb_c = std::min(app.kb_c, (int)rows[app.kb_r].size() - 1);
+            }
+            if (dx) app.kb_c = std::clamp(app.kb_c + dx, 0,
+                                          (int)rows[app.kb_r].size() - 1);
+        } else if (app.net_browse) {
+            if (dy && !app.net_entries.empty())
+                app.net_sel = std::clamp(app.net_sel + dy, 0,
+                                         (int)app.net_entries.size() - 1);
+        } else if (dy) {
+            app.net_field = std::clamp(app.net_field + dy, 0, 5);
+        }
         break;
     case Screen::Wifi:
         if (app.wifi_kb) {
@@ -5205,15 +5568,15 @@ void deck_list(SDL_Renderer* r)
 }
 
 // ---------------------------------------------------------------------------
-// settings deck: 14 direct tiles, two columns
+// settings deck: 15 direct tiles, three columns
 // ---------------------------------------------------------------------------
 const char* settings_label(int i)
 {
-    const char* rows[14] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
+    const char* rows[15] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
                              tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
                              tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP),
-                             tr(T_COVERS), tr(T_FILES) };
-    return rows[std::clamp(i, 0, 13)];
+                             tr(T_COVERS), tr(T_FILES), tr(T_NET) };
+    return rows[std::clamp(i, 0, 14)];
 }
 
 std::string settings_value(int i)
@@ -5242,6 +5605,7 @@ std::string settings_value(int i)
         return tr(T_UPD_CHECK);
     case 7: snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size()); return b;
     case 13: return tr(T_FILES_SUB);
+    case 14: return tr(T_NET_SUB);
     case 12:
         if (app.cov_state == "running" ||
             (app.setup_busy && app.setup_op == "covers"))
@@ -5271,6 +5635,7 @@ void settings_icon(SDL_Renderer* r, int idx, int x, int y, int size, SDL_Color c
     case 10: icon_gear(r, x, y, size, c); break;
     case 11: icon_gamepad(r, x, y, size, c); break;
     case 13: icon_folder(r, x, y, size, c); break;
+    case 14: icon_download(r, x, y, size, c); break;
     default: icon_image(r, x, y, size, c); break;
     }
 }
@@ -5393,20 +5758,157 @@ void deck_files(SDL_Renderer* r)
     deck_hint(r, tr(T_FILES_HINT));
 }
 
+// ---------------------------------------------------------------------------
+// network transfer deck (PR-20)
+// ---------------------------------------------------------------------------
+void deck_net(SDL_Renderer* r)
+{
+    netsftp::Progress p;
+    bool busy = false;
+    if (app.net_task) {
+        p = app.net_task->snapshot();
+        busy = app.net_task->busy();
+    }
+
+    if (!app.net_browse) {
+        std::string right = tr(T_NET_SUB);
+        if (!app.net_cfg.host.empty())
+            right = app.net_cfg.user.empty()
+                  ? app.net_cfg.host
+                  : app.net_cfg.user + "@" + app.net_cfg.host;
+        deck_header(r, tr(T_NET), right.c_str());
+
+        const char* labels[5] = { tr(T_NET_HOST), tr(T_NET_PORT), tr(T_NET_USER),
+                                  tr(T_NET_PASS), tr(T_NET_PATH) };
+        std::string vals[5];
+        vals[0] = app.net_cfg.host;
+        vals[1] = app.net_port;
+        vals[2] = app.net_cfg.user;
+        vals[3] = app.net_password.empty()
+                ? std::string() : std::string(app.net_password.size(), '*');
+        vals[4] = app.net_cfg.path;
+
+        for (int i = 0; i < 5; i++) {
+            SDL_Rect rc = { 48, 84 + i * 72, 928, 64 };
+            bool sel = app.net_field == i;
+            rrect(r, rc, 18, rgba(255, 255, 255, sel ? 17 : 7));
+            rrect_stroke(r, rc, 18, rgba(255, 255, 255, sel ? 24 : 9), 1);
+            if (sel) rrect(r, { rc.x + 16, rc.y + 18, 4, rc.h - 36 }, 2, C_ACCENT);
+            text(r, app.f_body, labels[i], rc.x + 32, rc.y + 13,
+                 sel ? C_ACCENT : C_DIM);
+            bool empty = vals[i].empty();
+            text(r, app.f_body,
+                 ellipsize(app.f_body, empty ? std::string("-") : vals[i], 650),
+                 rc.x + 246, rc.y + 13,
+                 empty ? with_alpha(C_DIM, 150) : C_TEXT);
+            hit_add(rc, HIT_NET_FIELD, i);
+        }
+
+        SDL_Rect conn = { 48, 444, 928, 60 };
+        button(r, conn, tr(T_NET_CONNECT), true, app.net_field == 5);
+        hit_add(conn, HIT_NET_CONNECT);
+
+        if (!app.net_status.empty())
+            text(r, app.f_small, ellipsize(app.f_small, app.net_status, W - 96),
+                 48, 518, app.net_status_bad ? C_AMBER : C_GREEN);
+        text(r, app.f_small, tr(T_NET_PASSWORD_NOTE), 48, 552, C_DIM);
+
+        deck_round(r, { 48, 612, 64, 64 });
+        icon_chevron(r, 60, 624, 40, C_TEXT, true);
+        hit_add({ 48, 612, 64, 64 }, HIT_BACK);
+
+        deck_hint(r, tr(T_NET_HINT_FORM));
+        return;
+    }
+
+    deck_header(r, tr(T_NET), app.net_remote.c_str());
+
+    const int top = 84, rowh = 84, vis = 5;
+    int n = (int)app.net_entries.size();
+    if (app.net_sel < app.net_scroll) app.net_scroll = app.net_sel;
+    if (app.net_sel >= app.net_scroll + vis) app.net_scroll = app.net_sel - vis + 1;
+    if (app.net_scroll < 0) app.net_scroll = 0;
+    if (app.net_sel >= n) app.net_sel = std::max(0, n - 1);
+
+    if (n == 0) {
+        const char* msg = busy ? tr(T_NET_LOADING) : tr(T_NET_EMPTY);
+        text(r, app.f_body, msg, W / 2, top + 150, C_DIM, Align::Center);
+    } else {
+        hit_add({ 48, top, 928, vis * rowh - 8 }, HIT_NET_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.net_scroll + i;
+            if (idx >= n) break;
+            const netsftp::Entry& e = app.net_entries[idx];
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            std::string title = e.name == ".." ? tr(T_NET_UP) : e.name;
+            std::string meta = e.dir ? tr(T_FILES_FOLDER) : fs_size_str(e.size);
+            deck_row(r, rc, idx == app.net_sel, title, meta, "", C_DIM);
+            hit_add(rc, HIT_NET_ROW, idx);
+        }
+    }
+
+    if (busy) {
+        std::string info = app.net_status;
+        if (p.op == netsftp::Op::Download) {
+            if (p.total > 0)
+                info += " · " + fs_size_str((long long)p.done) + " / " +
+                        fs_size_str((long long)p.total);
+            if (p.speed > 0)
+                info += " · " + fs_size_str((long long)p.speed) + "/s";
+            if (p.eta >= 0) info += " · " + fs_clock_str(p.eta);
+        }
+        text(r, app.f_small, ellipsize(app.f_small, info, 660), 48, 548, C_AMBER);
+        if (p.op == netsftp::Op::Download && p.total > 0) {
+            float frac = (float)p.done / p.total;
+            progress_bar(r, { 48, 584, 660, 10 }, frac, C_ACCENT, C_TRACK);
+        }
+        SDL_Rect cancel = { 730, 548, 246, 52 };
+        button(r, cancel, tr(T_KB_CANCEL), false, false);
+        hit_add(cancel, HIT_NET_CANCEL);
+    } else if (!app.net_status.empty()) {
+        text(r, app.f_small, ellipsize(app.f_small, app.net_status, W - 96),
+             48, 556, app.net_status_bad ? C_AMBER : C_GREEN);
+    }
+
+    deck_round(r, { 48, 616, 64, 64 });
+    icon_chevron(r, 60, 628, 40, C_TEXT, true);
+    hit_add({ 48, 616, 64, 64 }, HIT_BACK);
+
+    SDL_Rect up = { 124, 616, 150, 64 };
+    button(r, up, tr(T_NET_UP), false, false);
+    hit_add(up, HIT_NET_UP);
+
+    SDL_Rect ref = { 286, 616, 150, 64 };
+    button(r, ref, tr(T_NET_REFRESH), false, false);
+    hit_add(ref, HIT_NET_REFRESH);
+
+    SDL_Rect retry = { 448, 616, 150, 64 };
+    if (!app.net_retry_remote.empty()) {
+        button(r, retry, tr(T_NET_RETRY), false, false);
+        hit_add(retry, HIT_NET_RETRY);
+    }
+
+    SDL_Rect form = { 610, 616, 366, 64 };
+    button(r, form, tr(T_NET_HOST), false, false);
+    hit_add(form, HIT_NET_FORM);
+
+    deck_hint(r, tr(T_NET_HINT_BROWSE));
+}
+
 void deck_settings(SDL_Renderer* r)
 {
     deck_header(r, tr(T_SETTINGS));
     app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
 
-    const int tw = 452, th = 80, gx = 12, gy = 8;
-    for (int i = 0; i < 14; i++) {
-        int col = i % 2, row = i / 2;
+    const int tw = 301, th = 96, gx = 12, gy = 12;
+    for (int i = 0; i < 15; i++) {
+        int col = i % 3, row = i / 3;
         SDL_Rect tile = { 48 + col * (tw + gx), 84 + row * (th + gy), tw, th };
         bool sel = i == app.set_sel;
         SDL_Color vc = C_DIM;
         if (i == 2 || i == 3) vc = (i == 2 ? app.bt_on : !app.wifi_link.empty())
                                        ? C_GREEN : C_DIM;
-        if (i == 4 || i == 5) vc = C_ACCENT;
+        if (i == 4 || i == 5 || i == 14) vc = C_ACCENT;
         if (sel) card(r, tile, 20, true, 238);
         else {
             rrect(r, tile, 20, rgba(255, 255, 255, 7));
@@ -5414,18 +5916,24 @@ void deck_settings(SDL_Renderer* r)
         }
         settings_icon(r, i, tile.x + 18, tile.y + 14, 26,
                       (i == 8) ? C_RED : sel ? C_ACCENT : C_DIM);
-        text(r, app.f_body, settings_label(i), tile.x + 58, tile.y + 10,
-             i == 8 ? C_RED : C_TEXT);
+        std::string label = settings_label(i);
+        TTF_Font* lf = app.f_body;
+        std::string shown = ellipsize(lf, label, tw - 72);
+        if (shown != label) {
+            lf = app.f_small;
+            shown = ellipsize(lf, label, tw - 72);
+        }
+        text(r, lf, shown, tile.x + 58, tile.y + 10, i == 8 ? C_RED : C_TEXT);
         std::string v = settings_value(i);
         if (!v.empty())
             text(r, app.f_small, ellipsize(app.f_small, v, tw - 80),
-                 tile.x + 58, tile.y + 46, vc);
+                 tile.x + 58, tile.y + 50, vc);
         // Tile first, slider second: ui_hit_at() walks the list backwards,
         // so the smaller track must be registered last to win the touch.
         hit_add(tile, HIT_SET_TILE, i);
         if (i == 0 || i == 1) {
             int pct = i == 0 ? app.settings.brightness : app.settings.volume;
-            SDL_Rect track = { tile.x + tw - 190, tile.y + 46, 160, 24 };
+            SDL_Rect track = { tile.x + tw - 126, tile.y + 50, 104, 24 };
             bool adj = app.set_adjust == i;
             if (adj) rrect_stroke(r, { track.x - 8, track.y - 4, track.w + 16, 32 },
                                   16, with_alpha(C_ACCENT, 210), 1);
@@ -6493,6 +7001,7 @@ void draw_deck_content(SDL_Renderer* r)
     case Screen::Quick:     deck_quick(r); break;
     case Screen::GameCfg:   deck_cfg(r); break;
     case Screen::Files:     deck_files(r); break;
+    case Screen::Net:       deck_net(r); break;
     case Screen::Msg:       deck_msg(r); break;
     case Screen::Confirm:   deck_confirm(r); break;
     }
@@ -6623,7 +7132,7 @@ void deck_activate(int id, int a, int b)
         cfg_reset();
         break;
     case HIT_SET_TILE:
-        app.set_sel = std::clamp(a, 0, 13);
+        app.set_sel = std::clamp(a, 0, 14);
         if (a <= 1) {
             app.set_adjust = a;
             sound_play(SND_ADJUST);
@@ -6646,6 +7155,7 @@ void deck_activate(int id, int a, int b)
         else if (a == 11) setup_enter();
         else if (a == 12) covers_enter();
         else if (a == 13) fs_enter();
+        else if (a == 14) net_enter();
         else sound_play(SND_MOVE);
         break;
     case HIT_COVER_ACTION:
@@ -6680,6 +7190,40 @@ void deck_activate(int id, int a, int b)
     }
     case HIT_FILES_CANCEL:
         fs_cancel_task();
+        break;
+    case HIT_NET_FIELD:
+        app.net_field = std::clamp(a, 0, 5);
+        net_activate_field(app.net_field);
+        break;
+    case HIT_NET_CONNECT:
+        app.net_field = 5;
+        net_activate_field(5);
+        break;
+    case HIT_NET_FORM:
+        if (!(app.net_task && app.net_task->busy())) {
+            app.net_browse = false;
+            app.net_field = 0;
+        }
+        break;
+    case HIT_NET_ROW:
+        if (a >= 0 && a < (int)app.net_entries.size()) {
+            app.net_sel = a;
+            net_open_entry(a);
+        }
+        break;
+    case HIT_NET_UP:
+        if (app.net_remote != "/") net_start_list(netsftp::parent_remote(app.net_remote));
+        else { app.net_browse = false; app.net_field = 0; }
+        break;
+    case HIT_NET_REFRESH:
+        if (!(app.net_task && app.net_task->busy()))
+            net_start_list(app.net_browse ? app.net_remote : app.net_cfg.path);
+        break;
+    case HIT_NET_CANCEL:
+        net_cancel_op();
+        break;
+    case HIT_NET_RETRY:
+        if (!(app.net_task && app.net_task->busy())) net_retry();
         break;
     case HIT_WIFI_NET:
         if (a >= 0 && a < (int)app.wifi_nets.size()) {
@@ -6870,7 +7414,8 @@ void deck_touch(const TouchEvent& e)
         app.t_ly = e.y;
         if (app.t_id == HIT_LIST_ROWS || app.t_id == HIT_ACT_ROWS ||
             app.t_id == HIT_QUICK_ROWS || app.t_id == HIT_FILES_ROWS ||
-            app.t_id == HIT_FILES_ROW) {
+            app.t_id == HIT_FILES_ROW || app.t_id == HIT_NET_ROWS ||
+            app.t_id == HIT_NET_ROW) {
             app.t_acc += dy;
             while (app.t_acc >= 52) { navigate(0, -1); app.t_acc -= 52; }
             while (app.t_acc <= -52) { navigate(0, 1); app.t_acc += 52; }
@@ -6954,6 +7499,11 @@ void handle_button(SDL_ControllerButtonEvent& b)
         } else if (app.screen == Screen::Files) {
             sound_play(SND_ADJUST);
             fs_reload(true);
+        } else if (app.screen == Screen::Net) {
+            if (!app.wifi_kb && !(app.net_task && app.net_task->busy())) {
+                sound_play(SND_SWITCH);
+                net_start_list(app.net_browse ? app.net_remote : app.net_cfg.path);
+            }
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -6988,10 +7538,13 @@ void handle_button(SDL_ControllerButtonEvent& b)
             // no favourites toggle from the per-game deck
         } else if (app.screen == Screen::Files) {
             // no favourites here (Y is free)
+        } else if (app.screen == Screen::Net) {
+            // no favourites here
         } else toggle_fav();
         break;
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: // physical R
-        if (app.screen != Screen::GameCfg && app.screen != Screen::Files)
+        if (app.screen != Screen::GameCfg && app.screen != Screen::Files &&
+            app.screen != Screen::Net)
             toggle_fav_only();
         break;
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: go_back(); break;          // physical L
@@ -7049,6 +7602,11 @@ void handle_key(SDL_KeyboardEvent& k)
         } else if (app.screen == Screen::Files) {
             sound_play(SND_ADJUST);
             fs_reload(true);
+        } else if (app.screen == Screen::Net) {
+            if (!app.wifi_kb && !(app.net_task && app.net_task->busy())) {
+                sound_play(SND_SWITCH);
+                net_start_list(app.net_browse ? app.net_remote : app.net_cfg.path);
+            }
         } else refresh_games();
         break;
     case SDLK_f:
@@ -7083,10 +7641,13 @@ void handle_key(SDL_KeyboardEvent& k)
             // no favourites toggle from the per-game deck
         } else if (app.screen == Screen::Files) {
             // no favourites here
+        } else if (app.screen == Screen::Net) {
+            // no favourites here
         } else toggle_fav();
         break;
     case SDLK_TAB:
-        if (app.screen != Screen::GameCfg && app.screen != Screen::Files)
+        if (app.screen != Screen::GameCfg && app.screen != Screen::Files &&
+            app.screen != Screen::Net)
             toggle_fav_only();
         break;
     case SDLK_MINUS:
@@ -7173,6 +7734,7 @@ void draw_current(SDL_Renderer* r)
     case Screen::Setup:     draw_setup(r); break;
     case Screen::Covers:    draw_covers(r); break;
     case Screen::Files:     draw_files(r); break;
+    case Screen::Net:       draw_net(r); break;
     case Screen::Msg:       draw_msg(r); break;
     case Screen::Confirm:   draw_confirm(r); break;
     }
@@ -7283,6 +7845,7 @@ int main(int, char**)
         update_poll();
         tf2_poll();
         fs_tick();
+        net_tick();
         setup_poll();
         covers_poll();
 
@@ -7425,6 +7988,7 @@ int main(int, char**)
         app.settings.last_console = app.carousel;
     save_settings(app.settings);
     fs_shutdown();
+    net_shutdown();
     shutdown_gfx();
     perf::shutdown();
     return app.exit_code;

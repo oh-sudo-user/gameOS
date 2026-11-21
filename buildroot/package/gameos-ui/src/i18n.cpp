@@ -133,6 +133,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "轻触切换 · 返回即生效",
         // file manager
         "文件管理", "浏览 · 复制 · 解压", "TF1 数据卡", "TF2 游戏卡", "只读", "此文件夹为空", "复制", "移动", "重命名", "新建", "删除", "解压", "完成", "已取消", "失败：%s", "有文件任务正在进行", "TF2 卡未插入", "目标已存在：%s", "请选择一个 ZIP 文件", "同名文件夹已存在", "删除这个文件/文件夹？", "覆盖同名文件？", "TF2 需要临时写入", "TF2 默认为只读。将临时以读写方式挂载，任务结束后恢复；写入期间断电可能损坏该卡。\n%s", "新名称", "文件夹名称", "名称无效", "排队 %d", "剩余 %s", "%d/%d 项", "上下选择 · 左右换卡 · 点按打开", "TF2 已临时读写", "无法切换 TF2 读写", "上一级", "文件夹",
+        // network transfer
+        "网络传输", "SFTP · 从电脑传游戏", "服务器", "端口", "用户名", "密码", "远端目录", "连接", "正在连接…", "正在读取目录…", "选择要下载的文件", "目录为空", "正在下载 %s", "已保存到 %s", "失败：%s", "已取消", "上一级", "刷新", "取消", "重试", "首次连接，已记住服务器指纹", "密码只用于本次连接，不会保存", "请输入密码", "正在传输，请先取消当前任务", "轻触输入 · 选「连接」登录", "轻触文件夹进入 · 轻触文件下载", "指纹 %s", "下载到 /userdata/network", "空间不足：需要 %s，可用 %s", "未知大小", "用户名或密码错误", "服务器指纹已变化，已中止连接",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -254,6 +256,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "輕觸切換 · 返回即生效",
         // file manager
         "檔案管理", "瀏覽 · 複製 · 解壓縮", "TF1 資料卡", "TF2 遊戲卡", "唯讀", "此資料夾為空", "複製", "移動", "重新命名", "新增", "刪除", "解壓縮", "完成", "已取消", "失敗：%s", "有檔案任務正在進行", "TF2 卡未插入", "目標已存在：%s", "請選擇一個 ZIP 檔案", "同名資料夾已存在", "刪除這個檔案/資料夾？", "覆寫同名檔案？", "TF2 需要暫時寫入", "TF2 預設為唯讀。將暫時以讀寫方式掛載，任務結束後還原；寫入期間斷電可能損壞該卡。\n%s", "新名稱", "資料夾名稱", "名稱無效", "排隊 %d", "剩餘 %s", "%d/%d 項", "上下選擇 · 左右換卡 · 點按開啟", "TF2 已暫時讀寫", "無法切換 TF2 讀寫", "上一層", "資料夾",
+        // network transfer
+        "網路傳輸", "SFTP · 從電腦傳遊戲", "伺服器", "連接埠", "使用者名稱", "密碼", "遠端目錄", "連線", "正在連線…", "正在讀取目錄…", "選擇要下載的檔案", "目錄為空", "正在下載 %s", "已儲存到 %s", "失敗：%s", "已取消", "上一層", "重新整理", "取消", "重試", "首次連線，已記住伺服器指紋", "密碼只用於本次連線，不會儲存", "請輸入密碼", "正在傳輸，請先取消目前任務", "輕觸輸入 · 選「連線」登入", "輕觸資料夾進入 · 輕觸檔案下載", "指紋 %s", "下載到 /userdata/network", "空間不足：需要 %s，可用 %s", "未知大小", "使用者名稱或密碼錯誤", "伺服器指紋已變更，已中止連線",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -387,6 +391,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "タップで切替 · 戻ると反映",
         // file manager
         "ファイル管理", "閲覧 · コピー · 解凍", "TF1 データカード", "TF2 ゲームカード", "読み取り専用", "このフォルダは空です", "コピー", "移動", "名前変更", "新規", "削除", "解凍", "完了", "キャンセルしました", "失敗：%s", "ファイル操作を実行中です", "TF2 カードがありません", "既に存在します：%s", "ZIP ファイルを選択してください", "同じ名前のフォルダがあります", "このファイル/フォルダを削除しますか？", "同名ファイルを上書きしますか？", "TF2 への一時書き込み", "TF2 は通常読み取り専用です。一時的に読み書きで再マウントし、完了後に戻します。書き込み中の電源断はカードを壊す可能性があります。\n%s", "新しい名前", "フォルダ名", "名前が無効です", "待機 %d", "残り %s", "%d/%d 件", "↑↓ 選択 · ←→ カード · タップで開く", "TF2 を一時的に書き込み可能にしました", "TF2 を読み書きに変更できません", "上の階層", "フォルダ",
+        // network transfer
+        "ネットワーク転送", "SFTP · PCからゲームを転送", "サーバー", "ポート", "ユーザー名", "パスワード", "リモートフォルダー", "接続", "接続中…", "フォルダーを読み込み中…", "ダウンロードするファイルを選択", "フォルダーは空です", "%s をダウンロード中", "%s に保存しました", "失敗：%s", "キャンセルしました", "上の階層", "更新", "キャンセル", "再試行", "初回接続: サーバー指紋を保存しました", "パスワードは今回の接続だけに使い、保存しません", "パスワードを入力してください", "転送中です。先にキャンセルしてください", "タップで入力 · 「接続」でログイン", "フォルダーをタップで開く · ファイルをタップでダウンロード", "指紋 %s", "/userdata/network に保存", "空き容量不足: 必要 %s、空き %s", "サイズ不明", "ユーザー名またはパスワードが違います", "サーバー指紋が変わったため接続を中止しました",
     },
     // ------------------------------------------------------------------ en
     {
@@ -525,6 +531,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Tap to change · applied on back",
         // file manager
         "File manager", "Browse · copy · unzip", "TF1 data", "TF2 card", "read-only", "This folder is empty", "Copy", "Move", "Rename", "New folder", "Delete", "Extract", "Done", "Cancelled", "Failed: %s", "A file task is running", "The TF2 card is not inserted", "Target already exists: %s", "Select a ZIP file first", "A folder with that name already exists", "Delete this file/folder?", "Overwrite the existing file?", "TF2 needs temporary write access", "TF2 is mounted read-only by default. It will be remounted read-write for this task and set back afterwards. A power cut while writing can corrupt the card.\n%s", "New name", "Folder name", "Invalid name", "%d queued", "%s left", "%d/%d entries", "↑↓ select · ←→ card · tap to open", "TF2 is temporarily writable", "Cannot remount TF2 read-write", "Parent folder", "Folder",
+        // network transfer
+        "Network transfer", "SFTP · copy games from a computer", "Server", "Port", "User name", "Password", "Remote folder", "Connect", "Connecting…", "Reading folder…", "Choose a file to download", "This folder is empty", "Downloading %s", "Saved to %s", "Failed: %s", "Cancelled", "Parent folder", "Refresh", "Cancel", "Retry", "First connection — server fingerprint saved", "The password is used only for this connection and is never saved", "Enter a password", "A transfer is running — cancel it first", "Tap a field · choose Connect to sign in", "Tap a folder to open · tap a file to download", "Fingerprint %s", "Saving to /userdata/network", "Not enough space: need %s, %s free", "Size unknown", "Wrong user name or password", "The server fingerprint changed — connection aborted",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -668,6 +676,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Коснитесь для выбора · применяется сразу",
         // file manager
         "Файлы", "Просмотр · копирование · распаковка", "TF1 данные", "TF2 карта", "только чтение", "Папка пуста", "Копировать", "Переместить", "Переименовать", "Новая папка", "Удалить", "Распаковать", "Готово", "Отменено", "Ошибка: %s", "Выполняется файловая операция", "Карта TF2 не вставлена", "Уже существует: %s", "Сначала выберите ZIP-файл", "Папка с таким именем уже есть", "Удалить этот файл/папку?", "Перезаписать существующий файл?", "TF2: нужна запись", "Карта TF2 по умолчанию только для чтения. Она будет временно перемонтирована для записи и затем возвращена. Отключение питания при записи может повредить карту.\n%s", "Новое имя", "Имя папки", "Недопустимое имя", "В очереди: %d", "Осталось %s", "%d/%d элементов", "↑↓ выбор · ←→ карта · коснитесь, чтобы открыть", "TF2 временно доступна для записи", "Не удалось перемонтировать TF2", "Родительская папка", "Папка",
+        // network transfer
+        "Сеть", "SFTP · игры с компьютера", "Сервер", "Порт", "Имя пользователя", "Пароль", "Удалённая папка", "Подключить", "Подключение…", "Чтение папки…", "Выберите файл для скачивания", "Папка пуста", "Скачивание %s", "Сохранено в %s", "Ошибка: %s", "Отменено", "Родительская папка", "Обновить", "Отмена", "Повторить", "Первое подключение — отпечаток сервера сохранён", "Пароль используется только для этого подключения и не сохраняется", "Введите пароль", "Идёт передача — сначала отмените её", "Коснитесь поля · «Подключить» для входа", "Коснитесь папки, чтобы открыть · файла — чтобы скачать", "Отпечаток %s", "Сохранение в /userdata/network", "Мало места: нужно %s, свободно %s", "Размер неизвестен", "Неверное имя пользователя или пароль", "Отпечаток сервера изменился — подключение прервано",
     },
     // ------------------------------------------------------------------ es
     {
@@ -814,6 +824,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Toca para cambiar · se aplica al volver",
         // file manager
         "Archivos", "Explorar · copiar · descomprimir", "TF1 datos", "TF2 tarjeta", "solo lectura", "Esta carpeta está vacía", "Copiar", "Mover", "Renombrar", "Nueva carpeta", "Eliminar", "Extraer", "Hecho", "Cancelado", "Error: %s", "Hay una tarea de archivos en curso", "La tarjeta TF2 no está insertada", "Ya existe: %s", "Selecciona un archivo ZIP", "Ya existe una carpeta con ese nombre", "¿Eliminar este archivo/carpeta?", "¿Sobrescribir el archivo existente?", "TF2 necesita escritura temporal", "La TF2 está montada como solo lectura. Se montará temporalmente en lectura/escritura y se restaurará al terminar. Un corte de luz durante la escritura puede dañar la tarjeta.\n%s", "Nombre nuevo", "Nombre de carpeta", "Nombre no válido", "%d en cola", "Queda %s", "%d/%d elementos", "↑↓ elegir · ←→ tarjeta · toca para abrir", "TF2 es temporalmente escribible", "No se puede remontar TF2 en lectura/escritura", "Carpeta superior", "Carpeta",
+        // network transfer
+        "Red", "SFTP · juegos desde el PC", "Servidor", "Puerto", "Usuario", "Contraseña", "Carpeta remota", "Conectar", "Conectando…", "Leyendo carpeta…", "Elige un archivo para descargar", "Esta carpeta está vacía", "Descargando %s", "Guardado en %s", "Error: %s", "Cancelado", "Carpeta superior", "Actualizar", "Cancelar", "Reintentar", "Primera conexión: huella del servidor guardada", "La contraseña solo se usa para esta conexión y no se guarda", "Introduce una contraseña", "Hay una transferencia en curso: cancélala primero", "Toca un campo · Conectar para entrar", "Toca una carpeta para abrir · un archivo para descargar", "Huella %s", "Guardando en /userdata/network", "Espacio insuficiente: necesitas %s, hay %s", "Tamaño desconocido", "Usuario o contraseña incorrectos", "La huella del servidor cambió: conexión cancelada",
     },
 };
 
