@@ -131,6 +131,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "默认", "轻量", "高性能",
         "已保存", "保存失败", "恢复默认", "已恢复默认",
         "轻触切换 · 返回即生效",
+        // file manager
+        "文件管理", "浏览 · 复制 · 解压", "TF1 数据卡", "TF2 游戏卡", "只读", "此文件夹为空", "复制", "移动", "重命名", "新建", "删除", "解压", "完成", "已取消", "失败：%s", "有文件任务正在进行", "TF2 卡未插入", "目标已存在：%s", "请选择一个 ZIP 文件", "同名文件夹已存在", "删除这个文件/文件夹？", "覆盖同名文件？", "TF2 需要临时写入", "TF2 默认为只读。将临时以读写方式挂载，任务结束后恢复；写入期间断电可能损坏该卡。\n%s", "新名称", "文件夹名称", "名称无效", "排队 %d", "剩余 %s", "%d/%d 项", "上下选择 · 左右换卡 · 点按打开", "TF2 已临时读写", "无法切换 TF2 读写", "上一级", "文件夹",
     },
     // --------------------------------------------------------------- zh-TW
     {
@@ -250,6 +252,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "預設", "輕量", "高效能",
         "已儲存", "儲存失敗", "恢復預設", "已恢復預設",
         "輕觸切換 · 返回即生效",
+        // file manager
+        "檔案管理", "瀏覽 · 複製 · 解壓縮", "TF1 資料卡", "TF2 遊戲卡", "唯讀", "此資料夾為空", "複製", "移動", "重新命名", "新增", "刪除", "解壓縮", "完成", "已取消", "失敗：%s", "有檔案任務正在進行", "TF2 卡未插入", "目標已存在：%s", "請選擇一個 ZIP 檔案", "同名資料夾已存在", "刪除這個檔案/資料夾？", "覆寫同名檔案？", "TF2 需要暫時寫入", "TF2 預設為唯讀。將暫時以讀寫方式掛載，任務結束後還原；寫入期間斷電可能損壞該卡。\n%s", "新名稱", "資料夾名稱", "名稱無效", "排隊 %d", "剩餘 %s", "%d/%d 項", "上下選擇 · 左右換卡 · 點按開啟", "TF2 已暫時讀寫", "無法切換 TF2 讀寫", "上一層", "資料夾",
     },
     // ------------------------------------------------------------------ ja
     {
@@ -381,6 +385,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "既定", "軽量", "高性能",
         "保存しました", "保存に失敗", "既定に戻す", "既定に戻しました",
         "タップで切替 · 戻ると反映",
+        // file manager
+        "ファイル管理", "閲覧 · コピー · 解凍", "TF1 データカード", "TF2 ゲームカード", "読み取り専用", "このフォルダは空です", "コピー", "移動", "名前変更", "新規", "削除", "解凍", "完了", "キャンセルしました", "失敗：%s", "ファイル操作を実行中です", "TF2 カードがありません", "既に存在します：%s", "ZIP ファイルを選択してください", "同じ名前のフォルダがあります", "このファイル/フォルダを削除しますか？", "同名ファイルを上書きしますか？", "TF2 への一時書き込み", "TF2 は通常読み取り専用です。一時的に読み書きで再マウントし、完了後に戻します。書き込み中の電源断はカードを壊す可能性があります。\n%s", "新しい名前", "フォルダ名", "名前が無効です", "待機 %d", "残り %s", "%d/%d 件", "↑↓ 選択 · ←→ カード · タップで開く", "TF2 を一時的に書き込み可能にしました", "TF2 を読み書きに変更できません", "上の階層", "フォルダ",
     },
     // ------------------------------------------------------------------ en
     {
@@ -517,6 +523,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Default", "Light", "High",
         "Saved", "Save failed", "Reset to default", "Defaults restored",
         "Tap to change · applied on back",
+        // file manager
+        "File manager", "Browse · copy · unzip", "TF1 data", "TF2 card", "read-only", "This folder is empty", "Copy", "Move", "Rename", "New folder", "Delete", "Extract", "Done", "Cancelled", "Failed: %s", "A file task is running", "The TF2 card is not inserted", "Target already exists: %s", "Select a ZIP file first", "A folder with that name already exists", "Delete this file/folder?", "Overwrite the existing file?", "TF2 needs temporary write access", "TF2 is mounted read-only by default. It will be remounted read-write for this task and set back afterwards. A power cut while writing can corrupt the card.\n%s", "New name", "Folder name", "Invalid name", "%d queued", "%s left", "%d/%d entries", "↑↓ select · ←→ card · tap to open", "TF2 is temporarily writable", "Cannot remount TF2 read-write", "Parent folder", "Folder",
     },
     // ------------------------------------------------------------------ ru
     {
@@ -658,6 +666,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Сохранено", "Ошибка сохранения", "Сбросить настройки",
         "Настройки сброшены",
         "Коснитесь для выбора · применяется сразу",
+        // file manager
+        "Файлы", "Просмотр · копирование · распаковка", "TF1 данные", "TF2 карта", "только чтение", "Папка пуста", "Копировать", "Переместить", "Переименовать", "Новая папка", "Удалить", "Распаковать", "Готово", "Отменено", "Ошибка: %s", "Выполняется файловая операция", "Карта TF2 не вставлена", "Уже существует: %s", "Сначала выберите ZIP-файл", "Папка с таким именем уже есть", "Удалить этот файл/папку?", "Перезаписать существующий файл?", "TF2: нужна запись", "Карта TF2 по умолчанию только для чтения. Она будет временно перемонтирована для записи и затем возвращена. Отключение питания при записи может повредить карту.\n%s", "Новое имя", "Имя папки", "Недопустимое имя", "В очереди: %d", "Осталось %s", "%d/%d элементов", "↑↓ выбор · ←→ карта · коснитесь, чтобы открыть", "TF2 временно доступна для записи", "Не удалось перемонтировать TF2", "Родительская папка", "Папка",
     },
     // ------------------------------------------------------------------ es
     {
@@ -802,6 +812,8 @@ static const char* T[LANG_COUNT][T_COUNT] = {
         "Predeterminado", "Ligero", "Alto",
         "Guardado", "Error al guardar", "Restablecer", "Ajustes restablecidos",
         "Toca para cambiar · se aplica al volver",
+        // file manager
+        "Archivos", "Explorar · copiar · descomprimir", "TF1 datos", "TF2 tarjeta", "solo lectura", "Esta carpeta está vacía", "Copiar", "Mover", "Renombrar", "Nueva carpeta", "Eliminar", "Extraer", "Hecho", "Cancelado", "Error: %s", "Hay una tarea de archivos en curso", "La tarjeta TF2 no está insertada", "Ya existe: %s", "Selecciona un archivo ZIP", "Ya existe una carpeta con ese nombre", "¿Eliminar este archivo/carpeta?", "¿Sobrescribir el archivo existente?", "TF2 necesita escritura temporal", "La TF2 está montada como solo lectura. Se montará temporalmente en lectura/escritura y se restaurará al terminar. Un corte de luz durante la escritura puede dañar la tarjeta.\n%s", "Nombre nuevo", "Nombre de carpeta", "Nombre no válido", "%d en cola", "Queda %s", "%d/%d elementos", "↑↓ elegir · ←→ tarjeta · toca para abrir", "TF2 es temporalmente escribible", "No se puede remontar TF2 en lectura/escritura", "Carpeta superior", "Carpeta",
     },
 };
 

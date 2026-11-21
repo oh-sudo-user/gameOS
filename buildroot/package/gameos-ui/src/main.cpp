@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "displays.hpp"
 #include "drawcall.hpp"
+#include "fileops.hpp"
 #include "gameos.hpp"
 #include "i18n.hpp"
 #include "motion.hpp"
@@ -30,7 +31,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sys/stat.h>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <fcntl.h>
@@ -57,8 +60,9 @@ constexpr int CAR_SETTINGS = 7;
 // The definitions live in ui.cpp; this file reads them through ui.hpp.
 
 enum class Screen { Home, List, Settings, Wifi, Bluetooth, Saves, Update, Setup,
-                    Covers, Activity, Quick, GameCfg, Msg, Confirm };
-enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt };
+                    Covers, Activity, Quick, GameCfg, Files, Msg, Confirm };
+enum class ConfirmAct { None, PowerOff, Reboot, DeleteSave, Update, ForgetWifi, ForgetBt,
+                        FileDelete, FileOverwrite, FileTf2Rw };
 
 // Short stable tag for the frame profiler's log lines; keeps the perf log
 // readable without depending on translated screen titles.
@@ -77,6 +81,7 @@ const char* screen_key(Screen s)
     case Screen::Activity:  return "activity";
     case Screen::Quick:     return "quick";
     case Screen::GameCfg:   return "gcfg";
+    case Screen::Files:     return "files";
     case Screen::Msg:       return "msg";
     case Screen::Confirm:   return "confirm";
     }
@@ -93,7 +98,7 @@ enum HitId {
     HIT_HUB,              // a = 0 activity, 1 quick, 2 settings
     HIT_RECENT,
     HIT_LIST_ROWS, HIT_LIST_ROW,        // row: a = index
-    HIT_SET_TILE, HIT_SET_SLIDER,       // tile a = 0..12; slider a = 0 bright, 1 volume
+    HIT_SET_TILE, HIT_SET_SLIDER,       // tile a = 0..13; slider a = 0 bright, 1 volume
     HIT_WIFI_NET, HIT_WIFI_SCAN, HIT_WIFI_TEST,
     HIT_COVER_ACTION,
     HIT_BT_TOGGLE, HIT_BT_DEV, HIT_BT_SCAN, HIT_BT_FORGET,
@@ -103,6 +108,9 @@ enum HitId {
     HIT_QUICK_TAB, HIT_QUICK_ROWS, HIT_QUICK_ROW,
     HIT_SETUP_OPT, HIT_SETUP_NEXT, HIT_SETUP_PREV, HIT_SETUP_ACTION,
     HIT_KB_KEY,
+    HIT_FILES_PANE, HIT_FILES_ROWS, HIT_FILES_ROW,  // row: a = index
+    HIT_FILES_OP,                                  // a = 0 copy .. 5 unzip
+    HIT_FILES_CANCEL,
     HIT_DLG_OK, HIT_DLG_CANCEL
 };
 
@@ -264,6 +272,27 @@ struct App {
     std::string cfg_status;            // transient save feedback
     Uint32 cfg_status_at = 0;
 
+    // file manager (PR-17): the copy/unzip worker lives on its own thread, the
+    // UI only enqueues and polls. TF2 stays mounted read-only unless the user
+    // confirmed a temporary rw remount for the running task.
+    std::unique_ptr<fsops::TaskQueue> fs_queue;
+    bool fs_init = false;
+    int  fs_pane = 0;                  // 0 TF1 /userdata, 1 TF2 /mnt/tf2
+    std::string fs_dir[2];             // relative to the card root
+    std::vector<fsops::Entry> fs_entries;
+    int  fs_sel = 0, fs_scroll = 0;
+    std::string fs_status;
+    Uint32 fs_status_at = 0;
+    bool fs_tf2_rw = false;
+    std::string fs_kb_name;
+    int  fs_kb_kind = 0;               // 0 rename, 1 new folder
+    int  fs_pending_kind = 0;          // 1 copy, 2 move, 3 delete, 4 unzip, 5 rename, 6 mkdir
+    std::string fs_pending_src, fs_pending_dst;
+    std::string fs_confirm_path;       // full path shown by the confirm dialog
+    bool fs_pending_overwrite = false;
+    uint64_t fs_last_done = 0;
+    float fs_sel_f = 0, fs_scroll_f = 0;
+
     bool running = true;
     int exit_code = 0;
 
@@ -308,6 +337,10 @@ App app;
 
 // Custom display title from game_overrides.json, or the file-derived name.
 std::string game_label(const std::string& sys, const Game& g);
+
+void fs_enter();
+void fs_tick();
+void fs_shutdown();
 
 // seconds since the previous frame, clamped so a stall (SD scan, resume from
 // sleep) never teleports an animation
@@ -1536,6 +1569,557 @@ void cfg_apply_name()
 }
 
 // ---------------------------------------------------------------------------
+// file manager (PR-17)
+//
+// The screen only ever browses the two card roots. Mutations go through
+// fsops, which refuses symlinks and ".." escapes; ZIPs are unpacked into a
+// staging directory and renamed into place. The second card is mounted
+// read-only by gameos-tf2, so a write to it asks first and remounts rw just
+// for the duration of the task.
+// ---------------------------------------------------------------------------
+static const char* FS_TF2 = "/mnt/tf2";
+
+std::string fs_size_str(long long n)
+{
+    char b[48];
+    if (n < 1024)
+        snprintf(b, sizeof(b), "%lld B", n);
+    else if (n < 1024LL * 1024)
+        snprintf(b, sizeof(b), "%.1f KB", n / 1024.0);
+    else if (n < 1024LL * 1024 * 1024)
+        snprintf(b, sizeof(b), "%.1f MB", n / (1024.0 * 1024.0));
+    else
+        snprintf(b, sizeof(b), "%.2f GB", n / (1024.0 * 1024.0 * 1024.0));
+    return b;
+}
+
+std::string fs_clock_str(double sec)
+{
+    if (sec < 0) return "?";
+    int s = (int)(sec + 0.5);
+    char b[32];
+    if (s < 60) snprintf(b, sizeof(b), "%ds", s);
+    else if (s < 3600) snprintf(b, sizeof(b), "%d:%02d", s / 60, s % 60);
+    else snprintf(b, sizeof(b), "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60);
+    return b;
+}
+
+bool fs_path_on_tf2(const std::string& p)
+{
+    return p == FS_TF2 || (p.size() > 8 && p.compare(0, 9, "/mnt/tf2/") == 0);
+}
+
+const std::string& fs_root(int pane)
+{
+    static const std::vector<std::string> fallback = { "/userdata", FS_TF2 };
+    if (app.fs_queue) return app.fs_queue->roots()[pane];
+    return fallback[pane];
+}
+
+std::string fs_dir_abs(int pane)
+{
+    if (app.fs_dir[pane].empty()) return fs_root(pane);
+    return fs_root(pane) + "/" + app.fs_dir[pane];
+}
+
+std::string fs_display_path()
+{
+    std::string p = app.fs_dir[app.fs_pane];
+    return p.empty() ? std::string("/") : "/" + p;
+}
+
+void fs_say(const std::string& s, bool error = false)
+{
+    app.fs_status = s;
+    app.fs_status_at = SDL_GetTicks();
+    sound_play(error ? SND_ERROR : SND_CONFIRM);
+}
+
+fsops::Entry* fs_sel_entry()
+{
+    if (app.fs_sel < 0 || app.fs_sel >= (int)app.fs_entries.size()) return nullptr;
+    return &app.fs_entries[app.fs_sel];
+}
+
+std::string fs_sel_abs()
+{
+    fsops::Entry* e = fs_sel_entry();
+    if (!e || e->name == ".." || e->name.empty()) return std::string();
+    return fs_dir_abs(app.fs_pane) + "/" + e->name;
+}
+
+void fs_scroll_to_sel()
+{
+    constexpr int kVis = 6;
+    if (app.fs_sel < app.fs_scroll) app.fs_scroll = app.fs_sel;
+    if (app.fs_sel >= app.fs_scroll + kVis)
+        app.fs_scroll = app.fs_sel - kVis + 1;
+    app.fs_scroll = std::max(0, app.fs_scroll);
+}
+
+void fs_reload(bool keep_sel = false)
+{
+    if (!app.fs_queue) return;
+    std::string keep;
+    if (keep_sel) {
+        fsops::Entry* e = fs_sel_entry();
+        if (e) keep = e->name;
+    }
+    std::string path, err;
+    if (!fsops::resolve_under(fs_root(app.fs_pane), app.fs_dir[app.fs_pane],
+                              &path, &err)) {
+        app.fs_dir[app.fs_pane].clear();
+        path = fs_root(app.fs_pane);
+    }
+    std::vector<fsops::Entry> ents = fsops::list_dir(path, &err);
+    app.fs_entries.clear();
+    if (!err.empty()) {
+        app.fs_status = fmt(tr(T_FILES_FAILED), err.c_str());
+        app.fs_status_at = SDL_GetTicks();
+    }
+    if (!app.fs_dir[app.fs_pane].empty()) {
+        fsops::Entry up;
+        up.name = "..";
+        up.dir = true;
+        app.fs_entries.push_back(up);
+    }
+    app.fs_entries.insert(app.fs_entries.end(), ents.begin(), ents.end());
+    int wanted = -1;
+    if (!keep.empty()) {
+        for (int i = 0; i < (int)app.fs_entries.size(); i++)
+            if (app.fs_entries[i].name == keep) { wanted = i; break; }
+    }
+    if (wanted >= 0) app.fs_sel = wanted;
+    else app.fs_sel = std::clamp(app.fs_sel, 0,
+                                 std::max(0, (int)app.fs_entries.size() - 1));
+    fs_scroll_to_sel();
+}
+
+void fs_init_dirs_once()
+{
+    if (app.fs_init) return;
+    app.fs_init = true;
+    for (int i = 0; i < 2; i++) {
+        const std::string probe = fs_root(i) + "/roms";
+        struct stat st;
+        if (lstat(probe.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+            app.fs_dir[i] = "roms";
+    }
+}
+
+void fs_enter()
+{
+    if (!app.fs_queue)
+        app.fs_queue.reset(new fsops::TaskQueue(fsops::default_roots()));
+    fs_init_dirs_once();
+    // The second card can disappear between visits; never open a stale path.
+    if (app.fs_pane == 1 && !app.tf2_mounted) app.fs_pane = 0;
+    app.fs_sel = 0;
+    app.fs_scroll = 0;
+    app.fs_sel_f = 0;
+    app.fs_scroll_f = 0;
+    fs_reload();
+    sound_play(SND_CONFIRM);
+    app.screen = Screen::Files;
+}
+
+void fs_switch_pane()
+{
+    int next = 1 - app.fs_pane;
+    if (next == 1 && !app.tf2_mounted) {
+        fs_say(tr(T_FILES_TF2_ABSENT), true);
+        return;
+    }
+    app.fs_pane = next;
+    app.fs_sel = 0;
+    app.fs_scroll = 0;
+    app.fs_sel_f = 0;
+    app.fs_scroll_f = 0;
+    fs_reload();
+}
+
+void fs_enter_dir(const std::string& name)
+{
+    if (name == "..") {
+        size_t p = app.fs_dir[app.fs_pane].find_last_of('/');
+        app.fs_dir[app.fs_pane] = (p == std::string::npos)
+                                ? "" : app.fs_dir[app.fs_pane].substr(0, p);
+    } else {
+        if (!app.fs_dir[app.fs_pane].empty()) app.fs_dir[app.fs_pane] += "/";
+        app.fs_dir[app.fs_pane] += name;
+    }
+    app.fs_sel = 0;
+    app.fs_scroll = 0;
+    fs_reload();
+}
+
+void fs_up()
+{
+    if (app.wifi_kb) return;
+    if (app.fs_dir[app.fs_pane].empty()) {
+        app.screen = Screen::Settings;
+        sound_play(SND_BACK);
+        return;
+    }
+    std::string keep = app.fs_dir[app.fs_pane];
+    size_t p = keep.find_last_of('/');
+    std::string base = (p == std::string::npos) ? keep : keep.substr(p + 1);
+    fs_enter_dir("..");
+    for (int i = 0; i < (int)app.fs_entries.size(); i++) {
+        if (app.fs_entries[i].name == base) { app.fs_sel = i; break; }
+    }
+    fs_scroll_to_sel();
+}
+
+void fs_clear_pending()
+{
+    app.fs_pending_kind = 0;
+    app.fs_pending_src.clear();
+    app.fs_pending_dst.clear();
+    app.fs_pending_overwrite = false;
+    app.fs_confirm_path.clear();
+}
+
+bool fs_pending_needs_tf2()
+{
+    switch (app.fs_pending_kind) {
+    case 1: return fs_path_on_tf2(app.fs_pending_dst);
+    case 2: return fs_path_on_tf2(app.fs_pending_src) ||
+                   fs_path_on_tf2(app.fs_pending_dst);
+    case 3: return fs_path_on_tf2(app.fs_pending_src);
+    case 4: return fs_path_on_tf2(app.fs_pending_dst);
+    case 5:
+    case 6: return fs_path_on_tf2(app.fs_pending_dst) ||
+                   fs_path_on_tf2(app.fs_pending_src);
+    default: return false;
+    }
+}
+
+std::string fs_pending_tf2_path()
+{
+    if (fs_path_on_tf2(app.fs_pending_dst)) return app.fs_pending_dst;
+    return app.fs_pending_src;
+}
+
+bool fs_remount_tf2(bool rw)
+{
+    const char* cmd = rw ? "mount -o remount,rw /mnt/tf2"
+                         : "sync; mount -o remount,ro /mnt/tf2";
+    int rc = system(cmd);
+    char dbg[160];
+    snprintf(dbg, sizeof(dbg), "gameos-ui: tf2 remount %s rc=%d\n",
+             rw ? "rw" : "ro", rc);
+    ui_dbg(dbg);
+    return rc == 0;
+}
+
+void fs_finish_tf2_write()
+{
+    if (!app.fs_tf2_rw) return;
+    const bool ok = fs_remount_tf2(false);
+    app.fs_tf2_rw = false;   // fail closed: the next write asks again
+    if (!ok) fs_say(tr(T_FILES_RW_FAIL), true);
+}
+
+void fs_library_changed()
+{
+    for (int i = 0; i < 5; i++) invalidate_games(i);
+    app.recent_ok = false;
+    app.recent_at = 0;
+    g_label_cache.clear();
+}
+
+void fs_exec_pending()
+{
+    const int kind = app.fs_pending_kind;
+    const std::string src = app.fs_pending_src;
+    const std::string dst = app.fs_pending_dst;
+    const bool overwrite = app.fs_pending_overwrite;
+    fs_clear_pending();
+    app.confirm = ConfirmAct::None;
+    app.screen = Screen::Files;
+    std::string err;
+
+    if (kind == 1 || kind == 2) {
+        std::string parent = dst.find_last_of('/') == std::string::npos
+                           ? std::string() : dst.substr(0, dst.find_last_of('/'));
+        struct stat st;
+        if (!parent.empty() && lstat(parent.c_str(), &st) != 0) {
+            if (!fsops::make_dirs(parent, &err)) {
+                fs_say(fmt(tr(T_FILES_FAILED), err.c_str()), true);
+                return;
+            }
+        }
+        bool ok = (kind == 1)
+            ? app.fs_queue->enqueue_copy(src, dst, overwrite, &err)
+            : app.fs_queue->enqueue_move(src, dst, overwrite, &err);
+        if (!ok) fs_say(fmt(tr(T_FILES_FAILED), err.c_str()), true);
+        return;
+    }
+    if (kind == 3) {
+        if (!app.fs_queue->enqueue_remove(src, &err))
+            fs_say(fmt(tr(T_FILES_FAILED), err.c_str()), true);
+        return;
+    }
+    if (kind == 4) {
+        if (!app.fs_queue->enqueue_unzip(src, dst, &err))
+            fs_say(fmt(tr(T_FILES_FAILED), err.c_str()), true);
+        return;
+    }
+    if (kind == 5) {
+        if (!fsops::rename_path(src, dst, &err)) {
+            fs_say(fmt(tr(T_FILES_FAILED), err.c_str()), true);
+        } else {
+            fs_library_changed();
+            fs_reload(true);
+            fs_say(tr(T_FILES_DONE));
+            fs_finish_tf2_write();
+        }
+        return;
+    }
+    if (kind == 6) {
+        if (!fsops::make_dir(dst, &err)) {
+            fs_say(fmt(tr(T_FILES_FAILED), err.c_str()), true);
+        } else {
+            fs_library_changed();
+            fs_reload(true);
+            fs_say(tr(T_FILES_DONE));
+            fs_finish_tf2_write();
+        }
+    }
+}
+
+void fs_pending_begin()
+{
+    app.confirm = ConfirmAct::None;
+    if (app.fs_pending_kind == 0) return;
+    if (fs_pending_needs_tf2() && !app.fs_tf2_rw) {
+        if (!app.tf2_mounted) {
+            fs_say(tr(T_FILES_TF2_ABSENT), true);
+            fs_clear_pending();
+            return;
+        }
+        app.fs_confirm_path = fs_pending_tf2_path();
+        app.confirm = ConfirmAct::FileTf2Rw;
+        app.screen = Screen::Confirm;
+        return;
+    }
+    fs_exec_pending();
+}
+
+void fs_confirm_tf2_rw()
+{
+    if (!fs_remount_tf2(true)) {
+        fs_say(tr(T_FILES_RW_FAIL), true);
+        fs_clear_pending();
+        app.confirm = ConfirmAct::None;
+        app.screen = Screen::Files;
+        return;
+    }
+    app.fs_tf2_rw = true;
+    fs_exec_pending();
+}
+
+void fs_request_copy(bool move)
+{
+    fsops::Entry* e = fs_sel_entry();
+    if (!e || e->name == "..") return;
+    if (app.fs_queue->busy()) { fs_say(tr(T_FILES_BUSY), true); return; }
+    if (e->symlink) { fs_say(fmt(tr(T_FILES_FAILED), "symlink"), true); return; }
+    const int other = 1 - app.fs_pane;
+    if (other == 1 && !app.tf2_mounted) {
+        fs_say(tr(T_FILES_TF2_ABSENT), true);
+        return;
+    }
+    const std::string dst = fs_dir_abs(other) + "/" + e->name;
+    if (fs_path_on_tf2(dst) && !app.tf2_mounted) {
+        fs_say(tr(T_FILES_TF2_ABSENT), true);
+        return;
+    }
+    app.fs_pending_kind = move ? 2 : 1;
+    app.fs_pending_src = fs_sel_abs();
+    app.fs_pending_dst = dst;
+    app.fs_pending_overwrite = false;
+    struct stat st;
+    if (lstat(dst.c_str(), &st) == 0) {
+        if (!S_ISREG(st.st_mode) || e->dir) {
+            fs_say(fmt(tr(T_FILES_TARGET_EXISTS), dst.c_str()), true);
+            fs_clear_pending();
+            return;
+        }
+        app.fs_pending_overwrite = true;
+        app.fs_confirm_path = dst;
+        app.confirm = ConfirmAct::FileOverwrite;
+        app.screen = Screen::Confirm;
+        return;
+    }
+    fs_pending_begin();
+}
+
+void fs_request_delete()
+{
+    fsops::Entry* e = fs_sel_entry();
+    if (!e || e->name == "..") return;
+    if (e->symlink) { fs_say(fmt(tr(T_FILES_FAILED), "symlink"), true); return; }
+    app.fs_pending_kind = 3;
+    app.fs_pending_src = fs_sel_abs();
+    app.fs_pending_dst.clear();
+    app.fs_pending_overwrite = false;
+    app.fs_confirm_path = app.fs_pending_src;
+    app.confirm = ConfirmAct::FileDelete;
+    app.screen = Screen::Confirm;
+}
+
+void fs_request_unzip()
+{
+    fsops::Entry* e = fs_sel_entry();
+    if (!e || e->name == ".." || e->dir) {
+        fs_say(tr(T_FILES_NO_ZIP), true);
+        return;
+    }
+    std::string low = e->name;
+    for (char& c : low) c = (char)tolower((unsigned char)c);
+    if (low.size() < 5 || low.compare(low.size() - 4, 4, ".zip") != 0) {
+        fs_say(tr(T_FILES_NO_ZIP), true);
+        return;
+    }
+    std::string dest = fs_dir_abs(app.fs_pane) + "/" +
+                       e->name.substr(0, e->name.size() - 4);
+    struct stat st;
+    if (lstat(dest.c_str(), &st) == 0) {
+        fs_say(tr(T_FILES_ZIP_EXISTS), true);
+        return;
+    }
+    app.fs_pending_kind = 4;
+    app.fs_pending_src = fs_sel_abs();
+    app.fs_pending_dst = dest;
+    app.fs_pending_overwrite = false;
+    fs_pending_begin();
+}
+
+void fs_request_rename()
+{
+    fsops::Entry* e = fs_sel_entry();
+    if (!e || e->name == "..") return;
+    app.fs_kb_kind = 0;
+    app.fs_kb_name = e->name;
+    kb_open(app.fs_kb_name, tr(T_FILES_KB_RENAME), 64, false, false);
+    sound_play(SND_CONFIRM);
+}
+
+void fs_request_mkdir()
+{
+    app.fs_kb_kind = 1;
+    app.fs_kb_name.clear();
+    kb_open(app.fs_kb_name, tr(T_FILES_KB_MKDIR), 64, false, false);
+    sound_play(SND_CONFIRM);
+}
+
+void fs_apply_kb()
+{
+    std::string name = app.fs_kb_name;
+    size_t b = name.find_first_not_of(" \t\r\n");
+    size_t e = name.find_last_not_of(" \t\r\n");
+    name = (b == std::string::npos) ? "" : name.substr(b, e - b + 1);
+    bool bad = name.empty() || name == "." || name == ".." || name.size() > 128;
+    for (char c : name)
+        if (c == '/' || c == '\\' || (unsigned char)c < 0x20) bad = true;
+    if (bad) {
+        fs_say(tr(T_FILES_INVALID_NAME), true);
+        app.screen = Screen::Files;
+        return;
+    }
+    struct stat st;
+    if (app.fs_kb_kind == 0) {
+        fsops::Entry* ent = fs_sel_entry();
+        if (!ent || ent->name == "..") return;
+        if (name == ent->name) { app.screen = Screen::Files; return; }
+        std::string src = fs_sel_abs();
+        std::string dst = fs_dir_abs(app.fs_pane) + "/" + name;
+        if (lstat(dst.c_str(), &st) == 0) {
+            fs_say(fmt(tr(T_FILES_TARGET_EXISTS), dst.c_str()), true);
+            app.screen = Screen::Files;
+            return;
+        }
+        app.fs_pending_kind = 5;
+        app.fs_pending_src = src;
+        app.fs_pending_dst = dst;
+    } else {
+        std::string dst = fs_dir_abs(app.fs_pane) + "/" + name;
+        if (lstat(dst.c_str(), &st) == 0) {
+            fs_say(fmt(tr(T_FILES_TARGET_EXISTS), dst.c_str()), true);
+            app.screen = Screen::Files;
+            return;
+        }
+        app.fs_pending_kind = 6;
+        app.fs_pending_dst = dst;
+    }
+    app.fs_pending_overwrite = false;
+    app.screen = Screen::Files;
+    fs_pending_begin();
+}
+
+void fs_open_sel()
+{
+    fsops::Entry* e = fs_sel_entry();
+    if (!e) return;
+    if (e->name == "..") { fs_up(); return; }
+    if (e->dir) {
+        if (e->symlink) return;
+        fs_enter_dir(e->name);
+        return;
+    }
+    std::string low = e->name;
+    for (char& c : low) c = (char)tolower((unsigned char)c);
+    if (low.size() > 4 && low.compare(low.size() - 4, 4, ".zip") == 0) {
+        fs_request_unzip();
+        return;
+    }
+    fs_say(tr(T_FILES_HINT), false);
+}
+
+void fs_cancel_task()
+{
+    if (app.fs_queue) app.fs_queue->cancel();
+    fs_say(tr(T_FILES_CANCELLED), false);
+}
+
+void fs_tick()
+{
+    if (!app.fs_queue) return;
+    if (!app.tf2_mounted && app.fs_pane == 1) {
+        app.fs_pane = 0;
+        fs_say(tr(T_FILES_TF2_ABSENT), true);
+        if (app.screen == Screen::Files) fs_reload();
+    }
+    if (!app.fs_status.empty() && SDL_GetTicks() - app.fs_status_at > 8000)
+        app.fs_status.clear();
+    fsops::Progress p = app.fs_queue->snapshot();
+    if (p.job == fsops::Job::None || p.id == app.fs_last_done) return;
+    if (p.running || app.fs_queue->busy()) return;
+    app.fs_last_done = p.id;
+    if (p.ok) {
+        fs_say(tr(T_FILES_DONE), false);
+        fs_library_changed();
+    } else if (p.cancelled) {
+        fs_say(tr(T_FILES_CANCELLED), false);
+    } else {
+        fs_say(fmt(tr(T_FILES_FAILED),
+                    p.error.empty() ? "?" : p.error.c_str()), true);
+    }
+    fs_finish_tf2_write();
+    if (app.screen == Screen::Files) fs_reload(true);
+}
+
+void fs_shutdown()
+{
+    if (!app.fs_queue) return;
+    app.fs_queue->cancel();
+    app.fs_queue->wait_idle();
+    if (app.fs_tf2_rw && fs_remount_tf2(false)) app.fs_tf2_rw = false;
+}
+
+// ---------------------------------------------------------------------------
 // first-boot wizard
 //
 // Six questions then a done page. A (right button) acts on the highlighted row,
@@ -1929,6 +2513,10 @@ void setup_activate()
 // fields need no action here; the machine name is applied straight away.
 void setup_kb_done(std::string* target)
 {
+    if (target == &app.fs_kb_name) {
+        fs_apply_kb();
+        return;
+    }
     if (target == &app.cfg_name) {
         cfg_apply_name();          // per-game custom title: empty clears it
         return;
@@ -2510,6 +3098,66 @@ const char* settings_label(int i);
 std::string settings_value(int i);
 void settings_icon(SDL_Renderer* r, int idx, int x, int y, int size, SDL_Color c);
 
+// ---------------------------------------------------------------------------
+// file manager screen (PR-17)
+// ---------------------------------------------------------------------------
+const char* fs_job_name(fsops::Job j)
+{
+    switch (j) {
+    case fsops::Job::Copy:   return tr(T_FILES_COPY);
+    case fsops::Job::Move:   return tr(T_FILES_MOVE);
+    case fsops::Job::Remove: return tr(T_FILES_DELETE);
+    case fsops::Job::Unzip:  return tr(T_FILES_UNZIP);
+    default:                 return "";
+    }
+}
+
+void draw_files(SDL_Renderer* r)
+{
+    draw_background(r);
+    draw_topbar(r);
+
+    fsops::Progress p;
+    bool busy = false;
+    if (app.fs_queue) {
+        p = app.fs_queue->snapshot();
+        busy = app.fs_queue->busy();
+    }
+    const bool ro = app.fs_pane == 1 && !app.fs_tf2_rw;
+
+    top_plate(r, W / 2, 290, 142);
+    icon_folder(r, W / 2 - 62, 228, 124, C_ACCENT);
+
+    std::string detail;
+    SDL_Color sc = C_TEXT;
+    if (busy) {
+        char b[128];
+        if (p.job == fsops::Job::Unzip)
+            snprintf(b, sizeof(b), tr(T_FILES_ENTRIES),
+                     p.entries_done, p.entries_total);
+        else
+            snprintf(b, sizeof(b), "%s / %s",
+                     fs_size_str((long long)p.done).c_str(),
+                     fs_size_str((long long)p.total).c_str());
+        detail = std::string(fs_job_name(p.job)) + " · " + b;
+        if (p.eta >= 0 && p.job != fsops::Job::Remove)
+            detail += std::string(" · ") + fs_clock_str(p.eta);
+        sc = C_AMBER;
+    } else if (!app.fs_status.empty()) {
+        detail = app.fs_status;
+        sc = C_AMBER;
+    } else if (ro) {
+        detail = tr(T_FILES_RO);
+        sc = C_DIM;
+    } else {
+        detail = tr(T_FILES_HINT);
+        sc = C_TEXT;
+    }
+    top_hero(r, tr(T_FILES),
+             tr(app.fs_pane == 0 ? T_FILES_TF1 : T_FILES_TF2),
+             fs_display_path(), sc, detail);
+}
+
 void draw_settings(SDL_Renderer* r)
 {
     draw_background(r);
@@ -2524,6 +3172,7 @@ void draw_settings(SDL_Renderer* r)
     if (app.set_sel == 3) vc = app.wifi_link.empty() ? C_DIM : C_GREEN;
     if (app.set_sel == 4 || app.set_sel == 5) vc = C_ACCENT;
     if (app.set_sel == 8) vc = C_RED;
+    if (app.set_sel == 4 || app.set_sel == 5 || app.set_sel == 13) vc = C_ACCENT;
     if (app.set_sel == 12)
         vc = (app.cov_state == "running" ||
               (app.setup_busy && app.setup_op == "covers")) ? C_AMBER : C_DIM;
@@ -2537,7 +3186,7 @@ void draw_settings(SDL_Renderer* r)
         if (pct > 0) rrect(r, { track.x, track.y, 500 * pct / 100, 10 }, 5, C_ACCENT);
         circle(r, track.x + 500 * pct / 100, track.y + 5, 11, C_TEXT);
     }
-    top_dots(r, 13, app.set_sel, 712);
+    top_dots(r, 14, app.set_sel, 712);
 }
 
 void draw_saves(SDL_Renderer* r)
@@ -2703,7 +3352,11 @@ void draw_confirm(SDL_Renderer* r)
     bool update = app.confirm == ConfirmAct::Update;
     bool forget = app.confirm == ConfirmAct::ForgetWifi ||
                   app.confirm == ConfirmAct::ForgetBt;
-    SDL_Color ac = forget ? C_AMBER
+    bool file_del = app.confirm == ConfirmAct::FileDelete;
+    bool file_ovr = app.confirm == ConfirmAct::FileOverwrite;
+    bool file_rw  = app.confirm == ConfirmAct::FileTf2Rw;
+    bool file = file_del || file_ovr || file_rw;
+    SDL_Color ac = (forget || file_ovr || file_rw) ? C_AMBER
                  : update ? C_ACCENT
                  : app.confirm == ConfirmAct::Reboot ? C_AMBER : C_RED;
     glow(r, W / 2, py + 64, 300, ac, 10, 16);
@@ -2717,6 +3370,8 @@ void draw_confirm(SDL_Renderer* r)
     else if (app.confirm == ConfirmAct::ForgetBt) icon_bt(r, cx - 22, cy - 22, 44, ac);
     else if (app.confirm == ConfirmAct::Reboot) icon_refresh(r, cx - 22, cy - 22, 44, ac);
     else if (app.confirm == ConfirmAct::PowerOff) icon_power(r, cx - 22, cy - 22, 44, ac);
+    else if (file_ovr) icon_arrow_up(r, cx - 22, cy - 22, 44, ac);
+    else if (file_rw) icon_folder(r, cx - 22, cy - 22, 44, ac);
     else icon_trash(r, cx - 22, cy - 22, 44, ac);
 
     std::string title, body;
@@ -2724,6 +3379,12 @@ void draw_confirm(SDL_Renderer* r)
         // second confirmation before anything is downloaded or written
         title = fmt(tr(T_UPDATE_CONFIRM), app.upd_version.c_str());
         body = tr(T_UPDATE_CONFIRM_BODY);
+    } else if (file) {
+        title = file_del ? tr(T_FILES_DELETE_Q)
+              : file_ovr ? tr(T_FILES_OVERWRITE_Q)
+                         : tr(T_FILES_RW_Q);
+        body = file_rw ? fmt(tr(T_FILES_RW_BODY), app.fs_confirm_path.c_str())
+                       : app.fs_confirm_path;
     } else {
         title = forget ? tr(T_CONFIRM_FORGET)
               : (app.confirm == ConfirmAct::PowerOff) ? tr(T_CONFIRM_OFF)
@@ -2739,14 +3400,14 @@ void draw_confirm(SDL_Renderer* r)
          cx, py + 122, C_TEXT, Align::Center);
     if (!body.empty()) {
         auto lines = wrap(app.f_small, body, pw - 112);
-        const size_t maxlines = 2;
-        int y = py + 184;
+        const size_t maxlines = file_rw ? 3 : 2;
+        int y = py + (file_rw ? 176 : 184);
         for (size_t i = 0; i < lines.size() && i < maxlines; i++) {
             std::string l = lines[i];
             if (i + 1 == maxlines && lines.size() > maxlines)
                 l = ellipsize(app.f_small, l + "…", pw - 112);
             text(r, app.f_small, l, cx, y, C_DIM, Align::Center);
-            y += 32;
+            y += file_rw ? 30 : 32;
         }
     }
     text(r, app.f_small, tr(T_CONFIRM_HINT), cx, py + ph - 52,
@@ -3707,6 +4368,11 @@ static void launch_one(const Console& c, const Game& g)
 void do_launch()
 {
     if (app.games.empty()) return;
+    if (app.fs_queue && app.fs_queue->busy()) {
+        sound_play(SND_ERROR);
+        show_msg(tr(T_FILES), tr(T_FILES_BUSY));
+        return;
+    }
     launch_one(consoles()[app.carousel], app.games[app.sel]);
     if (!app.running) return;
 
@@ -3760,12 +4426,23 @@ void go_back()
         // the download keeps running in the background if it was started
         app.screen = Screen::Settings;
         break;
+    case Screen::Files:
+        if (app.wifi_kb) { kb_cancel(); break; }
+        fs_up();
+        break;
     case Screen::Confirm:
         app.screen = (app.confirm == ConfirmAct::DeleteSave) ? Screen::Saves
                    : (app.confirm == ConfirmAct::Update)     ? Screen::Update
                    : (app.confirm == ConfirmAct::ForgetWifi) ? Screen::Wifi
                    : (app.confirm == ConfirmAct::ForgetBt)   ? Screen::Bluetooth
+                   : (app.confirm == ConfirmAct::FileDelete ||
+                      app.confirm == ConfirmAct::FileOverwrite ||
+                      app.confirm == ConfirmAct::FileTf2Rw)  ? Screen::Files
                                                              : Screen::Settings;
+        if (app.confirm == ConfirmAct::FileDelete ||
+            app.confirm == ConfirmAct::FileOverwrite ||
+            app.confirm == ConfirmAct::FileTf2Rw)
+            fs_clear_pending();
         app.confirm = ConfirmAct::None;
         break;
     default:
@@ -3786,6 +4463,10 @@ void confirm_btn()
     case Screen::GameCfg:
         if (app.wifi_kb) kb_press();
         else cfg_activate(app.cfg_sel);
+        break;
+    case Screen::Files:
+        if (app.wifi_kb) kb_press();
+        else fs_open_sel();
         break;
     case Screen::Activity: {
         std::string sys, title;
@@ -3835,6 +4516,7 @@ void confirm_btn()
             show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
         else if (app.set_sel == 11) setup_enter();
         else if (app.set_sel == 12) covers_enter();
+        else if (app.set_sel == 13) fs_enter();
         break;
     case Screen::Setup:
         if (app.wifi_kb) kb_press();
@@ -3878,7 +4560,12 @@ void confirm_btn()
         }
         break;
     case Screen::Confirm:
-        if (app.confirm == ConfirmAct::DeleteSave) {
+        if (app.confirm == ConfirmAct::FileDelete ||
+            app.confirm == ConfirmAct::FileOverwrite) {
+            fs_pending_begin();
+        } else if (app.confirm == ConfirmAct::FileTf2Rw) {
+            fs_confirm_tf2_rw();
+        } else if (app.confirm == ConfirmAct::DeleteSave) {
             if (app.save_del_idx >= 0 && app.save_del_idx < (int)app.saves.size())
                 delete_save(app.saves[app.save_del_idx].path);
             app.saves = scan_saves();
@@ -3962,6 +4649,7 @@ void navigate(int dx, int dy)
             sound_play(SND_ADJUST);
         else if (app.screen == Screen::GameCfg && dx && !app.wifi_kb)
             ;                       // cfg_cycle() rings as it applies the value
+        else if (app.screen == Screen::Files && dx) sound_play(SND_SWITCH);
         else sound_play(SND_MOVE);
     }
     switch (app.screen) {
@@ -3985,6 +4673,23 @@ void navigate(int dx, int dy)
             app.cfg_sel = std::clamp(app.cfg_sel + dy, 0, cfg_row_count() - 1);
         } else if (dx && !app.games.empty()) {
             cfg_cycle(app.cfg_sel);
+        }
+        break;
+    case Screen::Files:
+        if (app.wifi_kb) {
+            const auto& rows = kb_rows();
+            if (dy) {
+                app.kb_r = std::clamp(app.kb_r + dy, 0, (int)rows.size() - 1);
+                app.kb_c = std::min(app.kb_c, (int)rows[app.kb_r].size() - 1);
+            }
+            if (dx) app.kb_c = std::clamp(app.kb_c + dx, 0,
+                                          (int)rows[app.kb_r].size() - 1);
+        } else if (dx) {
+            fs_switch_pane();
+        } else if (dy && !app.fs_entries.empty()) {
+            app.fs_sel = std::clamp(app.fs_sel + dy, 0,
+                                    (int)app.fs_entries.size() - 1);
+            fs_scroll_to_sel();
         }
         break;
     case Screen::Activity:
@@ -4025,8 +4730,8 @@ void navigate(int dx, int dy)
             if (dy) app.set_adjust = -1;   // leave adjust, then move
         }
         // two-column tile grid: up/down changes row, left/right changes column
-        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 2, 0, 12);
-        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 12);
+        if (dy) app.set_sel = std::clamp(app.set_sel + dy * 2, 0, 13);
+        if (dx) app.set_sel = std::clamp(app.set_sel + dx, 0, 13);
         break;
     case Screen::Wifi:
         if (app.wifi_kb) {
@@ -4450,15 +5155,15 @@ void deck_list(SDL_Renderer* r)
 }
 
 // ---------------------------------------------------------------------------
-// settings deck: 13 direct tiles, two columns
+// settings deck: 14 direct tiles, two columns
 // ---------------------------------------------------------------------------
 const char* settings_label(int i)
 {
-    const char* rows[13] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
+    const char* rows[14] = { tr(T_BRIGHTNESS), tr(T_VOLUME), tr(T_BT), tr(T_WIFI),
                              tr(T_THEME), tr(T_LANGUAGE), tr(T_UPDATE), tr(T_SAVES),
                              tr(T_POWEROFF), tr(T_REBOOT), tr(T_ABOUT), tr(T_SETUP),
-                             tr(T_COVERS) };
-    return rows[std::clamp(i, 0, 12)];
+                             tr(T_COVERS), tr(T_FILES) };
+    return rows[std::clamp(i, 0, 13)];
 }
 
 std::string settings_value(int i)
@@ -4486,6 +5191,7 @@ std::string settings_value(int i)
                        app.upd_msg.empty() ? "?" : app.upd_msg.c_str());
         return tr(T_UPD_CHECK);
     case 7: snprintf(b, sizeof(b), tr(T_SAVES_COUNT_FMT), app.saves.size()); return b;
+    case 13: return tr(T_FILES_SUB);
     case 12:
         if (app.cov_state == "running" ||
             (app.setup_busy && app.setup_op == "covers"))
@@ -4514,8 +5220,127 @@ void settings_icon(SDL_Renderer* r, int idx, int x, int y, int size, SDL_Color c
     case 9: icon_refresh(r, x, y, size, c); break;
     case 10: icon_gear(r, x, y, size, c); break;
     case 11: icon_gamepad(r, x, y, size, c); break;
+    case 13: icon_folder(r, x, y, size, c); break;
     default: icon_image(r, x, y, size, c); break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// file manager deck (PR-17)
+// ---------------------------------------------------------------------------
+void deck_files(SDL_Renderer* r)
+{
+    deck_header(r, tr(T_FILES),
+                tr(app.fs_pane == 0 ? T_FILES_TF1 : T_FILES_TF2));
+
+    const int top = 84, rowh = 76, vis = 6;
+    int n = (int)app.fs_entries.size();
+    if (app.fs_sel < app.fs_scroll) app.fs_scroll = app.fs_sel;
+    if (app.fs_sel >= app.fs_scroll + vis) app.fs_scroll = app.fs_sel - vis + 1;
+    if (app.fs_scroll < 0) app.fs_scroll = 0;
+
+    if (n == 0) {
+        text(r, app.f_body, tr(T_FILES_EMPTY), W / 2, top + 150,
+             C_DIM, Align::Center);
+    } else {
+        hit_add({ 48, top, 928, vis * rowh - 8 }, HIT_FILES_ROWS);
+        for (int i = 0; i < vis; i++) {
+            int idx = app.fs_scroll + i;
+            if (idx >= n) break;
+            const fsops::Entry& e = app.fs_entries[idx];
+            SDL_Rect rc = { 48, top + i * rowh, 928, rowh - 8 };
+            std::string title = e.name == ".." ? tr(T_FILES_UP) : e.name;
+            std::string meta = e.dir ? tr(T_FILES_FOLDER)
+                                     : fs_size_str(e.size);
+            if (e.symlink) meta += " · symlink";
+            deck_row(r, rc, idx == app.fs_sel, title, meta, "", C_DIM);
+            hit_add(rc, HIT_FILES_ROW, idx);
+        }
+    }
+
+    fsops::Progress p;
+    bool busy = false;
+    if (app.fs_queue) {
+        p = app.fs_queue->snapshot();
+        busy = app.fs_queue->busy();
+    }
+    if (busy) {
+        std::string info = fs_job_name(p.job);
+        if (p.job == fsops::Job::Unzip) {
+            char b[64];
+            snprintf(b, sizeof(b), tr(T_FILES_ENTRIES),
+                     p.entries_done, p.entries_total);
+            info += std::string(" · ") + b;
+        } else if (p.total > 0) {
+            info += " · " + fs_size_str((long long)p.done) + " / " +
+                    fs_size_str((long long)p.total);
+        }
+        if (p.pending > 0) {
+            char b[64];
+            snprintf(b, sizeof(b), tr(T_FILES_QUEUED), p.pending);
+            info += std::string(" · ") + b;
+        }
+        if (p.eta >= 0 && p.job != fsops::Job::Remove) {
+            char b[48];
+            snprintf(b, sizeof(b), tr(T_FILES_ETA),
+                     fs_clock_str(p.eta).c_str());
+            info += std::string(" · ") + b;
+        }
+        text(r, app.f_small, ellipsize(app.f_small, info, 660),
+             48, 548, C_AMBER);
+        float frac = 0;
+        if (p.job == fsops::Job::Unzip)
+            frac = p.entries_total > 0
+                 ? (float)p.entries_done / p.entries_total : 0;
+        else
+            frac = p.total > 0 ? (float)p.done / p.total : 0;
+        progress_bar(r, { 48, 584, 660, 10 }, frac, C_ACCENT, C_TRACK);
+        SDL_Rect cancel = { 730, 548, 246, 52 };
+        button(r, cancel, tr(T_KB_CANCEL), false, false);
+        hit_add(cancel, HIT_FILES_CANCEL);
+    } else if (!app.fs_status.empty()) {
+        text(r, app.f_small, ellipsize(app.f_small, app.fs_status, 900),
+             48, 556, C_AMBER);
+    } else if (app.fs_pane == 1 && !app.fs_tf2_rw) {
+        text(r, app.f_small, tr(T_FILES_RO), 48, 556, C_DIM);
+    } else if (app.fs_tf2_rw) {
+        text(r, app.f_small, tr(T_FILES_RW_OK), 48, 556, C_GREEN);
+    }
+
+    deck_round(r, { 48, 616, 64, 64 });
+    icon_chevron(r, 60, 628, 40, C_TEXT, true);
+    hit_add({ 48, 616, 64, 64 }, HIT_BACK);
+
+    SDL_Rect pane = { 124, 616, 164, 64 };
+    rrect(r, pane, 18, rgba(255, 255, 255, 10));
+    rrect_stroke(r, pane, 18, with_alpha(C_ACCENT, 150), 1);
+    icon_folder(r, pane.x + 16, pane.y + 18, 28, C_ACCENT);
+    text(r, app.f_small,
+         tr(app.fs_pane == 0 ? T_FILES_TF1 : T_FILES_TF2),
+         pane.x + 54, pane.y + 18, C_TEXT);
+    hit_add(pane, HIT_FILES_PANE);
+
+    const char* labels[6] = { tr(T_FILES_COPY), tr(T_FILES_MOVE),
+                              tr(T_FILES_RENAME), tr(T_FILES_MKDIR),
+                              tr(T_FILES_DELETE), tr(T_FILES_UNZIP) };
+    bool usable = !busy && n > 0 && app.fs_sel < n &&
+                  app.fs_entries[app.fs_sel].name != "..";
+    for (int i = 0; i < 6; i++) {
+        SDL_Rect rc = { 304 + i * 112, 616, 108, 64 };
+        bool danger = i == 4;
+        SDL_Color fg = danger ? C_RED : C_TEXT;
+        if (!usable) fg = with_alpha(C_DIM, 150);
+        rrect(r, rc, 18, danger ? with_alpha(C_RED, 34)
+                               : rgba(255, 255, 255, usable ? 9 : 5));
+        rrect_stroke(r, rc, 18,
+                     danger ? with_alpha(C_RED, usable ? 150 : 60)
+                            : rgba(255, 255, 255, usable ? 18 : 8), 1);
+        text(r, app.f_small, ellipsize(app.f_small, labels[i], rc.w - 16),
+             rc.x + rc.w / 2, rc.y + 18, fg, Align::Center);
+        hit_add(rc, HIT_FILES_OP, i);
+    }
+
+    deck_hint(r, tr(T_FILES_HINT));
 }
 
 void deck_settings(SDL_Renderer* r)
@@ -4524,7 +5349,7 @@ void deck_settings(SDL_Renderer* r)
     app.set_sel_f = damp(app.set_sel_f, (float)app.set_sel);
 
     const int tw = 452, th = 80, gx = 12, gy = 8;
-    for (int i = 0; i < 13; i++) {
+    for (int i = 0; i < 14; i++) {
         int col = i % 2, row = i / 2;
         SDL_Rect tile = { 48 + col * (tw + gx), 84 + row * (th + gy), tw, th };
         bool sel = i == app.set_sel;
@@ -5564,9 +6389,16 @@ void deck_msg(SDL_Renderer* r)
 void deck_confirm(SDL_Renderer* r)
 {
     deck_header(r, nullptr);
+    bool file_del = app.confirm == ConfirmAct::FileDelete;
+    bool file_ovr = app.confirm == ConfirmAct::FileOverwrite;
+    bool file_rw  = app.confirm == ConfirmAct::FileTf2Rw;
+    bool file = file_del || file_ovr || file_rw;
     const char* title = app.confirm == ConfirmAct::PowerOff ? tr(T_CONFIRM_OFF)
                       : app.confirm == ConfirmAct::Reboot ? tr(T_CONFIRM_REBOOT)
                       : app.confirm == ConfirmAct::Update ? tr(T_UPDATE)
+                      : file_del ? tr(T_FILES_DELETE_Q)
+                      : file_ovr ? tr(T_FILES_OVERWRITE_Q)
+                      : file_rw ? tr(T_FILES_RW_Q)
                       : (app.confirm == ConfirmAct::ForgetWifi ||
                          app.confirm == ConfirmAct::ForgetBt) ? tr(T_CONFIRM_FORGET)
                                                              : tr(T_CONFIRM_DEL);
@@ -5578,6 +6410,10 @@ void deck_confirm(SDL_Renderer* r)
     else if (app.confirm == ConfirmAct::Update)
         text(r, app.f_small, tr(T_UPDATE_CONFIRM_BODY), W / 2, 260, C_DIM,
              Align::Center);
+    else if (file)
+        text(r, app.f_small,
+             ellipsize(app.f_small, app.fs_confirm_path, W - 220),
+             W / 2, 260, C_AMBER, Align::Center);
 
     SDL_Rect cancel = { 112, 360, 380, 96 };
     button(r, cancel, tr(T_KB_CANCEL), false, false);
@@ -5603,6 +6439,7 @@ void draw_deck_content(SDL_Renderer* r)
     case Screen::Activity:  deck_activity(r); break;
     case Screen::Quick:     deck_quick(r); break;
     case Screen::GameCfg:   deck_cfg(r); break;
+    case Screen::Files:     deck_files(r); break;
     case Screen::Msg:       deck_msg(r); break;
     case Screen::Confirm:   deck_confirm(r); break;
     }
@@ -5733,7 +6570,7 @@ void deck_activate(int id, int a, int b)
         cfg_reset();
         break;
     case HIT_SET_TILE:
-        app.set_sel = std::clamp(a, 0, 12);
+        app.set_sel = std::clamp(a, 0, 13);
         if (a <= 1) {
             app.set_adjust = a;
             sound_play(SND_ADJUST);
@@ -5755,10 +6592,41 @@ void deck_activate(int id, int a, int b)
         else if (a == 10) show_msg(tr(T_ABOUT), tr(T_ABOUT_BODY));
         else if (a == 11) setup_enter();
         else if (a == 12) covers_enter();
+        else if (a == 13) fs_enter();
         else sound_play(SND_MOVE);
         break;
     case HIT_COVER_ACTION:
         covers_toggle();
+        break;
+    case HIT_FILES_PANE:
+        fs_switch_pane();
+        break;
+    case HIT_FILES_ROW:
+        if (a >= 0 && a < (int)app.fs_entries.size()) {
+            app.fs_sel = a;
+            fs_open_sel();
+        }
+        break;
+    case HIT_FILES_OP: {
+        if (app.fs_queue && app.fs_queue->busy()) {
+            fs_say(tr(T_FILES_BUSY), true);
+            break;
+        }
+        fsops::Entry* ent = fs_sel_entry();
+        if (a != 3 && (!ent || ent->name == "..")) {
+            fs_say(tr(T_FILES_HINT), false);
+            break;
+        }
+        if (a == 0) fs_request_copy(false);
+        else if (a == 1) fs_request_copy(true);
+        else if (a == 2) fs_request_rename();
+        else if (a == 3) fs_request_mkdir();
+        else if (a == 4) fs_request_delete();
+        else if (a == 5) fs_request_unzip();
+        break;
+    }
+    case HIT_FILES_CANCEL:
+        fs_cancel_task();
         break;
     case HIT_WIFI_NET:
         if (a >= 0 && a < (int)app.wifi_nets.size()) {
@@ -5948,7 +6816,8 @@ void deck_touch(const TouchEvent& e)
         int dx = e.x - app.t_x0;
         app.t_ly = e.y;
         if (app.t_id == HIT_LIST_ROWS || app.t_id == HIT_ACT_ROWS ||
-            app.t_id == HIT_QUICK_ROWS) {
+            app.t_id == HIT_QUICK_ROWS || app.t_id == HIT_FILES_ROWS ||
+            app.t_id == HIT_FILES_ROW) {
             app.t_acc += dy;
             while (app.t_acc >= 52) { navigate(0, -1); app.t_acc -= 52; }
             while (app.t_acc <= -52) { navigate(0, 1); app.t_acc += 52; }
@@ -6029,6 +6898,9 @@ void handle_button(SDL_ControllerButtonEvent& b)
             app.save_sel = std::clamp(keep, 0, std::max(0, (int)app.saves.size() - 1));
         } else if (app.screen == Screen::GameCfg) {
             // per-game edits are already written straight to the store
+        } else if (app.screen == Screen::Files) {
+            sound_play(SND_ADJUST);
+            fs_reload(true);
         } else refresh_games();
         break;
     case SDL_CONTROLLER_BUTTON_Y:   // physical X (top)
@@ -6061,10 +6933,13 @@ void handle_button(SDL_ControllerButtonEvent& b)
             app.screen = Screen::Quick;
         } else if (app.screen == Screen::GameCfg) {
             // no favourites toggle from the per-game deck
+        } else if (app.screen == Screen::Files) {
+            // no favourites here (Y is free)
         } else toggle_fav();
         break;
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: // physical R
-        if (app.screen != Screen::GameCfg) toggle_fav_only();
+        if (app.screen != Screen::GameCfg && app.screen != Screen::Files)
+            toggle_fav_only();
         break;
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: go_back(); break;          // physical L
     case SDL_CONTROLLER_BUTTON_BACK:   // physical HOME (adc-keys-home -> BTN_BACK)
@@ -6118,6 +6993,9 @@ void handle_key(SDL_KeyboardEvent& k)
             app.save_sel = std::clamp(keep, 0, std::max(0, (int)app.saves.size() - 1));
         } else if (app.screen == Screen::GameCfg) {
             // per-game edits are already written straight to the store
+        } else if (app.screen == Screen::Files) {
+            sound_play(SND_ADJUST);
+            fs_reload(true);
         } else refresh_games();
         break;
     case SDLK_f:
@@ -6150,10 +7028,13 @@ void handle_key(SDL_KeyboardEvent& k)
             app.screen = Screen::Quick;
         } else if (app.screen == Screen::GameCfg) {
             // no favourites toggle from the per-game deck
+        } else if (app.screen == Screen::Files) {
+            // no favourites here
         } else toggle_fav();
         break;
     case SDLK_TAB:
-        if (app.screen != Screen::GameCfg) toggle_fav_only();
+        if (app.screen != Screen::GameCfg && app.screen != Screen::Files)
+            toggle_fav_only();
         break;
     case SDLK_MINUS:
         volume_set(app.settings.volume - 5, true);
@@ -6238,6 +7119,7 @@ void draw_current(SDL_Renderer* r)
     case Screen::Update:    draw_update(r); break;
     case Screen::Setup:     draw_setup(r); break;
     case Screen::Covers:    draw_covers(r); break;
+    case Screen::Files:     draw_files(r); break;
     case Screen::Msg:       draw_msg(r); break;
     case Screen::Confirm:   draw_confirm(r); break;
     }
@@ -6275,6 +7157,7 @@ int main(int, char**)
             ui_dbg(dbg.c_str());
         }
     }
+    app.fs_queue.reset(new fsops::TaskQueue(fsops::default_roots()));
     app.carousel = app.settings.last_console;
     apply_theme(app.settings.theme);
     app.saves = scan_saves();
@@ -6346,6 +7229,7 @@ int main(int, char**)
         wifi_poll();
         update_poll();
         tf2_poll();
+        fs_tick();
         setup_poll();
         covers_poll();
 
@@ -6397,6 +7281,8 @@ int main(int, char**)
             case Screen::List:     app.list_sel_f = (float)app.sel;
                                    app.list_scroll_f = (float)app.scroll; break;
             case Screen::Settings: app.set_sel_f = (float)app.set_sel; break;
+            case Screen::Files:    app.fs_sel_f = (float)app.fs_sel;
+                                   app.fs_scroll_f = (float)app.fs_scroll; break;
             case Screen::Saves:    app.save_sel_f = (float)app.save_sel;
                                    app.save_scroll_f = (float)app.save_scroll; break;
             case Screen::Quick:    app.quick_sel_f = (float)app.quick_sel;
@@ -6484,6 +7370,7 @@ int main(int, char**)
     // otherwise be clamped onto psp and reopen there next boot.
     if (app.carousel < 5) app.settings.last_console = app.carousel;
     save_settings(app.settings);
+    fs_shutdown();
     shutdown_gfx();
     perf::shutdown();
     return app.exit_code;

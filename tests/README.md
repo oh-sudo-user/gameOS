@@ -24,8 +24,11 @@ device-presence predicates into a temp sandbox.
 | `test-touch.sh` | compiles `tests/host/test-touch.cpp` against the header-only touch helpers; 12 DP drag threshold and the page-transition touch lock window | §10 |
 | `test-netparse.sh` | compiles `tests/host/test-netparse.cpp` with the real `src/netparse.cpp`; MAC validation, Bluetooth device lines (CRLF, extra tabs, bad rows), WiFi known/status/nets formats, duplicate SSID merge and saved/keyed flags | §10 |
 | `test-overrides.sh` | compiles `tests/host/test-overrides.cpp` with the real `src/overrides.cpp`; schema validation (missing / invalid / oversized / trailing documents get moved to `.bak`), per-entry skipping, atomic save + roundtrip + removal, hot reload by mtime/size, key format and the RetroArch config mapping | §10 |
+| `test-fileops.sh` | compiles `tests/host/test-fileops.cpp` with the real `src/fileops.cpp`; path guard (traversal / absolute / symlink escapes), listing order, mkdir / rename / copy / overwrite / cancel, recursive remove, stored + deflate ZIP extraction and the rejection matrix (traversal, absolute names, symlinks, encryption, unsupported method, ZIP64, duplicates, truncated archives), staging cleanup, and the TaskQueue worker with progress and cancel | §25 |
 
 The override tests need the host `json-c` development files and print `SKIP`
+when they are absent.
+The file-manager tests need the host `zlib` development files and print `SKIP`
 when they are absent.
 
 The OTA tests need `openssl` with Ed25519 support (OpenSSL 3.x); they print

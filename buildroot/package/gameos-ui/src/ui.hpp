@@ -101,6 +101,7 @@ void icon_home(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
 void icon_globe(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
 void icon_gamepad(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
 void icon_image(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
+void icon_folder(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
 void icon_trophy(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
 void icon_download(SDL_Renderer* r, int x, int y, int size, SDL_Color c);
 void icon_keyboard(SDL_Renderer* r, int x, int y, int size, SDL_Color c);

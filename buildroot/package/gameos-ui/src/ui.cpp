@@ -779,6 +779,22 @@ void icon_image(SDL_Renderer* r, int x, int y, int size, SDL_Color c)
     stroke_path(r, mount, 4, w * 0.8f, c);
 }
 
+void icon_folder(SDL_Renderer* r, int x, int y, int size, SDL_Color c)
+{
+    float w = icon_w(size);
+    rrect_stroke(r, { x + (int)(size * 0.12f), y + (int)(size * 0.3f),
+                      (int)(size * 0.3f), (int)(size * 0.16f) },
+                 (int)(size * 0.06f), c, (int)w);
+    SDL_FPoint body[5] = {
+        { x + size * 0.12f, y + size * 0.36f },
+        { x + size * 0.88f, y + size * 0.36f },
+        { x + size * 0.88f, y + size * 0.8f },
+        { x + size * 0.12f, y + size * 0.8f },
+        { x + size * 0.12f, y + size * 0.36f },
+    };
+    stroke_path(r, body, 5, w, c);
+}
+
 void icon_trophy(SDL_Renderer* r, int x, int y, int size, SDL_Color c)
 {
     float w = icon_w(size);
