@@ -22,6 +22,7 @@ device-presence predicates into a temp sandbox.
 | `test-motion.sh` | compiles `tests/host/test-motion.cpp` against the real `src/motion.cpp`; sampled easing curves match the spec table, the animator interpolates/retargets/stops, and the L0–L3 frame-budget ladder escalates, ignores isolated spikes and recovers after calm windows | §10 |
 | `test-widget.sh` | compiles `tests/host/test-widget.cpp` against the header-only widget helpers; list-row geometry/hit-testing, switch and slider mapping, dialog panel/button layout, and toast replace/expiry/fade timing | §10 |
 | `test-touch.sh` | compiles `tests/host/test-touch.cpp` against the header-only touch helpers; 12 DP drag threshold and the page-transition touch lock window | §10 |
+| `test-netparse.sh` | compiles `tests/host/test-netparse.cpp` with the real `src/netparse.cpp`; MAC validation, Bluetooth device lines (CRLF, extra tabs, bad rows), WiFi known/status/nets formats, duplicate SSID merge and saved/keyed flags | §10 |
 
 The OTA tests need `openssl` with Ed25519 support (OpenSSL 3.x); they print
 `SKIP` only when the host has no openssl at all.

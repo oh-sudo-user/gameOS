@@ -14,6 +14,7 @@
 #include "gameos.hpp"
 #include "i18n.hpp"
 #include "motion.hpp"
+#include "netparse.hpp"
 #include "perf.hpp"
 #include "sound.hpp"
 #include "touch.hpp"
@@ -102,11 +103,6 @@ enum HitId {
     HIT_DLG_OK, HIT_DLG_CANCEL
 };
 
-struct BtDev {
-    std::string mac, name, kind;
-    bool paired = false, connected = false;
-};
-
 // A favorite/history key resolved against the scanned library. The ROM may be
 // gone (deleted, or the TF2 card pulled): the row stays visible and is marked
 // missing rather than silently disappearing from the user's collection.
@@ -117,14 +113,6 @@ struct QuickEntry {
     bool missing = false;
     long long seconds = 0;
     long long last = 0;
-};
-
-struct WifiNet {
-    std::string ssid;
-    int  signal = 0;      // dBm
-    bool secure = false;
-    bool saved = false;
-    bool keyed = false;   // saved with a non-empty passphrase
 };
 
 struct App {
@@ -976,17 +964,6 @@ void draw_list(SDL_Renderer* r)
 // (/run/gameos/bt-op.out + bt-op.rc) polled from the main loop, so a 40 s
 // pairing never freezes the UI.
 // ---------------------------------------------------------------------------
-bool bt_mac_valid(const std::string& m)
-{
-    if (m.size() != 17) return false;
-    for (int i = 0; i < 17; i++) {
-        char c = m[i];
-        if (i % 3 == 2) { if (c != ':') return false; }
-        else if (!isxdigit((unsigned char)c)) return false;
-    }
-    return true;
-}
-
 void bt_start(const std::string& op, const std::string& arg = "")
 {
     unlink("/run/gameos/bt-op.rc");
@@ -1009,39 +986,8 @@ void bt_start(const std::string& op, const std::string& arg = "")
 
 void bt_parse_devs(const std::string& out)
 {
-    app.bt_devs.clear();
-    std::istringstream ss(out);
-    std::string line;
-    while (std::getline(ss, line)) {
-        // MAC \t paired \t connected \t kind \t name
-        size_t t1 = line.find('\t');
-        if (t1 == std::string::npos) continue;
-        size_t t2 = line.find('\t', t1 + 1);
-        if (t2 == std::string::npos) continue;
-        size_t t3 = line.find('\t', t2 + 1);
-        if (t3 == std::string::npos) continue;
-        size_t t4 = line.find('\t', t3 + 1);
-        if (t4 == std::string::npos) continue;
-        BtDev d;
-        d.mac = line.substr(0, t1);
-        if (!bt_mac_valid(d.mac)) continue;
-        d.paired = line[t1 + 1] == '1';
-        d.connected = line[t2 + 1] == '1';
-        d.kind = line.substr(t3 + 1, t4 - t3 - 1);
-        d.name = line.substr(t4 + 1);
-        if (!d.name.empty() && d.name.back() == '\r') d.name.pop_back();
-        app.bt_devs.push_back(d);
-    }
+    app.bt_devs = parse_bt_devs(out);
     app.bt_sel = std::clamp(app.bt_sel, 0, (int)app.bt_devs.size());
-}
-
-std::string bt_last_line(const std::string& out)
-{
-    std::string last, line;
-    std::istringstream ss(out);
-    while (std::getline(ss, line))
-        if (!line.empty() && line != "\r") last = line;
-    return last;
 }
 
 void bt_poll()
@@ -1067,14 +1013,14 @@ void bt_poll()
     app.bt_op.clear();
     {
         char dbg[240];
-        std::string last = bt_last_line(out);
+        std::string last = last_nonempty_line(out);
         snprintf(dbg, sizeof dbg, "gameos-ui: bt op done: %s rc=%d last=%.160s\n",
                  op.c_str(), rc, last.c_str());
         ui_dbg(dbg);
     }
     if (op == "devices" || op == "scan") {
         bt_parse_devs(out);
-        std::string last = bt_last_line(out);
+        std::string last = last_nonempty_line(out);
         // A helper that failed (adapter off, discovery refused) must say so
         // instead of leaving an empty list that looks like "no devices found".
         if (rc != 0 && !last.empty()) app.bt_status = last;
@@ -1096,7 +1042,7 @@ void bt_poll()
         app.bt_status = tr(T_BT_OFF_OK);
     } else {
         // pair / connect / disconnect / forget: last line "OK" or "ERROR <why>"
-        std::string last = bt_last_line(out);
+        std::string last = last_nonempty_line(out);
         if (rc == 0) {
             if (op == "pair") app.bt_status = tr(T_PAIR_OK);
             else if (op == "connect") app.bt_status = tr(T_CONNECTED);
@@ -1139,63 +1085,19 @@ std::string run_cmd(const char* cmd)
 // gameos-wifi known prints "SSID<TAB>1" when a passphrase is stored and
 // "SSID<TAB>0" for an open network. The bare-SSID form is accepted too so an
 // older helper still works.
-bool wifi_saved(const std::string& ssid)
-{
-    for (const auto& k : app.wifi_known) {
-        if (k == ssid) return true;
-        if (k.size() > ssid.size() + 1 &&
-            k.compare(0, ssid.size(), ssid) == 0 && k[ssid.size()] == '\t')
-            return true;
-    }
-    return false;
-}
-
-bool wifi_keyed(const std::string& ssid)
-{
-    const size_t n = ssid.size();
-    for (const auto& k : app.wifi_known) {
-        if (k.size() == n + 2 && k.compare(0, n, ssid) == 0 &&
-            k[n] == '\t' && k[n + 1] == '1')
-            return true;
-    }
-    return false;
-}
-
 void wifi_apply_known(const std::string& out)
 {
-    app.wifi_known.clear();
-    std::istringstream ss(out);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty()) app.wifi_known.push_back(line);
-    }
-    for (auto& n : app.wifi_nets) {
-        n.saved = wifi_saved(n.ssid);
-        n.keyed = wifi_keyed(n.ssid);
-    }
+    app.wifi_known = parse_wifi_known(out);
+    mark_wifi_saved(app.wifi_nets, app.wifi_known);
 }
 
 void wifi_apply_status(const std::string& out)
 {
-    std::istringstream ss(out);
-    std::string line;
-    app.wifi_state.clear();
-    app.wifi_link.clear();
-    app.wifi_ip.clear();
-    while (std::getline(ss, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-        if (k == "state") app.wifi_state = v;
-        else if (k == "ssid") app.wifi_link = v;
-        else if (k == "ip") app.wifi_ip = v;
-    }
-    for (auto& n : app.wifi_nets) {
-        n.saved = wifi_saved(n.ssid);
-        n.keyed = wifi_keyed(n.ssid);
-    }
+    WifiStatus st = parse_wifi_status(out);
+    app.wifi_state = std::move(st.state);
+    app.wifi_link = std::move(st.link);
+    app.wifi_ip = std::move(st.ip);
+    mark_wifi_saved(app.wifi_nets, app.wifi_known);
 }
 
 void wifi_start(const std::string& op)
@@ -1280,29 +1182,7 @@ void wifi_probe_poll(Uint32 now)
 
 void wifi_parse_nets(const std::string& out)
 {
-    app.wifi_nets.clear();
-    std::istringstream ss(out);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        size_t t1 = line.find('\t');
-        if (t1 == std::string::npos) continue;
-        size_t t2 = line.find('\t', t1 + 1);
-        if (t2 == std::string::npos) continue;
-        WifiNet n;
-        n.signal = atoi(line.substr(0, t1).c_str());
-        n.secure = line[t1 + 1] == '1';
-        n.ssid = line.substr(t2 + 1);
-        if (n.ssid.empty()) continue;
-        n.saved = wifi_saved(n.ssid);
-        n.keyed = wifi_keyed(n.ssid);
-        bool dup = false;
-        for (auto& e : app.wifi_nets)
-            if (e.ssid == n.ssid) { dup = true; if (n.signal > e.signal) e = n; break; }
-        if (!dup) app.wifi_nets.push_back(n);
-    }
-    std::sort(app.wifi_nets.begin(), app.wifi_nets.end(),
-              [](const WifiNet& a, const WifiNet& b) { return a.signal > b.signal; });
+    app.wifi_nets = parse_wifi_nets(out, app.wifi_known);
     app.wifi_sel = std::clamp(app.wifi_sel, 0,
                               std::max(0, (int)app.wifi_nets.size() - 1));
 }
