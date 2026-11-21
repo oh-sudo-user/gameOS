@@ -122,3 +122,10 @@ busybox init
 Buildroot 2026.08 external tree；所有上游组件固定 commit/版本
 （见 `scripts/fetch-vendor.sh` 与 defconfig）。发布镜像在本地干净构建并验证，
 产物为整盘镜像 `gameOS-rgds-plus.img.gz`。
+
+`scripts/ci.sh` 汇总主机侧门禁：全部 shell/host 测试、主题调色板校验、
+脚本语法检查与包版本锁定审计（拒绝浮动 git 引用）。设置 `GAMEOS_IMAGES`
+后会调用 `scripts/verify-image.sh` 校验成品：必需产物与 sha256、gzip 完整性、
+启动包内容、目标二进制/字体/OTA 公钥，以及从 `rootfs.ext4` 直接读取的
+四套主题调色板（`debugfs`；无镜像时回退到 target 树）。两者均为普通
+`sh` 脚本，可在本地或任意 CI 中运行。

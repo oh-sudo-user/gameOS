@@ -33,8 +33,12 @@ cd gameOS
 for t in tests/shell/test-*.sh; do dash "$t"; done
 ```
 
-CI runs the same suite (`sh "$t"`) in the **build** job, before the long compile,
-so a regression fails fast. A non-zero exit from any test blocks the build.
+`scripts/ci.sh` is the single entry point: it runs every test above, the theme
+lint, `sh -n` over shipped scripts, and a package-pin audit that rejects floating
+git refs. Set `GAMEOS_IMAGES` to also verify a finished image set with
+`scripts/verify-image.sh` (required artifacts, sha256, gzip, boot payload,
+target binaries, and the theme palettes inside `rootfs.ext4` via `debugfs`).
+Run it before the long compile in any CI job so a regression fails fast.
 
 ## 2. Integration / hardware plans (`tests/integration/`)
 
