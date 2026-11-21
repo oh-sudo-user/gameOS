@@ -92,9 +92,13 @@ struct ListRow {
     std::string title;
     std::string detail;
     std::string value;
+    std::string badge;
     bool chevron = false;
+    bool star = false;
     bool selected = false;
+    bool dim = false;
     bool disabled = false;
+    bool chrome = true;
     State state = State::Normal;
 };
 

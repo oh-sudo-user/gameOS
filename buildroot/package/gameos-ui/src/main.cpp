@@ -18,6 +18,7 @@
 #include "sound.hpp"
 #include "touch.hpp"
 #include "ui.hpp"
+#include "widget.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -950,18 +951,13 @@ void draw_list(SDL_Renderer* r)
         int y = top + (int)((idx - app.list_scroll_f) * rowh);
         const Game& g = app.games[idx];
         bool sel = idx == app.sel;
-        bool fav = fav_contains(c.id, g.title);
-        bool tf2 = on_tf2(g.path);
-        int maxw = listw - 48 - 44 - (fav ? 40 : 0) - (tf2 ? 76 : 0);
-        text(r, app.f_body, ellipsize(app.f_body, g.title, maxw),
-             listx + 36, y + 20, sel ? C_TEXT : with_alpha(C_TEXT, 205));
-        if (fav) icon_star(r, listx + listw - 84, y + 26, 32, C_AMBER, true);
-        if (tf2) {
-            rrect(r, { listx + listw - 62, y + 28, 42, 24 }, 12,
-                  rgba(255, 255, 255, 16));
-            text(r, app.f_small, "TF2", listx + listw - 41, y + 24, C_DIM,
-                 Align::Center);
-        }
+        widget::ListRow row;
+        row.title = g.title;
+        row.star = fav_contains(c.id, g.title);
+        row.badge = on_tf2(g.path) ? "TF2" : "";
+        row.dim = !sel;
+        row.chrome = false;
+        widget::list_row(r, { listx, y, listw, rowh - gap }, row);
     }
     set_clip(r, nullptr);
 
@@ -4351,18 +4347,13 @@ void deck_list(SDL_Renderer* r)
                          rgba(255, 255, 255, 9), 1);
         }
         const Game& g = app.games[idx];
-        bool fav = fav_contains(c.id, g.title);
-        bool tf2 = on_tf2(g.path);
-        int maxw = listw - 84 - (fav ? 40 : 0) - (tf2 ? 82 : 0);
-        text(r, app.f_body, ellipsize(app.f_body, g.title, maxw),
-             listx + 34, ry + 22, sel ? C_TEXT : with_alpha(C_TEXT, 205));
-        if (fav) icon_star(r, listx + listw - 94, ry + 26, 34, C_AMBER, true);
-        if (tf2) {
-            rrect(r, { listx + listw - 72, ry + 28, 44, 24 }, 12,
-                  rgba(255, 255, 255, 16));
-            text(r, app.f_small, "TF2", listx + listw - 50, ry + 24, C_DIM,
-                 Align::Center);
-        }
+        widget::ListRow row;
+        row.title = g.title;
+        row.star = fav_contains(c.id, g.title);
+        row.badge = on_tf2(g.path) ? "TF2" : "";
+        row.dim = !sel;
+        row.chrome = false;
+        widget::list_row(r, { listx, ry, listw, rowh - 8 }, row);
         hit_add({ listx, ry, listw, rowh - 8 }, HIT_LIST_ROW, idx);
     }
     set_clip(r, nullptr);
@@ -5493,14 +5484,19 @@ void draw_deck()
 
     // the deck follows the top panel's fade/slide, at a shorter distance
     Uint32 te = SDL_GetTicks() - g_deck_start;
+    const int mlevel = g_degrade.level();
     SDL_Rect full = { 0, 0, W, H };
-    if (te < 200 && g_deck_tex[g_deck_cur ^ 1]) {
-        float p = ease_out(te / 200.0f);
+    if (te < (Uint32)motion::kNormalMs && g_deck_tex[g_deck_cur ^ 1] &&
+        mlevel < motion::Degrade::kL3) {
+        float p = motion::ease(motion::Ease::Enter,
+                               te / (float)motion::kNormalMs);
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur ^ 1], 255);
         perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur ^ 1], nullptr, &full);
         SDL_SetTextureAlphaMod(g_deck_tex[g_deck_cur], (Uint8)(255 * p));
-        SDL_Rect dst = { 0, (int)((1 - p) * 18), W, H };
+        SDL_Rect dst = mlevel < motion::Degrade::kL2
+                           ? SDL_Rect{ 0, (int)((1 - p) * 18), W, H }
+                           : full;
         perf::note_draw();
         SDL_RenderCopy(r, g_deck_tex[g_deck_cur], nullptr, &dst);
     } else {

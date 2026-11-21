@@ -73,22 +73,37 @@ void list_row(SDL_Renderer* r, SDL_Rect rc, const ListRow& row)
 {
     const bool focused = row.state == State::Focused ||
                          row.state == State::Pressed;
-    SDL_Color bg = row.selected ? with_alpha(C_ACCENT, 28)
-                                : with_alpha(C_PANEL, 200);
-    if (focused) bg = with_alpha(C_ACCENT, 42);
-    rrect(r, rc, token::radius_card, bg);
-    if (focused) {
-        rrect_stroke(r, rc, token::radius_card, with_alpha(C_ACCENT, 190), 2);
-        fill_rect(r, rc.x + token::space_4, rc.y + token::space_12,
-                  3, rc.h - token::space_24, C_ACCENT);
+    if (row.chrome) {
+        SDL_Color bg = row.selected ? with_alpha(C_ACCENT, 28)
+                                    : with_alpha(C_PANEL, 200);
+        if (focused) bg = with_alpha(C_ACCENT, 42);
+        rrect(r, rc, token::radius_card, bg);
+        if (focused) {
+            rrect_stroke(r, rc, token::radius_card,
+                         with_alpha(C_ACCENT, 190), 2);
+            fill_rect(r, rc.x + token::space_4, rc.y + token::space_12,
+                      3, rc.h - token::space_24, C_ACCENT);
+        }
     }
 
     int x = rc.x + token::space_32;
-    int right = rc.x + rc.w;
+    int right = rc.x + rc.w - token::space_16;
     if (row.chevron) {
-        icon_chevron(r, right - token::space_24, rc.y + (rc.h - 16) / 2, 16,
+        icon_chevron(r, right - 16, rc.y + (rc.h - 16) / 2, 16,
                      with_alpha(C_DIM, row.disabled ? 110 : 200), false);
-        right -= token::space_32;
+        right -= token::space_24;
+    }
+    if (!row.badge.empty()) {
+        int bw = std::max(40, text_width(g_ui.small, row.badge) + 8);
+        SDL_Rect pill = { right - bw, rc.y + (rc.h - 24) / 2, bw, 24 };
+        rrect(r, pill, 12, with_alpha(C_TEXT, 30));
+        text(r, g_ui.small, row.badge, pill.x + pill.w / 2,
+             pill.y + (24 - 30) / 2, C_DIM, Align::Center);
+        right -= bw + token::space_8;
+    }
+    if (row.star) {
+        icon_star(r, right - 32, rc.y + (rc.h - 32) / 2, 32, C_AMBER, true);
+        right -= 32 + token::space_8;
     }
     if (!row.value.empty()) {
         int vw = text_width(g_ui.small, row.value);
@@ -98,7 +113,7 @@ void list_row(SDL_Renderer* r, SDL_Rect rc, const ListRow& row)
         right -= vw + token::space_12;
     }
 
-    Uint8 fg = row.disabled ? 110 : 255;
+    Uint8 fg = row.disabled ? 110 : (row.dim ? 205 : 255);
     int maxw = std::max(0, right - x - token::space_8);
     // Current fonts are larger than the spec's DP sizes, so a two-line row
     // needs at least 72 px; shorter rows keep the single-line title only.
