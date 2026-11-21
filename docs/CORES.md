@@ -98,8 +98,13 @@ NDS 的具体补丁（JIT 块链接、标志缓存、16 字节失效、按需内
 
 ## PPSSPP（PSP）
 
-- 独立进程，不通过 libretro；本轮未改动。它的性能要点（1 倍渲染分辨率、
+- 独立进程，不通过 libretro；引擎未改。性能要点（1 倍渲染分辨率、
   跳过 GPU→CPU 回读）已在 1.0.0 完成，见 README 性能表。
+- 启动修复：PPSSPP 链接的四个自带辅助库（cpu_features、imgui、
+  glslang、SPIRV）以前没有装进镜像，动态加载器会在 main() 之前退出，
+  PSP 游戏实际无法启动；现已随包安装并由 `verify-image.sh` 检查。
+  PSP 的启动预读（程序、库、UI 图集、VFPU 表、ISO 前 16 MB）也接入了
+  统一的启动路径。
 
 ## 复现
 
